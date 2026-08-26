@@ -1,0 +1,29 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[margin=0.8in]{geometry}
+\usepackage{fontspec}
+\IfFontExistsTF{Liberation Sans}{\setmainfont{Liberation Sans}}{\setmainfont{Latin Modern Sans}}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{microtype}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{7pt}
+\setlength{\emergencystretch}{2em}
+\definecolor{accent}{HTML}{155E75}
+\begin{document}
+{\fontsize{20}{22}\selectfont\bfseries NAME}\par
+{\large\color{accent}HEADLINE}\par
+{\small CONTACT}\par
+\vspace{5pt}
+\hfill DATE\par
+\vspace{5pt}
+\textbf{Subject:} SUBJECT\par
+SALUTATION\par
+PARAGRAPHS
+BULLETS
+\vspace{1pt}
+CLOSING\par
+Kind regards,\par
+\vspace{10pt}
+\textbf{NAME}
+\end{document}

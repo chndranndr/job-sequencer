@@ -1,0 +1,6 @@
+{
+  "cv": {
+    "backend_java_spring": { "file": "cv/backend_java_spring.tex", "tags": ["backend", "java", "spring", "platform"] }
+  },
+  "coverLetter": "cover-letter.tex"
+}

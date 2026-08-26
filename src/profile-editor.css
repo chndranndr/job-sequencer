@@ -1,0 +1,54 @@
+.pe-field { display: grid; gap: 6px; min-width: 0; font-size: 13px; }
+.pe-field > span:first-child { display: block; font-weight: 650; }
+.pe-field input, .pe-field select, .pe-field textarea { width: 100%; min-height: 36px; padding: 8px 10px; border: 1px solid var(--line, #2c2c3a); background: var(--surface, var(--well, #16161f)); color: inherit; }
+.pe-field textarea { min-height: 96px; }
+.pe-field small { color: var(--ink-muted, var(--mute, #8b8b9a)); font-size: 12px; font-weight: 400; }
+.pe-field-error { color: var(--danger, var(--fail, #ff4d6d)); }
+
+.pe-btn { min-height: 34px; padding: 7px 12px; border: 1px solid var(--line, #2c2c3a); background: var(--surface, var(--cell, #1c1c28)); color: inherit; font-weight: 650; cursor: pointer; }
+.pe-btn:hover { filter: brightness(1.08); }
+.pe-btn:disabled { opacity: .45; cursor: not-allowed; }
+.pe-btn-primary { color: #fff; border-color: var(--ink, #ececf4); background: var(--ink, #ececf4); }
+.pe-btn-signal { border-color: var(--signal, var(--phos, #6dff9a)); background: var(--signal, var(--phos, #6dff9a)); color: var(--ink, #07140c); }
+.pe-btn-ghost { border-color: transparent; background: transparent; color: var(--ink-muted, var(--mute, #8b8b9a)); }
+
+.pe-save-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding: 8px 10px; border: 1px solid var(--line, #2c2c3a); background: var(--surface-subtle, var(--well, #16161f)); }
+.pe-save-bar > div { display: flex; gap: 6px; flex-wrap: wrap; }
+.pe-dirty { display: inline-block; margin-left: 6px; padding: 2px 5px; font-size: 9px; letter-spacing: .06em; background: var(--signal, var(--phos, #6dff9a)); color: var(--ink, #07140c); }
+
+.pe-section, .pe-repeatable { margin-bottom: 18px; padding-top: 12px; border-top: 1px solid var(--line, #2c2c3a); }
+.pe-section-body { padding: 0; }
+.pe-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.pe-section-head h2 { margin: 0; font-size: 14px; letter-spacing: .04em; }
+.pe-eyebrow { font-size: 10px; letter-spacing: .08em; color: var(--ink-muted, var(--mute, #8b8b9a)); }
+.pe-muted { color: var(--ink-muted, var(--mute, #8b8b9a)); font-size: 12px; line-height: 1.45; }
+.pe-two { display: grid; gap: 10px; margin-bottom: 10px; }
+.pe-check { display: flex; align-items: center; gap: 8px; min-height: 36px; font-size: 12px; }
+
+.pe-preview { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 12px; align-items: center; margin-bottom: 14px; padding: 12px; border: 1px solid var(--line, #2c2c3a); background: var(--surface-subtle, var(--well, #16161f)); }
+.pe-avatar { display: grid; width: 52px; height: 52px; place-items: center; border: 1px solid var(--line, #2c2c3a); font-weight: 700; }
+.pe-preview h2 { margin: 0 0 4px; font-size: 16px; }
+.pe-preview p { margin: 2px 0; color: var(--ink-muted, var(--mute, #8b8b9a)); font-size: 12px; }
+.pe-preview-tag { font-size: 9px; letter-spacing: .08em; color: var(--ink-muted, var(--mute, #8b8b9a)); }
+
+.pe-entry-list { border-top: 1px solid var(--line, #2c2c3a); }
+.pe-entry-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line, #2c2c3a); }
+.pe-entry-copy strong, .pe-entry-copy span, .pe-entry-copy p { display: block; }
+.pe-entry-copy span, .pe-entry-copy p { margin-top: 3px; color: var(--ink-muted, var(--mute, #8b8b9a)); font-size: 12px; }
+.pe-entry-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 4px; }
+.pe-repeatable-filter { max-width: 280px; margin-bottom: 10px; }
+
+.pe-dialog { width: min(560px, calc(100% - 24px)); max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--line, #2c2c3a); background: var(--surface, var(--panel, #101016)); color: inherit; }
+.pe-dialog::backdrop { background: rgb(0 0 0 / .65); }
+.pe-dialog-head { padding: 12px 14px; border-bottom: 1px solid var(--line, #2c2c3a); }
+.pe-dialog-head h2 { margin: 0; font-size: 14px; letter-spacing: .04em; }
+.pe-dialog-body { max-height: calc(100vh - 160px); overflow: auto; padding: 14px; }
+.pe-dialog-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--line, #2c2c3a); }
+
+@media (min-width: 700px) {
+  .pe-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 699px) {
+  .pe-entry-row { grid-template-columns: 1fr; }
+}

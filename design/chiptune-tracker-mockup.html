@@ -1,0 +1,976 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TRACKER — job search session</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Tektur:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* =============================================================================
+   TRACKER — chiptune DAW session for a local AI job-search agent.
+   Beautiful UI primitives restyled as tracker modules, not SaaS cards.
+   ============================================================================= */
+:root {
+  --void: #07070b;
+  --panel: #101016;
+  --well: #16161f;
+  --cell: #1c1c28;
+  --line: #2c2c3a;
+  --mute: #8b8b9a;
+  --ink: #ececf4;
+  --phos: #6dff9a;
+  --phos-dim: #1f5a38;
+  --arm: #ff6a2a;
+  --arm-dim: #4a2414;
+  --fx: #7ad7ff;
+  --warn: #ffd24a;
+  --fail: #ff4d6d;
+  --play: #ffe14a;
+  --disp: "Tektur", ui-sans-serif, sans-serif;
+  --mono: "Azeret Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: var(--void); color: var(--ink); font: 13px/1.4 var(--mono); }
+button, input, select, textarea { font: inherit; color: inherit; background: var(--cell); border: 1px solid var(--line); }
+button { cursor: pointer; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+a { color: var(--fx); }
+:focus-visible { outline: 2px solid var(--phos); outline-offset: 1px; }
+h1, h2, h3, p { margin: 0; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.studio {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  background:
+    radial-gradient(80% 50% at 70% -10%, rgb(109 255 154 / .06), transparent 50%),
+    var(--void);
+}
+
+/* ----- Transport: the DAW header, not a product nav ----- */
+.transport {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 12px;
+  border-right: 1px solid var(--line);
+}
+.logo {
+  width: 28px; height: 28px;
+  background:
+    linear-gradient(90deg, var(--phos) 0 3px, transparent 3px 6px, var(--phos) 6px 9px, transparent 9px 12px, var(--phos) 12px 15px, transparent 15px),
+    linear-gradient(var(--void), var(--void));
+  background-size: 18px 16px, 28px 28px;
+  background-position: 5px 6px, 0 0;
+  background-repeat: no-repeat;
+  border: 1px solid var(--phos);
+}
+.brand strong { display: block; font-family: var(--disp); font-size: 15px; letter-spacing: .08em; }
+.brand span { color: var(--mute); font-size: 10px; }
+.transport-ctrls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ico {
+  width: 36px; height: 32px;
+  display: grid; place-items: center;
+  background: var(--well);
+}
+.ico svg { width: 14px; height: 14px; fill: var(--ink); }
+.ico.play { background: var(--phos); }
+.ico.play svg { fill: #07140c; }
+.ico.stop { background: var(--fail); }
+.ico.rec { background: var(--arm); }
+.ico.rec svg { fill: #1a0a04; }
+.pat-chain { display: flex; gap: 0; overflow-x: auto; }
+.pat-chain button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--mute);
+  white-space: nowrap;
+}
+.pat-chain button.on { background: var(--phos); color: #07140c; border-color: var(--phos); }
+.pat-chain button.wait { color: var(--arm); }
+.pat-chain button.you { outline: 1px dashed var(--arm); }
+.meter-wrap { display: flex; align-items: end; gap: 3px; height: 22px; margin-left: 8px; }
+.meter-wrap i { width: 4px; background: var(--phos-dim); }
+.meter-wrap.live i { animation: vu .5s steps(4) infinite; }
+.meter-wrap.live i:nth-child(2) { animation-delay: .05s; }
+.meter-wrap.live i:nth-child(3) { animation-delay: .1s; }
+.meter-wrap.live i:nth-child(4) { animation-delay: .08s; }
+@keyframes vu {
+  0% { height: 4px; }
+  40% { height: 22px; background: var(--phos); }
+  100% { height: 8px; }
+}
+.transport-meta { display: flex; gap: 14px; align-items: center; color: var(--mute); font-size: 11px; }
+.transport-meta b { color: var(--phos); font-weight: 600; }
+.clock { font-variant-numeric: tabular-nums; color: var(--play); }
+
+/* ----- Mode tabs like DAW editors ----- */
+.modes {
+  display: flex;
+  gap: 0;
+  background: var(--void);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+.modes button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: var(--mute);
+  font-family: var(--disp);
+  font-size: 12px;
+  letter-spacing: .06em;
+}
+.modes button.on { background: var(--well); color: var(--ink); box-shadow: inset 0 -2px var(--phos); }
+
+.workspace { min-height: 0; display: grid; }
+.workspace.pattern { grid-template-columns: 1fr; }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+.panel-h {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--disp);
+  font-size: 12px;
+  letter-spacing: .08em;
+  color: var(--mute);
+}
+
+/* Channel rack */
+.rack { display: grid; }
+.ch {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  color: var(--ink);
+}
+.ch:hover { background: var(--cell); }
+.ch.on { background: var(--cell); box-shadow: inset 2px 0 var(--phos); }
+.ch.armed { box-shadow: inset 2px 0 var(--arm); }
+.ch .n { color: var(--mute); font-size: 10px; }
+.leds { display: flex; gap: 4px; }
+.led { width: 7px; height: 7px; background: var(--line); }
+.led.g { background: var(--phos); }
+.led.o { background: var(--arm); }
+.led.b { background: var(--fx); }
+
+/* Tracker pattern (Beautiful UI records + filter table, as hex rows) */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.chip {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--mute);
+  font-size: 11px;
+}
+.chip.on { background: var(--phos); color: #07140c; border-color: var(--phos); }
+.tracker { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tracker th {
+  position: sticky; top: 0; z-index: 1;
+  text-align: left;
+  padding: 6px 8px;
+  background: var(--well);
+  color: var(--mute);
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: .08em;
+}
+.tracker td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.tracker tbody tr { cursor: pointer; }
+.tracker tbody tr:hover td { background: var(--cell); }
+.tracker tbody tr.playhead td { background: rgb(109 255 154 / .1); }
+.tracker tbody tr.sel td { background: rgb(255 106 42 / .12); }
+.hex { color: var(--mute); font-variant-numeric: tabular-nums; }
+.note { color: var(--phos); font-weight: 600; }
+.vol { color: var(--fx); }
+.stage-o { color: var(--arm); }
+.stage-g { color: var(--phos); }
+.stage-m { color: var(--mute); }
+.fit-spark {
+  display: inline-block;
+  width: 48px; height: 8px;
+  background: repeating-linear-gradient(90deg, var(--phos-dim) 0 3px, transparent 3px 5px);
+  vertical-align: middle;
+}
+.fit-spark i { display: block; height: 100%; background: repeating-linear-gradient(90deg, var(--phos) 0 3px, transparent 3px 5px); }
+
+.scroller { overflow: auto; max-height: min(58vh, 640px); }
+
+/* Beautiful UI — pixel-grid loader */
+.loader {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  background: var(--well);
+  border-bottom: 1px solid var(--line);
+}
+.px-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 7px);
+  gap: 2px;
+}
+.px-grid b {
+  width: 7px; height: 7px;
+  background: var(--line);
+}
+.px-grid.drive b { animation: drive 1.2s steps(8) infinite; }
+.px-grid.drive b:nth-child(3n) { animation-delay: .1s; }
+.px-grid.drive b:nth-child(5n) { animation-delay: .2s; }
+@keyframes drive {
+  0%, 100% { background: var(--line); }
+  40% { background: var(--phos); }
+  70% { background: var(--phos-dim); }
+}
+.loader .copy small { display: block; color: var(--mute); }
+.elapsed { color: var(--play); font-variant-numeric: tabular-nums; }
+
+/* Thinking traces */
+.think { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.think-h {
+  display: flex; justify-content: space-between; align-items: center;
+  width: 100%; border: 0; background: transparent; color: var(--ink); padding: 0; min-height: 28px;
+}
+.think-h .pulse { color: var(--phos); }
+.trace { display: none; margin-top: 8px; }
+.trace.open { display: grid; gap: 6px; }
+.trace-tabs { display: flex; gap: 4px; }
+.tbtn { min-height: 26px; padding: 0 8px; font-size: 11px; color: var(--mute); }
+.tbtn.on { color: #07140c; background: var(--fx); border-color: var(--fx); }
+.step { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: start; font-size: 12px; color: var(--mute); }
+.step .dot { width: 8px; height: 8px; margin-top: 4px; background: var(--line); }
+.step.done .dot { background: var(--phos); }
+.step.run .dot { background: var(--play); box-shadow: 0 0 0 3px rgb(255 225 74 / .2); }
+.step.fail .dot { background: var(--fail); }
+
+/* Tool chips */
+.chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; }
+.tchip {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 26px; padding: 0 8px;
+  background: var(--well); border: 1px solid var(--line); font-size: 11px;
+}
+.tchip i { width: 6px; height: 6px; background: var(--phos); }
+.tchip.tool i { background: var(--fx); }
+.tchip.edit i { background: var(--warn); }
+
+/* Task rows */
+.tasks { display: grid; }
+.task {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.task .mk { width: 8px; height: 8px; margin-top: 4px; background: var(--line); }
+.task.done .mk { background: var(--phos); }
+.task.run .mk { background: var(--play); animation: blink 1s steps(1) infinite; }
+.task.fail .mk { background: var(--fail); }
+.task small { color: var(--mute); display: block; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* Approval + recommendation (Beautiful UI HITL) */
+.ask, .reco {
+  margin: 10px;
+  padding: 12px;
+  background: var(--well);
+  border: 1px solid var(--arm);
+}
+.ask h2, .reco h2 { font-family: var(--disp); font-size: 14px; margin-bottom: 8px; }
+.ask p, .reco p { color: var(--mute); margin-bottom: 10px; }
+.choices { display: grid; gap: 6px; }
+.choices button { min-height: 36px; text-align: left; padding: 8px 10px; }
+.choices button:hover { border-color: var(--phos); }
+.conf {
+  height: 6px; margin: 8px 0 12px; background: var(--line);
+}
+.conf i { display: block; height: 100%; background: var(--phos); width: 82%; }
+.reco-alters { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+.reco-alters span { padding: 4px 6px; border: 1px solid var(--line); color: var(--mute); font-size: 11px; }
+
+/* Streaming text */
+.stream { padding: 10px; font-size: 12px; color: var(--ink); }
+.stream .caret { display: inline-block; width: 7px; height: 12px; background: var(--phos); animation: blink .8s steps(1) infinite; vertical-align: text-bottom; }
+.sources { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.src { padding: 3px 6px; border: 1px solid var(--line); color: var(--fx); font-size: 10px; background: var(--void); }
+.follows { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.follows button { min-height: 28px; padding: 0 8px; font-size: 11px; }
+
+/* Context cards */
+.chunks { display: grid; gap: 8px; padding: 10px; }
+.chunk { padding: 10px; background: var(--well); border: 1px solid var(--line); }
+.chunk b { display: block; font-size: 12px; margin-bottom: 4px; }
+.chunk p { color: var(--mute); font-size: 12px; }
+.chunk .from { margin-top: 6px; color: var(--fx); font-size: 10px; }
+
+/* Prompt bar — always the AI surface */
+.prompt {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: end;
+  padding: 8px 10px 10px;
+  background: var(--panel);
+  border-top: 1px solid var(--phos-dim);
+}
+.model {
+  min-height: 40px;
+  padding: 0 8px;
+  color: var(--phos);
+  min-width: 140px;
+}
+.composer { display: grid; gap: 6px; }
+.at-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.at {
+  min-height: 24px; padding: 0 7px; font-size: 11px;
+  background: var(--void); color: var(--fx); border-color: var(--fx);
+}
+.at.on { background: var(--fx); color: #071018; }
+.slash { color: var(--mute); font-size: 11px; }
+.composer textarea {
+  width: 100%; min-height: 44px; resize: vertical;
+  padding: 8px; background: var(--void);
+}
+.send {
+  min-height: 40px; min-width: 72px;
+  background: var(--phos); color: #07140c; border-color: var(--phos);
+  font-family: var(--disp); letter-spacing: .06em;
+}
+
+/* Mixer / phrase / song / disk */
+.mix { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; padding: 10px; }
+.strip { background: var(--well); border: 1px solid var(--line); padding: 10px; display: grid; gap: 8px; justify-items: center; }
+.strip h2 { font-family: var(--disp); font-size: 12px; letter-spacing: .08em; color: var(--mute); }
+.fader { width: 18px; height: 140px; background: var(--void); border: 1px solid var(--line); position: relative; }
+.fader i { position: absolute; left: 0; right: 0; bottom: 0; background: var(--phos); }
+.strip .count { font-family: var(--disp); font-size: 22px; }
+.card-mini { width: 100%; padding: 8px; background: var(--cell); border: 1px solid var(--line); font-size: 11px; text-align: left; }
+.card-mini.fail { border-color: var(--fail); }
+
+.phrase { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+.msgs { overflow: auto; display: grid; gap: 10px; padding: 12px; align-content: start; }
+.msg { max-width: 72ch; }
+.msg .who { font-size: 10px; color: var(--mute); margin-bottom: 4px; }
+.msg .body { padding: 10px; background: var(--well); border: 1px solid var(--line); }
+.msg.you .body { border-color: var(--phos-dim); }
+.msg.think-msg .body { border-color: var(--fx); }
+
+.song {
+  padding: 16px;
+  background-image: radial-gradient(var(--line) 1px, transparent 1px);
+  background-size: 16px 16px;
+  min-height: 420px;
+}
+.flow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.node {
+  min-width: 140px; padding: 10px;
+  background: var(--panel); border: 1px solid var(--line);
+}
+.node.gate { border-color: var(--arm); }
+.node.pi { border-color: var(--phos); }
+.node h2 { font-family: var(--disp); font-size: 12px; margin-bottom: 4px; }
+.node p { color: var(--mute); font-size: 11px; }
+.arrow { color: var(--mute); }
+
+.disk { display: grid; gap: 10px; padding: 10px; }
+.two { display: grid; gap: 8px; }
+.field { display: grid; gap: 4px; color: var(--mute); font-size: 11px; }
+.field input, .field select, .field textarea { min-height: 36px; padding: 7px 8px; }
+.tune { padding: 10px; background: var(--well); border: 1px solid var(--line); }
+.tune h2 { font-family: var(--disp); font-size: 13px; margin-bottom: 8px; }
+.slats { display: grid; gap: 8px; }
+.slat { display: grid; grid-template-columns: 80px 1fr 36px; gap: 8px; align-items: center; }
+.slat input[type=range] { width: 100%; accent-color: var(--phos); }
+
+.diff { width: 100%; border-collapse: collapse; font-size: 12px; }
+.diff th, .diff td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.diff .add { background: rgb(109 255 154 / .12); }
+.diff .del { background: rgb(255 77 109 / .12); text-decoration: line-through; color: var(--mute); }
+
+.sel-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.sel-actions button { min-height: 28px; padding: 0 8px; font-size: 11px; }
+
+.code {
+  margin: 10px; background: var(--void); border: 1px solid var(--line);
+}
+.code-h { display: flex; justify-content: space-between; padding: 6px 8px; color: var(--mute); font-size: 11px; border-bottom: 1px solid var(--line); }
+.code pre { margin: 0; padding: 10px; overflow: auto; color: var(--phos); font-size: 11px; }
+
+.osc { display: block; width: 120px; height: 28px; background: var(--void); border: 1px solid var(--line); }
+
+.palette {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgb(7 7 11 / .8);
+  display: none; place-items: start center; padding: 12vh 16px 16px;
+}
+.palette.open { display: grid; }
+.palette .box { width: min(560px, 100%); background: var(--panel); border: 1px solid var(--phos); }
+.palette input { width: 100%; min-height: 44px; padding: 10px 12px; border: 0; background: var(--void); }
+.palette-list button { width: 100%; text-align: left; padding: 10px 12px; border: 0; border-top: 1px solid var(--line); background: transparent; }
+.palette-list button:hover, .palette-list button.on { background: var(--cell); color: var(--phos); }
+
+.toast {
+  position: fixed; right: 12px; bottom: 72px; z-index: 30;
+  padding: 8px 10px; background: var(--phos); color: #07140c;
+  border: 1px solid #07140c; font-size: 12px; max-width: 280px;
+}
+
+@media (min-width: 900px) {
+  .workspace.pattern { grid-template-columns: 196px minmax(0, 1.4fr) minmax(280px, .9fr); }
+  .workspace.phrase { grid-template-columns: 240px minmax(0, 1fr); }
+  .workspace.disk { grid-template-columns: minmax(0, 1.4fr) 280px; }
+  .two { grid-template-columns: 1fr 1fr; }
+  .disk { grid-template-columns: minmax(0, 1.4fr) 280px; }
+}
+@media (max-width: 899px) {
+  .transport { grid-template-columns: 1fr; }
+  .transport-meta { justify-content: space-between; }
+  .prompt { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; }
+}
+</style>
+</head>
+<body>
+<!--
+THESIS: Job search as a live chiptune tracker session — Pi plays notes, humans arm the next pattern. Refuses the jobs-table dashboard and the RPG-menu 8-bit costume.
+OWN-WORLD: Renoise-dark phosphor, hex rows, channel rack, transport, always-on prompt bar. Green = agent playing. Orange = human gate.
+STORY: Operator drives scrape/rank/docs/interview through /commands and HITL cards; nothing auto-chains.
+FIRST VIEWPORT: transport + pattern editor of jobs as notes, agent module with pixel loader / thinking / tools / approval, prompt bar docked.
+FORM: brief-pinned chiptune DAW + Beautiful UI primitives · mockup.
+FINISH: direction mockup only; production app untouched.
+-->
+<div class="studio" id="app">
+  <header class="transport">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"></div>
+      <div><strong>TRACKER</strong><span>local agent · 127.0.0.1</span></div>
+    </div>
+    <div class="transport-ctrls">
+      <button class="ico play" id="playBtn" title="Start scrape" aria-label="Play scrape" onclick="play()">
+        <svg viewBox="0 0 14 14"><path d="M3 1v12l10-6z"/></svg>
+      </button>
+      <button class="ico stop" title="Cancel run" aria-label="Stop" onclick="stopRun()">
+        <svg viewBox="0 0 14 14"><rect x="3" y="3" width="8" height="8"/></svg>
+      </button>
+      <button class="ico rec" title="Arm human gate" aria-label="Record / arm" onclick="toast('Armed. Pi will wait for your next explicit action.')">
+        <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="4"/></svg>
+      </button>
+      <nav class="pat-chain" aria-label="Song chain">
+        <button class="on" data-view="pattern">00 SCRAPE</button>
+        <button>01 RANK</button>
+        <button class="wait">02 WAIT</button>
+        <button>03 DOCS</button>
+        <button class="you">04 YOU APPLY</button>
+        <button>05 PHRASE</button>
+      </nav>
+      <div class="meter-wrap" id="vu" aria-hidden="true"><i style="height:8px"></i><i style="height:14px"></i><i style="height:6px"></i><i style="height:18px"></i></div>
+      <canvas class="osc" id="osc" width="120" height="28" aria-hidden="true"></canvas>
+    </div>
+    <div class="transport-meta">
+      <span>FIT <b>&gt;60</b></span>
+      <span>SRC <b>FreeHire</b></span>
+      <span>MDL <b>Gemini 2.5 Pro</b></span>
+      <span class="clock" id="clock">00:00:00</span>
+      <button class="chip" id="bgmBtn" onclick="toggleBgm()">BGM OFF</button>
+    </div>
+  </header>
+
+  <nav class="modes" aria-label="Editor">
+    <button class="on" data-view="pattern">PATTERN</button>
+    <button data-view="mix">MIX</button>
+    <button data-view="phrase">PHRASE</button>
+    <button data-view="song">SONG</button>
+    <button data-view="sample">SAMPLE</button>
+    <button data-view="disk">DISK</button>
+  </nav>
+
+  <div class="workspace pattern" id="workspace"></div>
+
+  <footer class="prompt">
+    <select class="model" aria-label="Model">
+      <option>Gemini 2.5 Pro</option>
+      <option>Gemini 2.5 Flash</option>
+      <option>Claude Sonnet</option>
+    </select>
+    <div class="composer">
+      <div class="at-row">
+        <button class="at on" onclick="this.classList.toggle('on')">@profile</button>
+        <button class="at on" onclick="this.classList.toggle('on')">@criteria</button>
+        <button class="at" onclick="this.classList.toggle('on')">@posting</button>
+        <button class="at" onclick="this.classList.toggle('on')">@cv</button>
+        <span class="slash">/scrape /generate /interview /follow /import · Ctrl+K</span>
+      </div>
+      <textarea id="prompt" placeholder="Tell Pi what to play next. It will not advance the song without you."></textarea>
+    </div>
+    <button class="send" onclick="sendPrompt()">SEND</button>
+  </footer>
+</div>
+
+<div class="palette" id="palette" role="dialog" aria-label="Command search">
+  <div class="box">
+    <input id="palInput" placeholder="Search jobs, commands, samples…" oninput="filterPalette()">
+    <div class="palette-list" id="palList"></div>
+  </div>
+</div>
+
+<script>
+const jobs = [
+  {hex:"00", company:"Northstar Labs", role:"Senior Backend Engineer", loc:"Remote APAC", stage:"Recommended", note:"C-4", vol:"88", src:"FreeHire"},
+  {hex:"01", company:"Kiteworks", role:"Platform Engineer", loc:"Singapore", stage:"Selected", note:"D#4", vol:"84", src:"FreeHire"},
+  {hex:"02", company:"Dahlia Systems", role:"Full Stack Engineer", loc:"Jakarta", stage:"Drafting", note:"D-4", vol:"79", src:"FreeHire"},
+  {hex:"03", company:"Orbit Finance", role:"Backend Engineer", loc:"Remote", stage:"Ready", note:"C#4", vol:"77", src:"FreeHire"},
+  {hex:"04", company:"Paper Street", role:"Staff Software Engineer", loc:"Tokyo", stage:"Applied", note:"B-3", vol:"74", src:"FreeHire"},
+  {hex:"05", company:"Bright Harbour", role:"Java Platform Engineer", loc:"Sydney", stage:"Interview", note:"A#3", vol:"71", src:"FreeHire"},
+  {hex:"06", company:"Copper & Co.", role:"Backend Developer", loc:"Remote", stage:"Selected", note:"A-3", vol:"72", src:"FreeHire"},
+  {hex:"07", company:"Fieldwork", role:"Java Engineer", loc:"Hybrid", stage:"Drafting", note:"G#3", vol:"68", src:"FreeHire"}
+];
+const cmds = [
+  ["/scrape", "Play scrape on armed sources"],
+  ["/generate", "Render CV + letter for selected rows"],
+  ["/interview", "Open phrase editor for an Applied job"],
+  ["/follow", "Draft follow-up, do not send"],
+  ["/import", "Paste a posting into a new row"],
+  ["Northstar Labs", "Jump to sample 00"],
+  ["Kiteworks", "Jump to sample 01"]
+];
+
+let view = "pattern";
+let filter = "All";
+let running = false;
+let elapsed = 0;
+let playRow = 0;
+let thinkOpen = true;
+let traceTab = "Steps";
+let bgm = false;
+let audio = null;
+let t0 = 0;
+let palIndex = 0;
+
+const stageClass = (s) => s === "Discarded" || s === "Rejected" ? "stage-m" : (s === "Applied" || s === "Interview" || s === "Offer" || s === "Ready" ? "stage-g" : "stage-o");
+
+document.querySelectorAll(".modes button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+function setView(v) {
+  view = v;
+  document.querySelectorAll(".modes button").forEach((b) => b.classList.toggle("on", b.dataset.view === v));
+  const ws = document.getElementById("workspace");
+  ws.className = "workspace " + (v === "pattern" ? "pattern" : v);
+  render();
+}
+
+function pxGrid() {
+  return `<div class="px-grid drive" aria-hidden="true">${"<b></b>".repeat(64)}</div>`;
+}
+
+function patternView() {
+  const rows = jobs.filter((j) => filter === "All" || j.stage === filter);
+  return `
+    <aside class="panel rack">
+      <div class="panel-h">CH <span>ARM / MUTE</span></div>
+      ${[
+        ["01","SCRAPE","g", false],
+        ["02","RANK","g", false],
+        ["03","SELECT","o", true],
+        ["04","DOCS","b", false],
+        ["05","APPLY","o", true],
+        ["06","PHRASE","b", false],
+        ["07","FOLLOW","o", true]
+      ].map(([n,name,led,armed],i)=>`
+        <button class="ch ${i===2?"on":""} ${armed?"armed":""}">
+          <span class="n">${n}</span>
+          <span>${name}</span>
+          <span class="leds"><i class="led ${led}"></i></span>
+        </button>`).join("")}
+    </aside>
+    <section class="panel">
+      <div class="panel-h">PATTERN 00 <span>${rows.length} notes · synthetic</span></div>
+      <div class="filters" role="tablist">
+        ${["All","Recommended","Selected","Drafting","Ready","Applied","Interview"].map((s)=>`
+          <button class="chip ${filter===s?"on":""}" onclick="filter='${s}';render()">${s}</button>`).join("")}
+      </div>
+      <div class="scroller">
+        <table class="tracker">
+          <thead><tr><th>ROW</th><th>SAMPLE</th><th>NOTE</th><th>VOL</th><th>FX</th><th>SRC</th></tr></thead>
+          <tbody>
+            ${rows.map((j,i)=>`
+              <tr class="${running && i===playRow?"playhead":""} ${j.stage==="Selected"?"sel":""}" onclick="view='sample';setView('sample')">
+                <td class="hex">${j.hex}</td>
+                <td><strong>${j.company}</strong><div style="color:var(--mute)">${j.role} · ${j.loc}</div></td>
+                <td class="note">${j.note}</td>
+                <td class="vol">${j.vol} <span class="fit-spark"><i style="width:${j.vol}%"></i></span></td>
+                <td class="${stageClass(j.stage)}">${j.stage.toUpperCase()}</td>
+                <td class="hex">${j.src}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <aside class="panel" id="agent">
+      <div class="panel-h">AGENT <span>Beautiful UI modules</span></div>
+      ${running ? `
+        <div class="loader">
+          ${pxGrid()}
+          <div class="copy"><strong>Churning scrape</strong><small>Drive · FreeHire search</small><span class="elapsed">${elapsed.toFixed(1)}s</span></div>
+        </div>` : ""}
+      <div class="think">
+        <button class="think-h" onclick="thinkOpen=!thinkOpen;render()"><span class="pulse">${running?"Thinking":"Last trace"}</span><span>${thinkOpen?"▾":"▸"} ${running?"4.2s":"12.8s"}</span></button>
+        <div class="trace ${thinkOpen?"open":""}">
+          <div class="trace-tabs">
+            ${["Steps","Reasoning","Search","Coding"].map((t)=>`<button class="tbtn ${traceTab===t?"on":""}" onclick="traceTab='${t}';render()">${t}</button>`).join("")}
+          </div>
+          ${traceTab==="Steps"?`
+            <div class="step done"><i class="dot"></i><span>Load @profile and @criteria</span><span>0.4s</span></div>
+            <div class="step done"><i class="dot"></i><span>Query FreeHire</span><span>3.1s</span></div>
+            <div class="step ${running?"run":"done"}"><i class="dot"></i><span>Score rows against profile facts</span><span>${running?"…":"5.6s"}</span></div>
+            <div class="step"><i class="dot"></i><span>Wait — do not select</span><span>—</span></div>`
+          : traceTab==="Reasoning"?`<p class="stream">Volume column is FIT, not pitch magic. 88 lands Recommended because backend + APAC remote overlap verified skills. Gaps stay in the FX column for the human.${running?`<span class="caret"></span>`:""}</p>`
+          : traceTab==="Search"?`<p class="stream">freehire search — query “backend platform APAC remote” · 20 cap · max-age unbounded.</p>`
+          : `<div class="code"><div class="code-h"><span>score.ts</span><span>Copy</span></div><pre>if (score &gt; 60) stage = "Recommended"\nelse stage = "Discarded"</pre></div>`}
+        </div>
+      </div>
+      <div class="chips">
+        <span class="tchip tool"><i></i>freehire.search</span>
+        <span class="tchip tool"><i></i>job.hydrate</span>
+        <span class="tchip"><i></i>rank.profile</span>
+        <span class="tchip edit"><i></i>2 messages</span>
+      </div>
+      <div class="tasks">
+        <div class="task done"><i class="mk"></i><div>Verified profile facts<small>identity + experience</small></div><span>done</span></div>
+        <div class="task ${running?"run":"done"}"><i class="mk"></i><div>Fetching posting text<small>8 / 20</small></div><span>${running?"run":"done"}</span></div>
+        <div class="task"><i class="mk"></i><div>Human select gate<small>armed</small></div><span>wait</span></div>
+      </div>
+      ${!running?`
+      <div class="ask">
+        <h2>Arm which rows for documents?</h2>
+        <p>Scrape finished. Pi will not generate until you pick. Selected stays Selected.</p>
+        <div class="choices">
+          <button onclick="toast('Kiteworks + Copper armed. Generation still waiting on /generate.')">Kiteworks + Copper &amp; Co. (already Selected)</button>
+          <button onclick="toast('No rows armed. Pattern unchanged.')">None — keep browsing</button>
+          <button onclick="view='mix';setView('mix')">Open MIX to inspect the chain</button>
+        </div>
+      </div>`:`
+      <div class="stream">
+        Northstar 88 · backend systems + Spring overlap. Confirm on-call before you arm SELECT.
+        <span class="caret"></span>
+        <div class="sources"><span class="src">@profile</span><span class="src">@criteria</span><span class="src">Northstar posting</span></div>
+        <div class="follows">
+          <button onclick="toast('Queued as a note, not a stage change.')">Ask about on-call</button>
+          <button onclick="filter='Recommended';render()">Show only Recommended</button>
+        </div>
+      </div>`}
+    </aside>`;
+}
+
+function mixView() {
+  const lanes = [
+    ["SELECT", 2, 20, [{c:"Kiteworks",r:"Platform",s:84},{c:"Copper & Co.",r:"Backend",s:72}]],
+    ["DRAFT", 2, 45, [{c:"Dahlia",r:"Full Stack",s:79},{c:"Fieldwork",r:"Java",s:68,fail:true}]],
+    ["READY", 1, 70, [{c:"Orbit Finance",r:"Backend",s:77}]],
+    ["APPLIED", 1, 85, [{c:"Paper Street",r:"Staff",s:74}]],
+    ["PHRASE", 1, 90, [{c:"Bright Harbour",r:"Java Platform",s:71}]],
+    ["OUT", 2, 100, [{c:"Monument",r:"Offer",s:81},{c:"Common Ground",r:"Rejected",s:66}]]
+  ];
+  return `<section class="panel" style="grid-column:1/-1"><div class="panel-h">MIXER <span>channel strips = stages · fader is not auto-progress</span></div>
+    <div class="mix">${lanes.map(([name,n,h,cards])=>`
+      <div class="strip">
+        <h2>${name}</h2>
+        <div class="count">${n}</div>
+        <div class="fader"><i style="height:${h}%"></i></div>
+        ${cards.map((x)=>`<button class="card-mini ${x.fail?"fail":""}" onclick="view='sample';setView('sample')">${x.c}<br>${x.r} · VOL ${x.s}</button>`).join("")}
+      </div>`).join("")}</div>
+    <div class="reco">
+      <h2>Want me to generate documents for the armed SELECT channel?</h2>
+      <div class="conf" aria-label="confidence 82%"><i></i></div>
+      <p>Render CV + letter for Kiteworks and Copper &amp; Co. Verification still has to pass. Approval stays yours.</p>
+      <div class="reco-alters">
+        <span>Only Kiteworks</span><span>Skip Fieldwork (compile failed)</span><span>No signal</span>
+      </div>
+      <div class="choices">
+        <button class="send" style="width:auto" onclick="toast('Generation armed. Not started until you confirm /generate.')">Accept</button>
+        <button onclick="toast('Left in SELECT.')">Hold</button>
+      </div>
+    </div>
+  </section>`;
+}
+
+function phraseView() {
+  return `
+    <aside class="panel side">
+      <div class="panel-h">ELIGIBLE</div>
+      <button class="ch on"><span class="n">04</span><span>Paper Street</span><span class="leds"><i class="led g"></i></span></button>
+      <button class="ch"><span class="n">05</span><span>Bright Harbour</span><span class="leds"><i class="led o"></i></span></button>
+      <div class="chunks">
+        <article class="chunk"><b>Job context</b><p>Staff Software Engineer · Tokyo remote · VOL 74</p><div class="from">SAMPLE 04 · posting.txt</div></article>
+        <article class="chunk"><b>CV facts in play</b><p>Verified profile bullets only. Practice does not move stage.</p><div class="from">@cv · 2 pages</div></article>
+      </div>
+    </aside>
+    <section class="panel" style="display:flex;flex-direction:column;min-height:0">
+      <div class="panel-h">PHRASE 04 · SYSTEM DESIGN</div>
+      <div class="msgs">
+        <article class="msg think-msg"><div class="who">REASONING · 2.1s</div><div class="body">Focus locked to system design. Pull bottleneck evidence from the stored posting and the generated CV.</div></article>
+        <article class="msg"><div class="who">INTERVIEWER</div><div class="body">Tell me about a system you changed to handle significantly more traffic. What was the bottleneck, and how did you validate the result?</div></article>
+        <article class="msg you"><div class="who">YOU</div><div class="body">I started with query profiles and queue latency instead of assuming the API was the bottleneck…</div></article>
+        <article class="msg"><div class="who">COACH</div><div class="body">Strong: you named the evidence. Tighten: add the actual scale and your direct contribution.</div></article>
+      </div>
+    </section>`;
+}
+
+function songView() {
+  const nodes = [
+    ["pi","SCRAPE","Pi searches armed sources"],
+    ["pi","RANK","score > 60 Recommended"],
+    ["gate","WAIT","You select. Pi does not."],
+    ["pi","DOCS","Generate + verify LaTeX"],
+    ["gate","APPROVE","You approve the PDFs"],
+    ["gate","APPLY","You submit outside Tracker"],
+    ["pi","PHRASE","Practice against that packet"],
+    ["gate","FOLLOW","Draft here. Send yourself."]
+  ];
+  return `<section class="panel song" style="grid-column:1/-1">
+    <div class="panel-h">SONG CHAIN <span>gates are orange · Pi is phosphor</span></div>
+    <div class="flow" style="padding:20px">
+      ${nodes.map(([k,t,p],i)=>`${i?`<span class="arrow">→</span>`:""}<article class="node ${k}"><h2>${String(i).padStart(2,"0")} ${t}</h2><p>${p}</p></article>`).join("")}
+    </div>
+  </section>`;
+}
+
+function sampleView() {
+  const j = jobs[0];
+  return `
+    <section class="panel" style="grid-column:1/-1">
+      <div class="panel-h">SAMPLE ${j.hex} · ${j.company}</div>
+      <div class="disk">
+        <div>
+          <div class="stream" id="posting">
+            We need a senior backend engineer comfortable with Java/Spring, queues, and on-call. Remote APAC. This mockup uses synthetic posting text.
+            <div class="sel-actions">
+              <button onclick="toast('Explain queued as a note.')">Explain</button>
+              <button onclick="toast('Improve is disabled: profile facts are not rewritten automatically.')">Improve</button>
+              <button onclick="toast('Shorten posting preview only.')">Shorten</button>
+            </div>
+          </div>
+          <h2 style="font-family:var(--disp);margin:12px 10px 6px">Proposed CV sweep</h2>
+          <table class="diff">
+            <thead><tr><th>Field</th><th>Profile</th><th>For this note</th></tr></thead>
+            <tbody>
+              <tr><td>Headline</td><td>Backend &amp; Platform</td><td class="add">Senior Backend Engineer</td></tr>
+              <tr><td>Skill order</td><td>TypeScript, Java</td><td class="add">Java, Spring, TypeScript</td></tr>
+              <tr class="del"><td>Claim</td><td colspan="2">“Owned 99.99% uptime” — not in profile, stripped</td></tr>
+            </tbody>
+          </table>
+          <div class="chunks">
+            <article class="chunk"><b>Fit insight</b><p>VOL 88. Worst gap is on-call expectation — down-weight until you confirm.</p><div class="from">rank.json</div></article>
+            <article class="chunk"><b>On-call clause</b><p>Rotation mentioned in paragraph 4 of the posting.</p><div class="from">PDF · posting extract</div></article>
+          </div>
+        </div>
+        <aside class="tune">
+          <h2>Inspector</h2>
+          <div class="slats">
+            <div class="slat"><span>VOL</span><input type="range" min="0" max="100" value="88" disabled><span>88</span></div>
+            <div class="slat"><span>GATE</span><input type="range" min="0" max="100" value="60" disabled><span>60</span></div>
+          </div>
+          <div class="choices" style="margin-top:12px">
+            <button onclick="toast('Row 00 armed to SELECT. Documents not generated.')">Arm SELECT</button>
+            <button onclick="toast('Archived. Pattern length shortened.')">Mute / archive</button>
+          </div>
+        </aside>
+      </div>
+    </section>`;
+}
+
+function diskView() {
+  return `
+    <section class="panel">
+      <div class="panel-h">DISK · PROFILE BANK</div>
+      <div class="disk" style="grid-template-columns:1fr">
+        <div class="two">
+          <label class="field">First name<input value="Candidate"></label>
+          <label class="field">Last name<input value="Name"></label>
+          <label class="field" style="grid-column:1/-1">Headline<input value="Senior Backend & Platform Engineer"></label>
+          <label class="field">Roles<input value="Backend, Platform"></label>
+          <label class="field">Locations<input value="Remote, APAC"></label>
+        </div>
+        <p style="color:var(--mute);padding:0 10px 10px">Import a resume into a draft. Nothing is canonical until you save. Facts are never auto-rewritten.</p>
+      </div>
+    </section>
+    <aside class="panel">
+      <div class="panel-h">FINE-TUNE</div>
+      <div class="tune" style="border:0">
+        <h2>Search knobs</h2>
+        <div class="slats">
+          <div class="slat"><span>FIT</span><input type="range" value="60" min="0" max="100"><span>60</span></div>
+          <div class="slat"><span>CAP</span><input type="range" value="20" min="1" max="50"><span>20</span></div>
+        </div>
+        <label class="field" style="margin-top:12px">Source
+          <select><option>FreeHire</option><option>TokyoDev</option></select>
+        </label>
+        <div class="toolrow" style="margin-top:12px;color:var(--phos)">lualatex OK · pdfinfo OK · templates OK</div>
+      </div>
+    </aside>`;
+}
+
+function render() {
+  const ws = document.getElementById("workspace");
+  ws.innerHTML = view==="pattern"?patternView()
+    : view==="mix"?mixView()
+    : view==="phrase"?phraseView()
+    : view==="song"?songView()
+    : view==="sample"?sampleView()
+    : diskView();
+}
+
+function play() {
+  running = true; elapsed = 0; playRow = 0; t0 = performance.now();
+  document.getElementById("vu").classList.add("live");
+  if (view !== "pattern") setView("pattern"); else render();
+  toast("Scrape playing. SELECT stays muted until you arm it.");
+}
+function stopRun() {
+  running = false;
+  document.getElementById("vu").classList.remove("live");
+  render();
+  toast("Run stopped. Imported rows were kept.");
+}
+function sendPrompt() {
+  const v = document.getElementById("prompt").value.trim();
+  if (!v) { toast("Type a /command or a question. Empty send does nothing."); return; }
+  if (v.startsWith("/scrape")) play();
+  else if (v.startsWith("/generate")) { setView("mix"); toast("MIX open. Confirm the recommendation card — generation is still gated."); }
+  else if (v.startsWith("/interview")) setView("phrase");
+  else toast("Prompt noted. Pi answers in the agent module; stages do not move.");
+  document.getElementById("prompt").value = "";
+}
+function toast(msg) {
+  document.querySelector(".toast")?.remove();
+  const t = document.createElement("div");
+  t.className = "toast"; t.role = "status"; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2800);
+}
+
+function filterPalette() {
+  const q = document.getElementById("palInput").value.toLowerCase();
+  const items = cmds.filter((c) => c.join(" ").toLowerCase().includes(q));
+  document.getElementById("palList").innerHTML = items.map((c,i)=>`<button class="${i===palIndex?"on":""}" onclick="runPal('${c[0]}')"><b>${c[0]}</b> — ${c[1]}</button>`).join("") || `<button disabled>No matches</button>`;
+}
+function runPal(cmd) {
+  document.getElementById("palette").classList.remove("open");
+  if (cmd.startsWith("/")) { document.getElementById("prompt").value = cmd; sendPrompt(); }
+  else setView("sample");
+}
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    document.getElementById("palette").classList.add("open");
+    document.getElementById("palInput").value = "";
+    filterPalette();
+    document.getElementById("palInput").focus();
+  }
+  if (e.key === "Escape") document.getElementById("palette").classList.remove("open");
+  if (e.key === "Enter" && e.target.id === "prompt" && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
+});
+document.getElementById("palette").addEventListener("click", (e) => {
+  if (e.target.id === "palette") e.currentTarget.classList.remove("open");
+});
+
+function toggleBgm() {
+  bgm = !bgm;
+  document.getElementById("bgmBtn").textContent = bgm ? "BGM ON" : "BGM OFF";
+  if (bgm) startTune(); else stopTune();
+}
+function startTune() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  audio = new Ctx();
+  const master = audio.createGain(); master.gain.value = 0.03; master.connect(audio.destination);
+  const seq = [523.25, 659.25, 783.99, 659.25, 587.33, 523.25, 392.00, 523.25];
+  let i = 0;
+  const tick = () => {
+    if (!bgm || !audio) return;
+    const osc = audio.createOscillator(); const g = audio.createGain();
+    osc.type = "square"; osc.frequency.value = seq[i % seq.length];
+    g.gain.setValueAtTime(0.0001, audio.currentTime);
+    g.gain.exponentialRampToValueAtTime(1, audio.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.09);
+    osc.connect(g); g.connect(master); osc.start(); osc.stop(audio.currentTime + 0.1);
+    i++; audio._t = setTimeout(tick, 110);
+  };
+  tick();
+}
+function stopTune() { if (!audio) return; clearTimeout(audio._t); audio.close(); audio = null; }
+
+const osc = document.getElementById("osc").getContext("2d");
+function drawOsc(t) {
+  const c = document.getElementById("osc");
+  osc.fillStyle = "#07070b"; osc.fillRect(0,0,c.width,c.height);
+  osc.strokeStyle = running || bgm ? "#6dff9a" : "#2c2c3a";
+  osc.lineWidth = 1; osc.beginPath();
+  for (let x = 0; x < c.width; x++) {
+    const duty = ((x + t / 8) % 16) < 8 ? 1 : -1;
+    const y = c.height/2 + duty * (running || bgm ? 8 : 3);
+    x ? osc.lineTo(x, y) : osc.moveTo(x, y);
+  }
+  osc.stroke();
+}
+function loop(now) {
+  if (running) {
+    elapsed = (now - t0) / 1000;
+    if (Math.floor(now / 400) !== Math.floor((now - 16) / 400)) {
+      playRow = (playRow + 1) % Math.max(1, jobs.filter((j)=>filter==="All"||j.stage===filter).length);
+      if (view === "pattern") {
+        const el = document.querySelector(".elapsed");
+        if (el) el.textContent = elapsed.toFixed(1) + "s";
+        document.querySelectorAll(".tracker tbody tr").forEach((tr,i)=>tr.classList.toggle("playhead", i===playRow));
+      }
+    }
+  }
+  const d = new Date();
+  document.getElementById("clock").textContent = [d.getHours(), d.getMinutes(), d.getSeconds()].map((n)=>String(n).padStart(2,"0")).join(":");
+  drawOsc(now);
+  requestAnimationFrame(loop);
+}
+render();
+filterPalette();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

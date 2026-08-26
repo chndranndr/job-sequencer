@@ -1,0 +1,17 @@
+{
+  "name": "japan-boards-search-cli",
+  "version": "1.0.0",
+  "description": "Read-only personal search CLI for TokyoDev, Japan Dev, and Relocate.me.",
+  "type": "module",
+  "main": "src/cli.ts",
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test --timeout 30000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  }
+}

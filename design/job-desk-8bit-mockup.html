@@ -1,0 +1,1136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Job Desk — 8-bit mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;600;700&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+/* =============================================================================
+   The Job Desk — 8-bit / chiptune mockup
+   Palette: PICO-8. Chrome: SNES/GBC status windows. Body: Pixelify Sans.
+   ============================================================================= */
+
+:root {
+  --navy: #1d2b53;
+  --deep: #0b1024;
+  --wine: #7e2553;
+  --ink: #1d2b53;
+  --paper: #fff1e8;
+  --paper-2: #ffe0c2;
+  --ash: #5f574f;
+  --silver: #c2c3c7;
+  --black: #000;
+  --red: #ff004d;
+  --orange: #ffa300;
+  --yellow: #ffec27;
+  --lime: #00e436;
+  --blue: #29adff;
+  --lilac: #83769c;
+  --pink: #ff77a8;
+  --peach: #ffccaa;
+  --display: "Press Start 2P", ui-monospace, monospace;
+  --ui: "Pixelify Sans", ui-sans-serif, sans-serif;
+  --px: 4px;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--deep);
+  color: var(--paper);
+  font: 16px/1.4 var(--ui);
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--blue); }
+:focus-visible { outline: 3px solid var(--yellow); outline-offset: 2px; }
+h1, h2, h3, p { margin-top: 0; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* CRT glass sitting over the whole cartridge. */
+.crt::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 2px, rgb(0 0 0 / .18) 2px 3px),
+    radial-gradient(120% 80% at 50% 40%, transparent 55%, rgb(0 0 0 / .45));
+}
+.crt::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 81;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgb(255 255 255 / .05), transparent 30%, transparent 70%, rgb(0 0 0 / .15));
+  animation: flicker 8s steps(2, end) infinite;
+}
+@keyframes flicker { 0%, 100% { opacity: .12; } 50% { opacity: .04; } }
+
+/* Dithered navy field — phosphor dots, not a generic grid. */
+.app {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1fr;
+  background-color: var(--navy);
+  background-image:
+    linear-gradient(rgb(11 16 36 / .55), rgb(11 16 36 / .55)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Crect width='8' height='8' fill='%231d2b53'/%3E%3Crect width='2' height='2' fill='%230b1024'/%3E%3Crect x='4' y='4' width='2' height='2' fill='%230b1024'/%3E%3C/svg%3E");
+  background-size: auto, 8px 8px;
+  image-rendering: pixelated;
+}
+
+/* RPG window: hard pixel frame, inner highlight, hard drop. */
+.win {
+  background: var(--paper);
+  color: var(--ink);
+  border: 4px solid var(--black);
+  box-shadow:
+    inset 4px 4px 0 #fff,
+    inset -4px -4px 0 var(--silver),
+    4px 4px 0 var(--black);
+}
+.win-dark {
+  background: var(--deep);
+  color: var(--paper);
+  border: 4px solid var(--black);
+  box-shadow:
+    inset 4px 4px 0 #334a8a,
+    inset -4px -4px 0 #000,
+    4px 4px 0 var(--black);
+}
+
+.pixel-title {
+  font-family: var(--display);
+  font-size: 10px;
+  line-height: 1.6;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.skip {
+  position: fixed;
+  z-index: 100;
+  left: 12px;
+  top: -80px;
+  padding: 10px 12px;
+  background: var(--yellow);
+  color: var(--black);
+  font-family: var(--display);
+  font-size: 8px;
+  text-decoration: none;
+}
+.skip:focus { top: 12px; }
+
+/* ----- Rail: party menu ----- */
+.rail {
+  display: none;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 14px;
+  background: var(--deep);
+  border-right: 4px solid var(--black);
+  color: var(--paper);
+}
+.wordmark {
+  font-family: var(--display);
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--yellow);
+}
+.wordmark small {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 4px 5px;
+  background: var(--red);
+  color: #fff;
+  font: 700 11px/1 var(--ui);
+  vertical-align: top;
+}
+.nav { display: grid; gap: 4px; }
+.nav button, .sheet-nav button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--peach);
+  text-align: left;
+  font-weight: 600;
+}
+.nav button .cursor, .sheet-nav button .cursor {
+  width: 12px;
+  font-family: var(--display);
+  font-size: 10px;
+  color: transparent;
+}
+.nav button.active, .sheet-nav button.active {
+  background: var(--yellow);
+  color: var(--black);
+  box-shadow: 4px 4px 0 var(--black);
+}
+.nav button.active .cursor, .sheet-nav button.active .cursor {
+  color: var(--black);
+  animation: blink 1s steps(1) infinite;
+}
+.nav button:hover:not(.active), .sheet-nav button:hover:not(.active) { color: #fff; }
+@keyframes blink { 50% { opacity: 0; } }
+.nav-break { height: 4px; margin: 8px 4px; background: repeating-linear-gradient(90deg, var(--lilac) 0 8px, transparent 8px 16px); }
+.rail-foot {
+  margin-top: auto;
+  padding-top: 12px;
+  font-size: 13px;
+  color: var(--peach);
+}
+.hp-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.hp-bar { flex: 1; height: 12px; background: var(--black); border: 2px solid var(--paper); }
+.hp-bar i { display: block; height: 100%; width: 72%; background: var(--lime); }
+.cart {
+  width: 48px;
+  height: 36px;
+  margin-bottom: 10px;
+  background:
+    linear-gradient(90deg, var(--ash) 0 6px, var(--yellow) 6px 42px, var(--ash) 42px),
+    var(--yellow);
+  border: 3px solid var(--black);
+  box-shadow: 3px 3px 0 #000;
+  position: relative;
+}
+.cart::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 8px;
+  height: 6px;
+  background: var(--navy);
+}
+
+/* ----- Workspace ----- */
+.work { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+.utility {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 16px;
+  background: var(--deep);
+  border-bottom: 4px solid var(--black);
+  color: var(--peach);
+  font-size: 14px;
+}
+.utility-left, .utility-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.menu-btn { display: inline-flex; }
+.dot {
+  width: 10px;
+  height: 10px;
+  background: var(--lime);
+  box-shadow: 2px 2px 0 #000;
+}
+.eq {
+  display: flex;
+  align-items: end;
+  gap: 3px;
+  height: 18px;
+}
+.eq span {
+  width: 5px;
+  height: 4px;
+  background: var(--lilac);
+}
+.eq.on span { background: var(--lime); animation: eq 0.7s steps(4) infinite; }
+.eq.on span:nth-child(2) { animation-delay: .1s; }
+.eq.on span:nth-child(3) { animation-delay: .2s; }
+.eq.on span:nth-child(4) { animation-delay: .15s; }
+@keyframes eq {
+  0% { height: 4px; }
+  40% { height: 16px; }
+  100% { height: 6px; }
+}
+
+.page { padding: 16px; max-width: 1440px; }
+.pagehead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.pagehead h1 {
+  font-family: var(--display);
+  font-size: 16px;
+  line-height: 1.4;
+  color: var(--yellow);
+  margin: 0 0 8px;
+  text-shadow: 3px 3px 0 #000;
+}
+.pagehead p { margin: 0; color: var(--peach); max-width: 46ch; }
+.heading-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Buttons — chunky cartidge keys, not pills. */
+.btn {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 3px solid var(--black);
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: 3px 3px 0 var(--black);
+}
+.btn:hover { background: var(--peach); }
+.btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--black); }
+.btn.signal { background: var(--yellow); }
+.btn.primary { background: var(--blue); color: var(--black); }
+.btn.ghost { background: transparent; color: var(--paper); box-shadow: none; border-color: var(--lilac); }
+.btn.danger { background: var(--red); color: #fff; }
+.btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.drop { position: relative; }
+.drop-list {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  min-width: 220px;
+  padding: 4px;
+}
+.drop.open .drop-list { display: grid; }
+.drop-list button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-weight: 700;
+}
+.drop-list button:hover { background: var(--yellow); }
+
+.mock-flag {
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  background: var(--yellow);
+  color: var(--black);
+  border: 3px solid var(--black);
+  box-shadow: 3px 3px 0 #000;
+  font-size: 14px;
+}
+
+/* Stage meters = HP tanks, not KPI cards. */
+.meters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.meter {
+  padding: 10px;
+  text-align: left;
+  border: 3px solid var(--black);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 3px 3px 0 #000;
+}
+.meter.on { background: var(--yellow); }
+.meter small { display: block; font-weight: 700; color: var(--ash); }
+.meter strong {
+  display: block;
+  margin: 4px 0 6px;
+  font-family: var(--display);
+  font-size: 14px;
+}
+.meter .tank { height: 10px; background: var(--silver); border: 2px solid var(--black); }
+.meter .tank i { display: block; height: 100%; background: var(--navy); }
+
+.filters {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.field, .filters input, .filters select {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 3px solid var(--black);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 3px 3px 0 var(--black);
+  appearance: none;
+}
+.filters select {
+  background-image: linear-gradient(45deg, transparent 50%, var(--black) 50%), linear-gradient(135deg, var(--black) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 50%, calc(100% - 10px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+.label { display: grid; gap: 6px; font-weight: 700; color: var(--peach); font-size: 14px; }
+.label .field { color: var(--ink); }
+
+.bulk {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px;
+  background: var(--yellow);
+  color: var(--black);
+  border: 3px solid var(--black);
+  box-shadow: 3px 3px 0 #000;
+}
+.bulk.show { display: flex; flex-wrap: wrap; }
+.bulk .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Job list as a Final Fantasy party-select, not a SaaS table. */
+.party { display: grid; gap: 6px; }
+.unit {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 3px solid var(--black);
+  box-shadow: 3px 3px 0 #000;
+  text-align: left;
+  width: 100%;
+}
+.unit:hover { background: var(--peach); }
+.unit.checked { background: var(--yellow); }
+.unit .sel {
+  font-family: var(--display);
+  font-size: 10px;
+  color: transparent;
+}
+.unit.checked .sel { color: var(--black); animation: blink 1s steps(1) infinite; }
+.unit .who { display: grid; gap: 2px; min-width: 0; }
+.unit .who strong { font-size: 17px; }
+.unit .who span { color: var(--ash); }
+.unit .stats { display: grid; justify-items: end; gap: 4px; min-width: 92px; }
+.unit .fit {
+  font-family: var(--display);
+  font-size: 10px;
+}
+.fit-bar { width: 88px; height: 8px; background: var(--silver); border: 2px solid var(--black); }
+.fit-bar i { display: block; height: 100%; background: var(--lime); }
+.unit .meta { font-size: 12px; color: var(--ash); }
+.stage-chip {
+  display: inline-block;
+  padding: 2px 6px;
+  margin-right: 6px;
+  background: var(--navy);
+  color: var(--yellow);
+  font-size: 12px;
+  font-weight: 700;
+}
+.stage-chip.ok { background: var(--lime); color: var(--black); }
+.stage-chip.bad { background: var(--red); color: #fff; }
+
+.runstrip {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--yellow);
+  color: var(--black);
+  border-bottom: 4px solid var(--black);
+}
+.runlabel {
+  display: inline-block;
+  padding: 4px 8px;
+  background: var(--black);
+  color: var(--yellow);
+  font-family: var(--display);
+  font-size: 8px;
+}
+.progress {
+  height: 12px;
+  background: var(--black);
+  border: 3px solid var(--black);
+  overflow: hidden;
+}
+.progress i {
+  display: block;
+  height: 100%;
+  width: 48%;
+  background: repeating-linear-gradient(90deg, var(--navy) 0 8px, var(--blue) 8px 16px);
+  animation: load 1.2s steps(8) infinite;
+}
+@keyframes load { from { transform: translateX(-48%); } to { transform: translateX(120%); } }
+
+/* Applications = inventory chests */
+.kanban-wrap { overflow-x: auto; padding-bottom: 8px; }
+.kanban { display: grid; grid-template-columns: repeat(6, minmax(240px, 1fr)); gap: 10px; min-width: max-content; }
+.lane { background: var(--paper); color: var(--ink); border: 4px solid var(--black); box-shadow: 4px 4px 0 #000; min-height: 420px; }
+.lane-head { padding: 10px; background: var(--navy); color: var(--yellow); }
+.lane-head h2 { margin: 0; font-family: var(--display); font-size: 9px; line-height: 1.5; }
+.lane-head p { margin: 6px 0 0; color: var(--peach); font-size: 13px; }
+.lane-cards { display: grid; gap: 8px; padding: 8px; }
+.kcard { padding: 10px; border: 3px solid var(--black); background: var(--paper-2); }
+.kcard.fail { background: #ffd0d8; }
+.kcard h3 { margin: 0 0 4px; font-size: 15px; }
+.kcard dl { display: grid; gap: 2px; margin: 8px 0; font-size: 13px; }
+.kcard dt { color: var(--ash); float: left; width: 70px; }
+.kcard dd { margin: 0 0 0 70px; text-align: right; }
+.lane-empty { padding: 16px; text-align: center; color: var(--ash); border: 3px dashed var(--ash); }
+
+/* Interview = dialogue boxes */
+.interview { display: grid; gap: 10px; }
+.joblist { max-height: 220px; overflow: auto; }
+.jobpick {
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  border-bottom: 3px solid var(--black);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.jobpick.on { background: var(--yellow); }
+.chat { min-height: 480px; display: flex; flex-direction: column; }
+.context {
+  padding: 10px 12px;
+  background: var(--navy);
+  color: var(--yellow);
+  font-family: var(--display);
+  font-size: 8px;
+  line-height: 1.6;
+}
+.messages { display: grid; gap: 12px; padding: 14px; }
+.balloon {
+  padding: 12px;
+  border: 3px solid var(--black);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 3px 3px 0 #000;
+}
+.balloon.you { background: var(--peach); }
+.balloon.coach { background: var(--yellow); }
+.balloon b { font-family: var(--display); font-size: 8px; display: block; margin-bottom: 6px; }
+.composer { margin-top: auto; padding: 12px; border-top: 4px solid var(--black); }
+.composer textarea { width: 100%; min-height: 88px; resize: vertical; }
+
+/* Profile = character sheet */
+.sheet-hero {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  margin-bottom: 14px;
+  background: var(--navy);
+  color: var(--paper);
+  border: 4px solid var(--black);
+  box-shadow: 4px 4px 0 #000;
+}
+.sprite {
+  width: 64px;
+  height: 64px;
+  image-rendering: pixelated;
+  background: var(--yellow);
+  border: 3px solid var(--black);
+}
+.sheet-hero h2 { margin: 0 0 4px; font-family: var(--display); font-size: 11px; line-height: 1.5; color: var(--yellow); }
+.editor { display: grid; gap: 12px; }
+.section { padding: 14px; }
+.section h2 { font-family: var(--display); font-size: 10px; line-height: 1.5; margin: 0 0 12px; }
+.two { display: grid; gap: 10px; }
+.skills { display: flex; flex-wrap: wrap; gap: 6px; }
+.skill { padding: 6px 8px; background: var(--navy); color: var(--yellow); border: 2px solid var(--black); font-size: 13px; font-weight: 700; }
+.tabs { display: flex; flex-wrap: wrap; gap: 0; margin-bottom: 12px; }
+.tabs button {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 3px solid var(--black);
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 700;
+}
+.tabs button.on { background: var(--yellow); }
+
+.form-layout { display: grid; gap: 12px; }
+.toolrow { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 2px solid var(--silver); }
+.pass { color: var(--lime); font-weight: 700; }
+.notice { color: var(--ash); font-size: 13px; margin-top: 10px; }
+
+.dialog {
+  border: 0;
+  padding: 0;
+  width: min(560px, calc(100% - 24px));
+  background: transparent;
+}
+.dialog::backdrop { background: rgb(11 16 36 / .8); }
+.dialog-head { padding: 14px; background: var(--navy); color: var(--yellow); border: 4px solid var(--black); border-bottom: 0; }
+.dialog-head h2 { margin: 0; font-family: var(--display); font-size: 11px; line-height: 1.5; }
+.dialog-body { padding: 16px; }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 12px; border-top: 3px solid var(--black); }
+.definition { display: grid; grid-template-columns: 110px 1fr; }
+.definition dt, .definition dd { margin: 0; padding: 8px 0; border-bottom: 2px solid var(--silver); }
+.definition dt { color: var(--ash); font-weight: 700; }
+
+.split { display: grid; gap: 12px; }
+.paper-preview { background: var(--peach); padding: 16px; min-height: 360px; }
+.paper-preview article { background: #fff; color: var(--ink); padding: 20px; border: 3px solid var(--black); }
+
+.sheet {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: var(--deep);
+  padding: 20px;
+}
+.sheet.open { display: block; }
+.toast {
+  position: fixed;
+  z-index: 95;
+  right: 16px;
+  bottom: 16px;
+  max-width: 280px;
+  padding: 10px 12px;
+  background: var(--lime);
+  color: var(--black);
+  border: 3px solid var(--black);
+  box-shadow: 4px 4px 0 #000;
+  font-weight: 700;
+}
+
+@media (min-width: 760px) {
+  .app { grid-template-columns: 220px minmax(0, 1fr); }
+  .rail { display: flex; position: sticky; top: 0; height: 100vh; }
+  .menu-btn { display: none; }
+  .page { padding: 24px 28px; }
+  .pagehead h1 { font-size: 20px; }
+  .meters { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .filters { grid-template-columns: minmax(180px, 2fr) repeat(2, minmax(120px, 1fr)) auto; align-items: end; }
+  .runstrip { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
+  .interview { grid-template-columns: 260px minmax(0, 1fr); }
+  .joblist { max-height: none; }
+  .two { grid-template-columns: 1fr 1fr; }
+  .form-layout, .editor, .split { grid-template-columns: minmax(0, 1.6fr) 300px; }
+  .sheet-hero { grid-template-columns: 80px minmax(0, 1fr); }
+}
+
+@media (min-width: 1100px) {
+  .meters { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .filters { grid-template-columns: minmax(200px, 2fr) repeat(4, minmax(110px, 1fr)) auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .crt::before, .crt::after { display: none; }
+}
+</style>
+</head>
+<body class="crt">
+<!--
+THESIS: Job search as a late-night Game Boy Color status menu, not a paper desk and not neon-cyber 8-bit.
+OWN-WORLD: PICO-8 palette, SNES window chrome, Press Start 2P for scores/titles, Pixelify Sans for work text, hard pixel shadows, CRT scanlines, optional square-wave BGM.
+STORY: Operator still shortlists, generates, and records applications; the cartridge metaphor never auto-advances a stage.
+FIRST VIEWPORT: navy dither field, left party-menu rail, Jobs as FF-style unit list with FIT bars, yellow SELECT cursor, START dropdown.
+FORM: brief-pinned 8-bit/chiptune · mockup only · seed n/a.
+FINISH: mockup for direction approval; production CSS is not rewritten until this look is chosen.
+-->
+<a class="skip" href="#main">Skip to content</a>
+<div class="sheet" id="sheet">
+  <button class="btn signal" onclick="toggleMenu()">Close</button>
+  <div class="wordmark" style="margin:18px 0">JOB<br>DESK <small>MOCK</small></div>
+  <nav class="sheet-nav" id="mobileNav"></nav>
+</div>
+
+<div class="app">
+  <aside class="rail">
+    <div class="cart" aria-hidden="true"></div>
+    <div class="wordmark">JOB<br>DESK <small>MOCK</small></div>
+    <nav class="nav" aria-label="Primary" id="railNav"></nav>
+    <div class="rail-foot">
+      CART SAVE<br>127.0.0.1
+      <div class="hp-row"><span class="pixel-title">HP</span><div class="hp-bar" aria-hidden="true"><i></i></div></div>
+    </div>
+  </aside>
+
+  <div class="work">
+    <header class="utility">
+      <div class="utility-left">
+        <button class="btn menu-btn" onclick="toggleMenu()">Menu</button>
+        <span id="clock">FRI 21 AUG</span>
+        <span class="dot" aria-hidden="true"></span>
+        <span>FreeHire ready</span>
+      </div>
+      <div class="utility-right">
+        <div class="eq" id="eq" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <button class="btn ghost" id="bgmBtn" onclick="toggleBgm()">BGM OFF</button>
+        <span>GEMINI 2.5 PRO</span>
+      </div>
+    </header>
+    <div class="runstrip" id="runstrip">
+      <span class="runlabel">GENERATING</span>
+      <div>
+        <strong>CV &amp; cover letter — Northstar Labs</strong>
+        <div class="progress" aria-hidden="true"><i></i></div>
+      </div>
+      <button class="btn" onclick="cancelRun()">Cancel</button>
+    </div>
+    <main class="page" id="main" tabindex="-1"></main>
+  </div>
+</div>
+
+<dialog class="dialog" id="scrapeDialog">
+  <div class="win">
+    <div class="dialog-head"><h2>Start scrape?</h2></div>
+    <div class="dialog-body">
+      <dl class="definition">
+        <dt>Profile</dt><dd>Ready · reviewed</dd>
+        <dt>Criteria</dt><dd>Backend, Platform · Remote / APAC</dd>
+        <dt>Sources</dt><dd>FreeHire</dd>
+        <dt>Passing</dt><dd>Score &gt; 60</dd>
+        <dt>Limit</dt><dd>20 jobs</dd>
+      </dl>
+      <p class="notice">The run imports Recommended and Discarded jobs only. Nothing is selected for you.</p>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn ghost" style="color:var(--ink);border-color:#000" onclick="scrapeDialog.close()">No</button>
+      <button class="btn signal" onclick="startScrape()">Yes · scrape</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="dialog" id="manualDialog">
+  <div class="win">
+    <div class="dialog-head"><h2>Add job manually</h2></div>
+    <div class="dialog-body">
+      <label class="label" style="color:var(--ink)">Job URL or pasted posting
+        <textarea class="field" rows="8" placeholder="https://company.example/jobs/..."></textarea>
+      </label>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn ghost" style="color:var(--ink);border-color:#000" onclick="manualDialog.close()">Cancel</button>
+      <button class="btn signal" onclick="manualDialog.close(); toast('Manual import queued. Scoring still waits on a real run.');">Add job</button>
+    </div>
+  </div>
+</dialog>
+
+<script>
+/* Synthetic records for visual direction only. */
+const jobs = [
+  {id:1, company:"Northstar Labs", role:"Senior Backend Engineer", loc:"Remote · APAC", stage:"Recommended", score:88, source:"FreeHire", seen:"12 Aug"},
+  {id:2, company:"Kiteworks", role:"Platform Engineer", loc:"Singapore / Remote", stage:"Selected", score:84, source:"FreeHire", seen:"12 Aug"},
+  {id:3, company:"Dahlia Systems", role:"Full Stack Engineer", loc:"Jakarta · Hybrid", stage:"Drafting", score:79, source:"FreeHire", seen:"11 Aug"},
+  {id:4, company:"Orbit Finance", role:"Backend Engineer", loc:"Remote", stage:"Ready", score:77, source:"FreeHire", seen:"10 Aug"},
+  {id:5, company:"Paper Street", role:"Staff Software Engineer", loc:"Tokyo · Remote", stage:"Applied", score:74, source:"FreeHire", seen:"09 Aug"},
+  {id:6, company:"Bright Harbour", role:"Java Platform Engineer", loc:"Sydney / Remote", stage:"Interview", score:71, source:"FreeHire", seen:"08 Aug"}
+];
+const meters = [
+  ["Recommended", 18, 80],
+  ["Discarded", 7, 30],
+  ["Selected", 4, 20],
+  ["Drafting", 2, 12],
+  ["Ready", 3, 16],
+  ["Applied", 5, 24],
+  ["Interview", 1, 8]
+];
+const pages = [
+  ["jobs", "Jobs"],
+  ["applications", "Applications"],
+  ["interview", "Interview"],
+  ["profile", "Profile"],
+  ["settings", "Settings"]
+];
+
+let current = "jobs";
+let checked = new Set([2]);
+let stageFilter = "All";
+let search = "";
+let dropOpen = false;
+let bgmOn = false;
+let audio = null;
+
+function navHtml() {
+  return pages.map(([id, label]) =>
+    `<button data-page="${id}" class="${current===id?"active":""}"><span class="cursor">▶</span>${label}</button>`
+  ).join("") + `<div class="nav-break"></div>`;
+}
+function paintNav() {
+  document.getElementById("railNav").innerHTML = navHtml();
+  document.getElementById("mobileNav").innerHTML = navHtml();
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-page]");
+  if (b) goto(b.dataset.page);
+  if (!e.target.closest(".drop")) { dropOpen = false; const d = document.querySelector(".drop"); if (d) d.classList.remove("open"); }
+});
+
+function goto(page) {
+  current = page;
+  dropOpen = false;
+  paintNav();
+  render();
+  document.getElementById("sheet").classList.remove("open");
+  document.getElementById("main").focus({preventScroll: true});
+}
+function toggleMenu() { document.getElementById("sheet").classList.toggle("open"); }
+function toggleDrop() {
+  dropOpen = !dropOpen;
+  document.querySelector(".drop")?.classList.toggle("open", dropOpen);
+}
+
+function fit(score) {
+  return `<div class="fit">FIT ${score}</div><div class="fit-bar" aria-hidden="true"><i style="width:${score}%"></i></div>`;
+}
+function stageChip(stage) {
+  const cls = stage === "Rejected" ? "bad" : (stage === "Applied" || stage === "Interview" || stage === "Offer" ? "ok" : "");
+  return `<span class="stage-chip ${cls}">${stage}</span>`;
+}
+
+function jobsPage() {
+  const list = jobs.filter((j) => {
+    if (stageFilter !== "All" && j.stage !== stageFilter) return false;
+    if (search && !`${j.company} ${j.role}`.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+  return `
+    <div class="mock-flag">Design mockup. Synthetic jobs. Chiptune starts muted.</div>
+    <header class="pagehead">
+      <div>
+        <h1>Jobs</h1>
+        <p>Shortlist roles worth your time. Score changes what you see, never what you choose.</p>
+      </div>
+      <div class="heading-actions">
+        <div class="drop">
+          <button class="btn signal" onclick="toggleDrop()">Start ▾</button>
+          <div class="drop-list win">
+            <button onclick="scrapeDialog.showModal(); toggleDrop()">Scrape jobs</button>
+            <button onclick="manualDialog.showModal(); toggleDrop()">Add job manually</button>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="meters">
+      ${meters.map(([name, n, w]) => `
+        <button class="meter ${stageFilter===name?"on":""}" onclick="stageFilter=stageFilter==='${name}'?'All':'${name}';render()">
+          <small>${name}</small>
+          <strong>${n}</strong>
+          <div class="tank"><i style="width:${w}%"></i></div>
+        </button>`).join("")}
+    </div>
+    <section class="filters" aria-label="Job filters">
+      <input class="field" value="${search.replaceAll('"','&quot;')}" placeholder="Search company or role" oninput="search=this.value;renderKeepFocus(this)">
+      <select class="field" onchange="stageFilter=this.value;render()">
+        <option ${stageFilter==="All"?"selected":""}>All</option>
+        ${meters.map(([n]) => `<option ${stageFilter===n?"selected":""}>${n}</option>`).join("")}
+      </select>
+      <input class="field" type="number" min="0" max="100" placeholder="Min FIT">
+      <select class="field"><option>FreeHire</option><option>All sources</option></select>
+      <button class="btn ghost" onclick="stageFilter='All';search='';render()">Clear</button>
+    </section>
+    <div class="bulk ${checked.size?"show":""}">
+      <strong>${checked.size} checked</strong>
+      <div class="actions">
+        <button class="btn signal" onclick="toast('Selected. Stage did not change.')">Select jobs</button>
+        <button class="btn" onclick="checked.clear();render()">Clear</button>
+      </div>
+    </div>
+    <div class="party">
+      ${list.map((j) => `
+        <div class="unit ${checked.has(j.id)?"checked":""}">
+          <button class="sel" onclick="toggleCheck(${j.id})" aria-label="Check ${j.company}">▶</button>
+          <button class="who" onclick="openJob(${j.id})" style="border:0;background:transparent;text-align:left;padding:0;color:inherit">
+            <strong>${j.company}</strong>
+            <span>${j.role}</span>
+            <span>${stageChip(j.stage)}${j.loc} · ${j.source}</span>
+          </button>
+          <div class="stats">${fit(j.score)}<span class="meta">${j.seen}</span></div>
+        </div>`).join("") || `<div class="win" style="padding:24px"><h2>No units in this party.</h2><p>Clear the filter or scrape again after the real run.</p></div>`}
+    </div>`;
+}
+
+function applicationsPage() {
+  const lanes = [
+    {name:"Selected", hint:"Waiting for documents", cards:[
+      {company:"Kiteworks", role:"Platform Engineer", score:84, cv:"—", letter:"—", next:"Generate", ok:true},
+      {company:"Copper & Co.", role:"Backend Developer", score:72, cv:"—", letter:"—", next:"Generate", ok:true}
+    ]},
+    {name:"Drafting", hint:"Generate, verify, review", cards:[
+      {company:"Dahlia Systems", role:"Full Stack Engineer", score:79, cv:"Verified", letter:"Verified", next:"Review"},
+      {company:"Fieldwork", role:"Java Engineer", score:68, cv:"Failed", letter:"—", next:"Retry", fail:true}
+    ]},
+    {name:"Ready", hint:"Apply outside dashboard", cards:[
+      {company:"Orbit Finance", role:"Backend Engineer", score:77, cv:"Approved", letter:"Approved", next:"Mark Applied", ok:true}
+    ]},
+    {name:"Applied", hint:"Submitted manually", cards:[
+      {company:"Paper Street", role:"Staff Software Engineer", score:74, cv:"Approved", letter:"Approved", next:"Open"}
+    ]},
+    {name:"Interview", hint:"Real interview confirmed", cards:[
+      {company:"Bright Harbour", role:"Java Platform Engineer", score:71, cv:"Approved", letter:"Approved", next:"Open"}
+    ]},
+    {name:"Outcomes", hint:"Offer or rejected", cards:[
+      {company:"Monument", role:"Platform Lead", score:81, cv:"Approved", letter:"Approved", next:"Offer"},
+      {company:"Common Ground", role:"Backend Engineer", score:66, cv:"Approved", letter:"Approved", next:"Rejected"}
+    ]}
+  ];
+  return `
+    <div class="mock-flag">Cards move only after an explicit action. No drag and drop.</div>
+    <header class="pagehead">
+      <div><h1>Applications</h1><p>Documents, approvals, and manual submission.</p></div>
+      <button class="btn primary">Generate 2 selected</button>
+    </header>
+    <div class="kanban-wrap">
+      <div class="kanban">
+        ${lanes.map((l) => `
+          <section class="lane">
+            <header class="lane-head"><h2>${l.name} · ${l.cards.length}</h2><p>${l.hint}</p></header>
+            <div class="lane-cards">
+              ${l.cards.map((c) => `
+                <article class="kcard ${c.fail?"fail":""}">
+                  <h3>${c.company}</h3>
+                  <div>${c.role}</div>
+                  ${fit(c.score)}
+                  <dl><div><dt>CV</dt><dd>${c.cv}</dd></div><div><dt>Letter</dt><dd>${c.letter}</dd></div></dl>
+                  <button class="btn ${c.ok?"signal":""}" style="width:100%">${c.next}</button>
+                </article>`).join("")}
+            </div>
+          </section>`).join("")}
+      </div>
+    </div>`;
+}
+
+function interviewPage() {
+  return `
+    <div class="mock-flag">Dialogue layout only. Answers are not model output.</div>
+    <header class="pagehead"><div><h1>Interview</h1><p>Practice against the exact job and documents you used.</p></div></header>
+    <div class="interview">
+      <aside class="joblist win">
+        <input class="field" placeholder="Search eligible jobs" style="box-shadow:none;border-width:0 0 3px;width:100%">
+        <button class="jobpick on"><strong>Paper Street</strong><div>Staff Software Engineer</div></button>
+        <button class="jobpick"><strong>Bright Harbour</strong><div>Java Platform Engineer</div></button>
+      </aside>
+      <section class="chat win" style="padding:0;box-shadow:4px 4px 0 #000">
+        <div class="context">PAPER STREET · SYSTEM DESIGN · Q3</div>
+        <div class="messages">
+          <div class="balloon"><b>Interviewer</b>Tell me about a system you changed to handle significantly more traffic. What was the bottleneck, and how did you validate the result?</div>
+          <div class="balloon you"><b>You</b>I started with query profiles and queue latency instead of assuming the API was the bottleneck…</div>
+          <div class="balloon coach"><b>Coach</b>Strong: you named the evidence. Tighten: add the actual scale and your direct contribution.</div>
+        </div>
+        <div class="composer">
+          <textarea class="field" placeholder="Answer from your own experience…"></textarea>
+          <div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px">
+            <button class="btn ghost" style="color:var(--ink);border-color:#000">Stop</button>
+            <button class="btn signal">Send answer</button>
+          </div>
+        </div>
+      </section>
+    </div>`;
+}
+
+function profilePage() {
+  const skills = ["TypeScript","Node.js","Java","Spring Boot","PostgreSQL","System design"];
+  return `
+    <div class="mock-flag">Character sheet uses placeholder identity, not a real profile.</div>
+    <header class="pagehead"><div><h1>Profile</h1><p>The verified facts Pi may use.</p></div><button class="btn signal">Save profile</button></header>
+    <div class="tabs"><button class="on">Profile</button><button>Search criteria</button></div>
+    <section class="sheet-hero">
+      <canvas class="sprite" id="sprite" width="16" height="16" aria-hidden="true"></canvas>
+      <div>
+        <h2>Candidate Name</h2>
+        <p>Senior Backend &amp; Platform Engineer · Jakarta · Remote APAC</p>
+      </div>
+    </section>
+    <div class="editor">
+      <div>
+        <section class="section win">
+          <h2>Identity</h2>
+          <div class="two">
+            <label class="label" style="color:var(--ink)">First name<input class="field" value="Candidate"></label>
+            <label class="label" style="color:var(--ink)">Last name<input class="field" value="Name"></label>
+          </div>
+          <label class="label" style="color:var(--ink)">Headline<input class="field" value="Senior Backend & Platform Engineer"></label>
+        </section>
+        <section class="section win" style="margin-top:12px">
+          <h2>Skills</h2>
+          <div class="skills">${skills.map((s) => `<span class="skill">${s}</span>`).join("")}</div>
+        </section>
+      </div>
+      <aside class="section win">
+        <h2>Ready?</h2>
+        ${["Identity","Experience","Skills","Target roles"].map((x) => `<div class="toolrow"><span>${x}</span><span class="pass">OK</span></div>`).join("")}
+      </aside>
+    </div>`;
+}
+
+function settingsPage() {
+  return `
+    <header class="pagehead"><div><h1>Settings</h1><p>Non-secret runtime config for this local cart.</p></div></header>
+    <div class="form-layout">
+      <section class="section win">
+        <h2>AI provider</h2>
+        <div class="two">
+          <label class="label" style="color:var(--ink)">Provider<select class="field"><option>Google</option></select></label>
+          <label class="label" style="color:var(--ink)">Model<select class="field"><option>Gemini 2.5 Pro</option></select></label>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="pass">Connected</span>
+          <button class="btn">Test connection</button>
+        </div>
+        <h2 style="margin-top:22px">Search</h2>
+        <div class="two">
+          <label class="label" style="color:var(--ink)">Source<select class="field"><option>FreeHire</option></select></label>
+          <label class="label" style="color:var(--ink)">FIT threshold<input class="field" type="number" value="60"></label>
+        </div>
+        <button class="btn signal" style="margin-top:8px">Save settings</button>
+      </section>
+      <aside class="section win">
+        <h2>Tools</h2>
+        ${[["CV template","OK"],["lualatex","OK"],["pdfinfo","OK"]].map(([a,b]) => `<div class="toolrow"><span>${a}</span><span class="pass">${b}</span></div>`).join("")}
+      </aside>
+    </div>`;
+}
+
+function openJob(id) {
+  const j = jobs.find((x) => x.id === id) || jobs[0];
+  document.getElementById("main").innerHTML = `
+    <button class="btn ghost" onclick="goto('jobs')">← Party list</button>
+    <header class="pagehead">
+      <div><h1>${j.role}</h1><p>${j.company} · ${j.loc} · ${j.source}</p></div>
+      <a class="btn" href="https://example.test" target="_blank" rel="noreferrer">Open posting</a>
+    </header>
+    <div class="split">
+      <section class="section win">
+        <h2>Fit ${j.score}</h2>
+        ${fit(j.score)}
+        <p>Strong overlap with backend platform work and the verified profile skills. Confirm on-call expectations before selecting.</p>
+      </section>
+      <aside class="section win">
+        <h2>${j.stage}</h2>
+        <div class="toolrow"><span>Documents</span><span>${j.stage==="Recommended"?"None":"Ready"}</span></div>
+        <div style="display:grid;gap:8px;margin-top:12px">
+          <button class="btn signal">${j.stage==="Recommended"?"Select job":"Open application"}</button>
+          <button class="btn">Archive</button>
+        </div>
+      </aside>
+    </div>`;
+}
+
+function toggleCheck(id) {
+  if (checked.has(id)) checked.delete(id); else checked.add(id);
+  render();
+}
+function renderKeepFocus(el) {
+  const start = el.selectionStart;
+  render();
+  const next = document.querySelector(".filters input");
+  if (next) { next.focus(); next.setSelectionRange(start, start); }
+}
+function render() {
+  const m = document.getElementById("main");
+  m.innerHTML = current==="jobs"?jobsPage()
+    : current==="applications"?applicationsPage()
+    : current==="interview"?interviewPage()
+    : current==="profile"?profilePage()
+    : settingsPage();
+  if (current === "profile") drawSprite();
+}
+function cancelRun() {
+  document.getElementById("runstrip").innerHTML = `<span class="runlabel">CANCELLED</span><div>2 completed applications kept.</div><button class="btn" onclick="this.parentElement.remove()">Dismiss</button>`;
+}
+function startScrape() {
+  scrapeDialog.close();
+  document.getElementById("runstrip").innerHTML = `<span class="runlabel">SCRAPING</span><div><strong>Searching FreeHire</strong><div class="progress"><i></i></div></div><button class="btn" onclick="cancelRun()">Cancel</button>`;
+  toast("Scrape started. Jobs appear after a real run succeeds.");
+}
+function toast(msg) {
+  document.querySelector(".toast")?.remove();
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.setAttribute("role", "status");
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2800);
+}
+
+/* Tiny 16×16 adventurer for the character sheet. */
+function drawSprite() {
+  const c = document.getElementById("sprite");
+  if (!c) return;
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  const p = [
+    "....3333........",
+    "...333333.......",
+    "...fdddf........",
+    "..fdddddf.......",
+    "..fd8dd8f.......",
+    "..fdddddf.......",
+    "...ffff.........",
+    "..22999922......",
+    ".2299999922.....",
+    ".2299ff9922.....",
+    "..dd9999dd......",
+    "...d9999d.......",
+    "...22..22.......",
+    "...22..22.......",
+    "..333..333......",
+    "................"
+  ];
+  const map = { ".":"#ffec27", "3":"#1d2b53", "f":"#ab5236", "d":"#ffccaa", "8":"#000000", "9":"#29adff", "2":"#5f574f" };
+  p.forEach((row, y) => [...row].forEach((ch, x) => {
+    ctx.fillStyle = map[ch];
+    ctx.fillRect(x, y, 1, 1);
+  }));
+}
+
+/* Square-wave loop. Starts muted so the mockup is safe in an office. */
+function toggleBgm() {
+  bgmOn = !bgmOn;
+  document.getElementById("bgmBtn").textContent = bgmOn ? "BGM ON" : "BGM OFF";
+  document.getElementById("eq").classList.toggle("on", bgmOn);
+  if (bgmOn) startTune(); else stopTune();
+}
+function startTune() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  audio = new Ctx();
+  const master = audio.createGain();
+  master.gain.value = 0.035;
+  master.connect(audio.destination);
+  const notes = [523.25, 659.25, 783.99, 1046.5, 783.99, 659.25, 587.33, 523.25];
+  let i = 0;
+  function step() {
+    if (!bgmOn || !audio) return;
+    const osc = audio.createOscillator();
+    const g = audio.createGain();
+    osc.type = "square";
+    osc.frequency.value = notes[i % notes.length];
+    g.gain.setValueAtTime(0.0001, audio.currentTime);
+    g.gain.exponentialRampToValueAtTime(1, audio.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.18);
+    osc.connect(g); g.connect(master);
+    osc.start();
+    osc.stop(audio.currentTime + 0.2);
+    i += 1;
+    audio._timer = setTimeout(step, 210);
+  }
+  step();
+}
+function stopTune() {
+  if (!audio) return;
+  clearTimeout(audio._timer);
+  audio.close();
+  audio = null;
+}
+
+document.getElementById("clock").textContent = new Date().toLocaleDateString("en-GB", { weekday:"short", day:"numeric", month:"short" }).toUpperCase();
+paintNav();
+render();
+</script>
+</body>
+</html>

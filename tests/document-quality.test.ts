@@ -1,0 +1,167 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createEmptyProfile, type ProjectEntry, type SkillEntry } from "../src/shared.js";
+import { buildGenerationPrompt, coverLetterClosing, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectRelevantProjects, selectRelevantSkills } from "../src/server/generation.js";
+
+const skill = (name: string): SkillEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name });
+const project = (name: string, role: string, description: string): ProjectEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, role, description, startMonth: "", startYear: "", endMonth: "", endYear: "", url: "" });
+
+test("moderncv template keeps the reference visual contract without reference content", async () => {
+  const template = await readFile(join(process.cwd(), "templates/cv/backend_java_spring.tex"), "utf8");
+  assert.match(template, /\\documentclass\[10pt,a4paper,sans\]\{moderncv\}/);
+  assert.match(template, /\\moderncvstyle\{banking\}/);
+  assert.match(template, /\\moderncvcolor\{blue\}/);
+  assert.match(template, /\\name\{FIRST_NAME\}\{LAST_NAME\}/);
+  assert.match(template, /\\makecvtitle/);
+  assert.match(template, /scale=0\.86,top=1\.25cm,bottom=1\.25cm/);
+  assert.match(template, /\\setlist\[itemize\].*itemsep=0pt/);
+  for (const value of ["Example Candidate", "Example Company", "Previous Example Company", "Candidate University", "candidate@example.test"]) {
+    assert.doesNotMatch(template, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  }
+  assert.doesNotMatch(template, /https?:\/\/|@/);
+});
+
+test("structured CV rendering emits dynamic moderncv headers and cventry fragments", () => {
+  const profile = createEmptyProfile();
+  Object.assign(profile.identity, {
+    firstName: "Ada",
+    lastName: "Lovelace",
+    headline: "Backend Engineer",
+    email: "ada@example.test",
+    phone: "+1 555 0100",
+    city: "London",
+    country: "United Kingdom",
+    website: "https://example.test/ada_profile",
+    linkedinUrl: "https://linkedin.com/in/ada",
+    githubUrl: "https://github.com/ada",
+  });
+
+  profile.experience = [{ id: "role", title: "Backend Engineer", company: "Example", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2024", endMonth: "", endYear: "", currentRole: true, description: "Built Java services." }];
+  profile.projects = [project("Backend API Platform", "Backend Engineer", "Built Java Spring Boot services.")];
+  const rendered = renderStructuredProfile(profile, "backend Java", ["Java"]);
+  assert.equal(rendered.FIRST_NAME, "Ada");
+  assert.equal(rendered.LAST_NAME, "Lovelace");
+  assert.match(rendered.HEADLINE_BLOCK, /\\small\\textbf\{Backend Engineer\}/);
+  assert.match(rendered.ADDRESS_COMMAND, /\\address\{London, United Kingdom\}\{\}\{\}/);
+  assert.match(rendered.PHONE_COMMAND, /\\phone\[mobile\]\{\+1 555 0100\}/);
+  assert.match(rendered.EMAIL_COMMAND, /\\email\{ada@example\.test\}/);
+  assert.match(rendered.EXTRAINFO_COMMAND, /\\extrainfo\{.*\\link\[LinkedIn\].*\\link\[GitHub\]/);
+  assert.match(rendered.PROJECTS_SECTION, /\\needspace\{8\\baselineskip\}\s*\\section\{Selected Projects\}/);
+  assert.match(rendered.PROJECTS_SECTION, /\\cventry\{\}\{Role: Backend Engineer\}\{\\textbf\{Backend API Platform\}\}\{\}\{\}\{%/);
+  assert.match(rendered.EXPERIENCE, /\\needspace\{7\\baselineskip\}\s*\\cventry\{2024 - Present\}\{Backend Engineer\}\{Example\}\{Remote\}\{Full-time\}\{%/);
+  assert.match(rendered.EXPERIENCE, /\\item Built Java services\./);
+  assert.doesNotMatch(rendered.EXPERIENCE, /\\begin\{minipage\}|\\cvsection/);
+
+  profile.identity.website = "";
+  profile.identity.linkedinUrl = "";
+  profile.identity.githubUrl = "";
+  profile.identity.city = "";
+  profile.identity.country = "";
+  profile.identity.email = "";
+  profile.identity.phone = "";
+  const withoutOptionalHeader = renderStructuredProfile(profile);
+  assert.equal(withoutOptionalHeader.EXTRAINFO_COMMAND, "");
+  assert.equal(withoutOptionalHeader.ADDRESS_COMMAND, "");
+  assert.equal(withoutOptionalHeader.PHONE_COMMAND, "");
+  assert.equal(withoutOptionalHeader.EMAIL_COMMAND, "");
+});
+
+test("education CV rendering uses month ranges and optional GPA", () => {
+  const profile = createEmptyProfile();
+  profile.education = [{ id: "education", institution: "Example University", degree: "Bachelor of Science", fieldOfStudy: "Computer Science", startMonth: "2012-09", startYear: "2012", endMonth: "2016-06", endYear: "2016", gpa: "3.8/4.0" }];
+  const rendered = renderStructuredProfile(profile).EDUCATION_SECTION;
+  assert.match(rendered, /\\cventry\{Sep 2012 - Jun 2016\}\{Bachelor of Science, Computer Science\}\{Example University\}\{\}\{\}\{GPA: 3\.8\/4\.0\}/);
+  assert.doesNotMatch(rendered, /description|expectedGraduation/i);
+
+  profile.education[0]!.startMonth = "";
+  profile.education[0]!.endMonth = "";
+  assert.match(renderStructuredProfile(profile).EDUCATION_SECTION, /\\cventry\{2012 - 2016\}/);
+});
+
+test("experience descriptions split safe sentences without losing decimals", () => {
+  const profile = createEmptyProfile();
+  profile.experience = [{
+    id: "role",
+    title: "Backend Engineer",
+    company: "Example",
+    employmentType: "",
+    location: "",
+    startMonth: "",
+    startYear: "",
+    endMonth: "",
+    endYear: "",
+    currentRole: false,
+    description: "Improved availability to 99.95% using e.g. Java. Reduced response time for customers.",
+  }];
+  const rendered = renderStructuredProfile(profile).EXPERIENCE;
+  assert.equal((rendered.match(/\\item\b/g) ?? []).length, 2);
+  assert.match(rendered, /99\.95\\% using e\.g\. Java\./);
+
+  profile.experience[0]!.description = "Built reliable Java services.";
+  const single = renderStructuredProfile(profile).EXPERIENCE;
+  assert.equal((single.match(/\\item\b/g) ?? []).length, 1);
+});
+
+test("skills are relevance-ranked, profile-bounded, and exclude zero-overlap tools", () => {
+  const relevant = [
+    "Java", "Spring Boot", "Spring MVC", "REST APIs", "JPA/Hibernate", "Microservices", "Domain-driven design", "Event-driven architecture", "PostgreSQL", "MySQL", "Redis", "Neo4j", "Kafka", "RabbitMQ", "JUnit", "TDD", "Git", "Jenkins", "Docker", "Kubernetes", "OpenShift", "Helm", "Ansible", "AWS EC2", "Datadog", "Grafana",
+  ];
+  const skills = ["Codex", "Cursor", "Adobe Flash", "GitHub Copilot", ...relevant].map(skill);
+  const selected = selectRelevantSkills(skills, "Senior backend platform engineer Java Spring Boot Kubernetes REST APIs", ["Kubernetes"]);
+  assert.ok(selected.length >= 14 && selected.length <= 20);
+  assert.equal(selected[0]?.name, "Kubernetes");
+  assert.ok(selected.every(entry => relevant.includes(entry.name)));
+  assert.ok(selected.some(entry => ["Kafka", "RabbitMQ"].includes(entry.name)));
+  assert.ok(selected.some(entry => ["PostgreSQL", "Redis"].includes(entry.name)));
+  assert.ok(selected.some(entry => ["Jenkins", "Docker", "Helm"].includes(entry.name)));
+  assert.ok(selected.some(entry => ["Datadog", "Grafana"].includes(entry.name)));
+  assert.ok(selected.some(entry => ["JUnit", "TDD"].includes(entry.name)));
+});
+
+test("projects use overlap ranking and retain a safe profile-order fallback", () => {
+  const gameProjectName = "Game Rendering Fixture";
+  const projects = [
+    project(gameProjectName, "Game Programmer", "C++ and OpenGL game development."),
+    project("Backend API Platform", "Backend Engineer", "Java Spring Boot REST APIs and PostgreSQL services."),
+    project("Cloud Platform", "Platform Engineer", "Kubernetes Docker deployment and observability."),
+    project("Event Processing", "Backend Engineer", "Kafka and RabbitMQ event-driven services."),
+    project("Data Services", "Backend Engineer", "Redis and MySQL data services."),
+  ];
+  const selected = selectRelevantProjects(projects, "backend platform Java Spring Boot Kubernetes REST PostgreSQL Kafka", ["Kubernetes"]);
+  assert.ok(selected.length <= 4);
+  assert.ok(selected.every(entry => entry.name !== gameProjectName));
+  assert.equal(selected[0]?.name, "Backend API Platform");
+
+  const fallback = selectRelevantProjects(projects, "astronomy", []);
+  assert.deepEqual(fallback.map(entry => entry.name), projects.slice(0, 4).map(entry => entry.name));
+
+  const safeFallback = selectRelevantProjects([projects[0]!], "backend platform", []);
+  assert.deepEqual(safeFallback.map(entry => entry.name), [projects[0]!.name]);
+});
+
+test("cover-letter closing is omitted when paragraphs already contain the equivalent close", () => {
+  const existing = "I would welcome the opportunity to discuss how I could contribute to the platform team.";
+  assert.equal(coverLetterClosing([existing], "Backend Engineer", "Example"), "");
+  assert.match(coverLetterClosing(["I built reliable backend services."], "Backend Engineer", "Example"), /I would welcome the opportunity/);
+});
+
+test("cover-letter bullets omit repeated achievements and disappear when none complement", () => {
+  const paragraphs = ["I improved API response time by 50% for 10,000 daily transactions through targeted backend work."];
+  const bullets = [
+    "Improved API response time by 50% for 10,000 daily transactions.",
+    "Built Kafka event-driven processing for resilient workflows.",
+  ];
+  assert.deepEqual(filterComplementaryBullets(bullets, paragraphs), [bullets[1]]);
+  assert.match(letterBullets({ coverLetterBullets: bullets }, paragraphs), /\\item Built Kafka event-driven processing/);
+  assert.doesNotMatch(letterBullets({ coverLetterBullets: bullets }, paragraphs), /\\item Improved API response/);
+  assert.equal(letterBullets({ coverLetterBullets: [bullets[0]] }, paragraphs), "");
+});
+
+test("generation prompt makes cover-letter bullets optional and complementary", () => {
+  const prompt = buildGenerationPrompt({ profile: "Java", job: { role: "Backend Engineer" }, rank: { gaps: [] }, templates: { cv: { backend_java_spring: {} } } }, "");
+  assert.match(prompt, /optional verified complementary points not already stated in paragraphs/);
+  assert.match(prompt, /omit them when no new evidence remains/);
+  assert.match(prompt, /never repeat a paragraph's achievement, metric, or claim/);
+});
