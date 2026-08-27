@@ -266,7 +266,13 @@ export async function runBoundedPi<T = void>(options: {
     }
     try {
       const prompt = session.prompt(options.prompt).then(() => undefined as T);
-      const result = await Promise.race([prompt, outcome]) as T;
+      let result: T;
+      try {
+        result = await Promise.race([prompt, outcome]) as T;
+      } finally {
+        // Losing prompt() can reject after abort(); swallow so it cannot become unhandledRejection.
+        void prompt.catch(() => {});
+      }
       flushAssistant("assistant:default");
       record({ kind: "lifecycle", type: "run_completed", startedAt: sessionStartedAt, endedAt: isoNow(), durationMs: durationBetween(sessionStartedAt, isoNow()), payload: null });
       return result;
