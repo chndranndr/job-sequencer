@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runBoundedPi, selectConfiguredModel, type PiSessionLike, PiRunCancelledError, PiRunTimeoutError } from "../src/server/pi.js";
+import { createHash } from "node:crypto";
+import {
+  classifyPiError,
+  PiRunCancelledError,
+  PiRunTimeoutError,
+  runBoundedPi,
+  selectConfiguredModel,
+  type PiSessionLike,
+} from "../src/server/pi.js";
 
 test("configured OpenAI Codex provider is passed to the Pi model registry", () => {
   const calls: string[][] = [];
@@ -20,8 +28,9 @@ class FakeSession implements PiSessionLike {
   private readonly listeners = new Set<(event: unknown) => void>();
   private lateReject: ((reason: Error) => void) | undefined;
   constructor(
-    private readonly behavior: "ok" | "hang" | "late-reject" = "ok",
+    private readonly behavior: "ok" | "hang" | "late-reject" | "fail" = "ok",
     private readonly events: unknown[] = [],
+    private readonly failure = new Error("provider failed"),
   ) {}
   subscribe(listener: (event: unknown) => void): () => void {
     this.listeners.add(listener);
@@ -32,6 +41,9 @@ class FakeSession implements PiSessionLike {
   }
   async prompt(text: string): Promise<void> {
     this.promptText = text;
+    for (const event of this.events) {
+      for (const listener of this.listeners) listener(event);
+    }
     if (this.behavior === "hang") await new Promise<void>(() => {});
     if (this.behavior === "late-reject") {
       await new Promise<void>((_resolve, reject) => {
@@ -39,9 +51,7 @@ class FakeSession implements PiSessionLike {
       });
       return;
     }
-    for (const event of this.events) {
-      for (const listener of this.listeners) listener(event);
-    }
+    if (this.behavior === "fail") throw this.failure;
   }
   async abort(): Promise<void> {
     this.abortCalls += 1;
@@ -206,4 +216,186 @@ test("losing prompt rejection after timeout is not unhandled", async () => {
   } finally {
     process.removeListener("unhandledRejection", onUnhandled);
   }
+});
+
+test("Pi heartbeat calls onActivity and aborts an inactive session", async () => {
+  let session!: FakeSession;
+  let activityCount = 0;
+  await assert.rejects(
+    runBoundedPi({
+      prompt: "heartbeat",
+      timeoutMs: 1_000,
+      inactivityTimeoutMs: 30,
+      onActivity: () => { activityCount += 1; },
+      createSession: async () => (session = new FakeSession("hang", [{ type: "agent_start" }])),
+    }),
+    PiRunTimeoutError,
+  );
+  assert.equal(session.abortCalls, 1);
+  assert.ok(activityCount >= 1);
+});
+
+test("Pi timeout records exactly one terminal lifecycle event", async () => {
+  const trajectory: Array<{ type: string; payload?: unknown }> = [];
+  await assert.rejects(
+    runBoundedPi({
+      prompt: "timeout lifecycle",
+      timeoutMs: 1_000,
+      inactivityTimeoutMs: 30,
+      runId: "timeout-lifecycle",
+      trajectory: (_runId, event) => { trajectory.push(event); },
+      createSession: async () => new FakeSession("hang", [{ type: "agent_start" }]),
+    }),
+    PiRunTimeoutError,
+  );
+  const terminal = trajectory.filter(({ type }) => ["run_timed_out", "run_cancelled", "run_failed", "run_completed"].includes(type));
+  assert.deepEqual(terminal.map(({ type }) => type), ["run_timed_out"]);
+});
+
+test("Pi flushes open tool state on success, failure, timeout, and cancellation", async () => {
+  const toolStart = { type: "tool_execution_start", toolCallId: "call-1", toolName: "lookupJob", args: { id: "job-1" } };
+  const cases = [
+    { behavior: "ok" as const, expectedError: undefined },
+    { behavior: "fail" as const, expectedError: new Error("provider failed") },
+    { behavior: "hang" as const, expectedError: new PiRunTimeoutError() },
+    { behavior: "hang" as const, expectedError: new PiRunCancelledError() },
+  ];
+  for (const [index, current] of cases.entries()) {
+    const trajectory: Array<{ type: string; payload?: unknown }> = [];
+    const controller = new AbortController();
+    const run = runBoundedPi({
+      prompt: `tool ${index}`,
+      timeoutMs: 1_000,
+      inactivityTimeoutMs: current.behavior === "hang" ? 30 : 1_000,
+      signal: index === 3 ? controller.signal : undefined,
+      runId: `tool-${index}`,
+      trajectory: (_runId, event) => { trajectory.push(event); },
+      createSession: async () => new FakeSession(current.behavior, [toolStart], current.expectedError),
+    });
+    if (index === 3) controller.abort();
+    if (current.expectedError) await assert.rejects(run);
+    else await run;
+    assert.ok(trajectory.some(({ type }) => type === "tool_execution_start"));
+    assert.ok(trajectory.some(({ type }) => type === "tool_execution_end"));
+  }
+});
+
+test("Pi flushes assistant state on message_end, agent_end, and failure", async () => {
+  const message = { role: "assistant", timestamp: 7, content: [{ type: "text", text: "Answer" }] };
+  const cases = [
+    { behavior: "ok" as const, events: [{ type: "message_end", message }] },
+    { behavior: "ok" as const, events: [{ type: "agent_end", messages: [message] }] },
+    { behavior: "fail" as const, events: [{ type: "message_update", message: { ...message, content: [] }, assistantMessageEvent: { type: "text_delta", delta: "Answer" } }] },
+  ];
+  for (const [index, current] of cases.entries()) {
+    const trajectory: Array<{ type: string; payload?: unknown }> = [];
+    await (current.behavior === "fail"
+      ? assert.rejects(runBoundedPi({
+        prompt: `assistant ${index}`,
+        timeoutMs: 1_000,
+        runId: `assistant-${index}`,
+        trajectory: (_runId, event) => { trajectory.push(event); },
+        createSession: async () => new FakeSession(current.behavior, current.events),
+      }))
+      : runBoundedPi({
+        prompt: `assistant ${index}`,
+        timeoutMs: 1_000,
+        runId: `assistant-${index}`,
+        trajectory: (_runId, event) => { trajectory.push(event); },
+        createSession: async () => new FakeSession(current.behavior, current.events),
+      }));
+    assert.equal(trajectory.filter(({ type }) => type === "assistant_message").length, 1);
+    assert.equal((trajectory.find(({ type }) => type === "assistant_message")?.payload as { text?: string } | undefined)?.text, "Answer");
+  }
+});
+
+test("Pi extracts provider usage and leaves missing usage null", async () => {
+  const usage = {
+    input: 3,
+    output: 5,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 8,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.3 },
+  };
+  const received: unknown[] = [];
+  await runBoundedPi({
+    prompt: "usage",
+    timeoutMs: 1_000,
+    onUsage: value => { received.push(value); },
+    createSession: async () => new FakeSession("ok", [{
+      type: "message_end",
+      message: { role: "assistant", timestamp: 1, content: [{ type: "text", text: "Done" }], usage },
+    }]),
+  });
+  assert.deepEqual(received, [{ inputTokens: 3, outputTokens: 5, totalTokens: 8, estimatedCost: 0.3 }]);
+
+  const missingTrajectory: Array<{ type: string; payload?: unknown }> = [];
+  const missingUsage: unknown[] = [];
+  await runBoundedPi({
+    prompt: "missing usage",
+    timeoutMs: 1_000,
+    onUsage: value => { missingUsage.push(value); },
+    runId: "missing-usage",
+    trajectory: (_runId, event) => { missingTrajectory.push(event); },
+    createSession: async () => new FakeSession("ok", [{
+      type: "message_end",
+      message: { role: "assistant", timestamp: 2, content: [{ type: "text", text: "Done" }] },
+    }]),
+  });
+  assert.deepEqual(missingUsage, []);
+  assert.deepEqual((missingTrajectory.find(({ type }) => type === "assistant_message")?.payload as { usage?: unknown } | undefined)?.usage, null);
+});
+
+test("Pi classifies bounded and provider errors without confusing rejection with cancellation", () => {
+  assert.equal(classifyPiError(new PiRunTimeoutError()), "timeout");
+  assert.equal(classifyPiError(new PiRunCancelledError()), "cancelled");
+  assert.equal(classifyPiError(new Error("rate limit exceeded")), "rate_limit");
+  assert.equal(classifyPiError(new Error("HTTP 429")), "rate_limit");
+  assert.equal(classifyPiError(new Error("ECONNRESET while requesting provider")), "network");
+  assert.equal(classifyPiError(new Error("fetch failed")), "network");
+  assert.equal(classifyPiError(new Error("ENOTFOUND api.example.test")), "network");
+  assert.equal(classifyPiError(new Error("context length overflow")), "context_overflow");
+  assert.equal(classifyPiError(new Error("empty response")), "empty_response");
+  assert.equal(classifyPiError(new Error("provider rejected request")), "provider");
+  assert.equal(classifyPiError("not an Error"), "unknown");
+});
+
+test("Pi records context hashes while keeping secrets out of trajectory payloads", async () => {
+  const prompt = "Use this token sk-testsecret only as untrusted text.";
+  const trajectory: Array<{ type: string; payload?: unknown }> = [];
+  await runBoundedPi({
+    prompt,
+    guidance: "Use grounded facts.",
+    settings: { provider: "fixture", model: "test" },
+    model: { provider: "fixture", id: "test-model" },
+    timeoutMs: 1_000,
+    runId: "context-hashes",
+    trajectory: (_runId, event) => { trajectory.push(event); },
+    createSession: async () => new FakeSession("ok"),
+  });
+  const context = trajectory.find(({ type }) => type === "run_context")?.payload as {
+    promptHash?: string;
+    guidanceHash?: string;
+    settingsHash?: string;
+    modelHash?: string;
+  } | undefined;
+  assert.equal(context?.promptHash, createHash("sha256").update(prompt).digest("hex"));
+  assert.match(context?.guidanceHash ?? "", /^[0-9a-f]{64}$/);
+  assert.match(context?.settingsHash ?? "", /^[0-9a-f]{64}$/);
+  assert.match(context?.modelHash ?? "", /^[0-9a-f]{64}$/);
+  assert.doesNotMatch(JSON.stringify(trajectory), /sk-testsecret/);
+});
+
+test("Pi keeps telemetry text capped", async () => {
+  const trajectory: Array<{ type: string; payload?: unknown }> = [];
+  await runBoundedPi({
+    prompt: "x".repeat(2_000_010),
+    timeoutMs: 1_000,
+    runId: "telemetry-cap",
+    trajectory: (_runId, event) => { trajectory.push(event); },
+    createSession: async () => new FakeSession("ok"),
+  });
+  const text = (trajectory.find(({ type }) => type === "user_prompt")?.payload as { text?: string } | undefined)?.text;
+  assert.equal(text?.length, 2_000_000);
 });

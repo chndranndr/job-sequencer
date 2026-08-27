@@ -417,6 +417,15 @@ export type Run = {
   model: string;
   summary: unknown;
   error?: string | null;
+  error_code?: string | null;
+  attempt_count?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+  estimated_cost?: number | null;
+  prompt_hash?: string | null;
+  guidance_hash?: string | null;
+  settings_hash?: string | null;
   started_at: string;
   finished_at?: string | null;
 };

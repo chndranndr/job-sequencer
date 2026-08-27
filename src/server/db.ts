@@ -66,6 +66,15 @@ export function openDatabase(path: string): DatabaseSync {
     migrateRunsWorkflow(db);
     db.prepare("INSERT INTO migrations(version,applied_at) VALUES(4,?)").run(new Date().toISOString());
   }
+  ensureColumn(db, "runs", "error_code", "TEXT");
+  ensureColumn(db, "runs", "attempt_count", "INTEGER");
+  ensureColumn(db, "runs", "input_tokens", "INTEGER");
+  ensureColumn(db, "runs", "output_tokens", "INTEGER");
+  ensureColumn(db, "runs", "total_tokens", "INTEGER");
+  ensureColumn(db, "runs", "estimated_cost", "REAL");
+  ensureColumn(db, "runs", "prompt_hash", "TEXT");
+  ensureColumn(db, "runs", "guidance_hash", "TEXT");
+  ensureColumn(db, "runs", "settings_hash", "TEXT");
   cleanupStaleRuns(db);
   return db;
 }
