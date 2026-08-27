@@ -1,6 +1,6 @@
-# Personal Job Search
+# Job Sequencer
 
-Local job-search dashboard for one person. The app runs on loopback, uses Pi SDK in-process for AI workflows, and keeps provider credentials outside the project.
+Job Sequencer is a local-first job-search dashboard for one person. The app runs on loopback, uses Pi SDK in-process for AI workflows, and keeps provider credentials outside the project.
 
 ## Requirements
 

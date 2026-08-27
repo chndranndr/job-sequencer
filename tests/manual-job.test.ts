@@ -11,7 +11,7 @@ import { MAX_MANUAL_FETCH_BYTES, importManualJob, ManualJobRunManager, parseManu
 import type { PiSessionLike } from "../src/server/pi.js";
 
 const settings = {
-  provider: "personal-job-search-faux",
+  provider: "job-sequencer-faux",
   model: "phase0",
   source: "freehire" as const,
   enabledSources: ["freehire"],

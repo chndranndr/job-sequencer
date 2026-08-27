@@ -8,7 +8,7 @@ test("Tracker is the only frontend entry and tracker.html is its compatibility a
   const vite = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
   const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> };
   assert.match(index, /<title>TRACKER[^<]*<\/title>/i);
-  assert.match(index, /<meta name="description" content="Tracker-first local job search workspace\." \/>/);
+  assert.match(index, /<meta name="description" content="Job Sequencer — tracker-first local job-search workspace\." \/>/);
   assert.match(index, /src\/tracker\/main\.tsx/);
   assert.match(html, /src\/tracker\/main\.tsx/);
   assert.match(vite, /tracker: resolve\(root, "tracker\.html"\)/);
@@ -28,6 +28,8 @@ test("Tracker browser smoke covers every route and responsive error contract", (
   assert.match(smoke, /page\.on\("pageerror"/);
   assert.match(smoke, /setViewportSize/);
   assert.match(smoke, /scrollWidth/);
+  assert.match(smoke, /Resize agent panel/);
+  assert.match(smoke, /Collapse agent panel/);
   assert.match(smoke, /Resize fine-tune sidebar/);
   assert.match(smoke, /Collapse fine-tune sidebar/);
 });
@@ -92,4 +94,29 @@ test("DISK fine-tune sidebar stays collapsible and resizable", () => {
   assert.match(disk, /hidden=\{tuneCollapsed\}/);
   assert.match(studio, /\.workspace\.disk \{ grid-template-columns: minmax\(0, 1fr\) auto; \}/);
   assert.match(studio, /\.disk-tune-panel\.is-collapsed/);
+});
+
+test("Tracker AGENT panel stays collapsible and resizable", () => {
+  const agent = readFileSync(new URL("../src/tracker/agent.tsx", import.meta.url), "utf8");
+  const studio = readFileSync(new URL("../src/tracker/studio.css", import.meta.url), "utf8");
+
+  assert.match(agent, /className=\{`panel agent/);
+  assert.match(agent, /const MIN_AGENT_WIDTH = 260;/);
+  assert.match(agent, /const MAX_AGENT_WIDTH = 420;/);
+  assert.match(agent, /const COLLAPSED_AGENT_WIDTH = 48;/);
+  assert.match(agent, /role="separator"/);
+  assert.match(agent, /aria-label="Resize agent panel"/);
+  assert.match(agent, /aria-orientation="vertical"/);
+  assert.match(agent, /aria-valuemin=\{MIN_AGENT_WIDTH\}/);
+  assert.match(agent, /aria-valuemax=\{MAX_AGENT_WIDTH\}/);
+  assert.match(agent, /aria-valuenow=\{agentWidth\}/);
+  assert.match(agent, /aria-valuetext=\{agentCollapsed \? "Collapsed"/);
+  assert.match(agent, /onPointerDown=\{beginAgentResize\}/);
+  assert.match(agent, /onKeyDown=\{resizeAgentWithKeyboard\}/);
+  for (const key of ["ArrowLeft", "ArrowRight", "Home", "End"]) assert.match(agent, new RegExp(`event\\.key === "${key}"`));
+  assert.match(agent, /aria-controls="agent-panel"/);
+  assert.match(agent, /aria-expanded=\{!agentCollapsed\}/);
+  assert.match(agent, /hidden=\{agentCollapsed\}/);
+  assert.match(studio, /\.workspace\.pattern \{ grid-template-columns: 196px minmax\(0, 1fr\) auto; \}/);
+  assert.match(studio, /\.agent\.is-collapsed/);
 });

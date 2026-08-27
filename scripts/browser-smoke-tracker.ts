@@ -10,19 +10,34 @@ import { buildServer } from "../src/server/app.js";
 import { listJobs, openDatabase, persistScrape, setJobStage } from "../src/server/db.js";
 import type { CommandRunner } from "../src/server/documents.js";
 
-const fixture = {
-  sourceId: "tracker-browser-job",
-  source: "freehire",
-  url: "https://example.test/tracker-browser-job",
-  company: "Tracker Example",
-  role: "Platform Engineer",
-  location: "Remote",
-  posting: "Operate the platform.\n\nImprove reliability.",
-  score: 88,
-  reason: "Platform reliability matches the reviewed profile.",
-  strengths: ["Reliability"],
-  gaps: ["Cloud scope is not stated."],
-};
+const fixtures = [
+  {
+    sourceId: "tracker-browser-job",
+    source: "freehire",
+    url: "https://example.test/tracker-browser-job",
+    company: "Tracker Example",
+    role: "Platform Engineer",
+    location: "Remote",
+    posting: "Operate the platform.\n\nImprove reliability.",
+    score: 88,
+    reason: "Platform reliability matches the reviewed profile.",
+    strengths: ["Reliability"],
+    gaps: ["Cloud scope is not stated."],
+  },
+  {
+    sourceId: "tracker-browser-job-two",
+    source: "freehire",
+    url: "https://example.test/tracker-browser-job-two",
+    company: "Tracker Backend",
+    role: "Backend Engineer",
+    location: "Remote",
+    posting: "Build reliable services.",
+    score: 72,
+    reason: "Backend experience matches the reviewed profile.",
+    strengths: ["Backend"],
+    gaps: ["Scale is not stated."],
+  },
+];
 
 async function freePort() {
   const probe = createNetServer();
@@ -61,8 +76,8 @@ async function assertNoOverflow(page: import("playwright").Page, label: string) 
 const fakeRunner: CommandRunner = async () => ({ code: 0, stdout: "", stderr: "" });
 const dataDir = await mkdtemp(join(tmpdir(), "pjs-tracker-browser-"));
 const db = openDatabase(":memory:");
-persistScrape(db, { jobs: [fixture] });
-const seededJob = listJobs(db)[0];
+persistScrape(db, { jobs: fixtures });
+const seededJob = listJobs(db).find((job) => job.source_id === fixtures[0].sourceId);
 if (!seededJob) throw new Error("Tracker smoke fixture job was not persisted");
 for (const stage of ["Selected", "Drafting", "Ready", "Applied"] as const) setJobStage(db, seededJob.id, stage);
 
@@ -93,7 +108,7 @@ try {
   const base = `http://127.0.0.1:${frontendPort}`;
 
   await openTracker(page, base);
-  await expect(page).toHaveTitle("TRACKER - Personal Job Search");
+  await expect(page).toHaveTitle("TRACKER - Job Sequencer");
   await page.locator(".panel-h").filter({ hasText: "PATTERN 00" }).waitFor();
 
   const routes = [
@@ -110,6 +125,44 @@ try {
     await page.locator(route.marker).filter({ hasText: route.text }).waitFor({ state: "visible", timeout: 30_000 });
     await assertNoOverflow(page, `desktop ${route.hash}`);
   }
+
+  await openTracker(page, base, "#/pattern");
+  const patternTable = page.getByRole("table", { name: /Job pattern/ });
+  const fitHeader = patternTable.locator("th", { hasText: "FIT" });
+  await expect(fitHeader).toHaveAttribute("aria-sort", "none");
+  await expect(fitHeader.getByRole("button", { name: "FIT" })).toBeVisible();
+  await expect(patternTable.locator("th", { hasText: "ROW" }).getByRole("button")).toHaveCount(0);
+  await patternTable.getByRole("button", { name: "FIT" }).click();
+  await expect(fitHeader).toHaveAttribute("aria-sort", "ascending");
+  await expect(fitHeader.getByRole("button")).toContainText("↑");
+  await expect(patternTable.locator("tbody tr").first().locator("td.fit")).toContainText("72");
+  await patternTable.getByRole("button", { name: "FIT" }).click();
+  await expect(fitHeader).toHaveAttribute("aria-sort", "descending");
+  await expect(fitHeader.getByRole("button")).toContainText("↓");
+  await expect(patternTable.locator("tbody tr").first().locator("td.fit")).toContainText("88");
+  await page.locator(".agent").waitFor();
+  const agentSeparator = page.getByRole("separator", { name: "Resize agent panel" });
+  await agentSeparator.focus();
+  await agentSeparator.press("ArrowLeft");
+  await expect(agentSeparator).toHaveAttribute("aria-valuenow", "296");
+  await agentSeparator.press("Home");
+  await expect(agentSeparator).toHaveAttribute("aria-valuenow", "260");
+  await agentSeparator.press("End");
+  await expect(agentSeparator).toHaveAttribute("aria-valuenow", "420");
+  await page.getByRole("button", { name: "Collapse agent panel" }).click();
+  await expect(page.getByRole("button", { name: "Open agent panel" })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#agent-panel")).toBeHidden();
+  await agentSeparator.focus();
+  await agentSeparator.press("ArrowRight");
+  await expect(page.locator("#agent-panel")).toBeVisible();
+  const agentBeforeDrag = Number(await agentSeparator.getAttribute("aria-valuenow"));
+  const agentSeparatorBox = await agentSeparator.boundingBox();
+  if (!agentSeparatorBox) throw new Error("Tracker AGENT resize affordance has no box");
+  await page.mouse.move(agentSeparatorBox.x + agentSeparatorBox.width / 2, agentSeparatorBox.y + 12);
+  await page.mouse.down();
+  await page.mouse.move(agentSeparatorBox.x - 32, agentSeparatorBox.y + 12);
+  await page.mouse.up();
+  await expect.poll(async () => Number(await agentSeparator.getAttribute("aria-valuenow"))).toBeGreaterThan(agentBeforeDrag);
 
   await openTracker(page, base, `#/sample/${seededJob.id}`);
   await page.locator(".sample-aside").waitFor();

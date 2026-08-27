@@ -1,6 +1,5 @@
 # User-provided workflow jingles (copyrighted local copies)
 public/audio/*.mp3
-public/subway-surfers.mp4
 data/
 .pi-disabled/
 .hermes/

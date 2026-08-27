@@ -1,6 +1,6 @@
-# Personal Job Search Assistant
+# Job Sequencer
 
-Local dashboard untuk membantu satu user menjalankan proses pencarian kerja dari awal sampai follow-up dengan bantuan Pi Coding Agent.
+Job Sequencer adalah dashboard lokal untuk membantu satu user menjalankan proses pencarian kerja dari awal sampai follow-up dengan bantuan Pi Coding Agent.
 
 ## Ide utama
 

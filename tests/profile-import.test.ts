@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { extractProfileText, normalizeResumeProfile, parseResumeText, ProfileImportError } from "../src/server/profile-import.js";
 import type { PiSessionLike } from "../src/server/pi.js";
 
-const settings = { provider: "personal-job-search-faux", model: "phase0", source: "freehire" as const, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
+const settings = { provider: "job-sequencer-faux", model: "phase0", source: "freehire" as const, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
 
 class FakeSession implements PiSessionLike {
   private listener: ((event: unknown) => void) | null = null;

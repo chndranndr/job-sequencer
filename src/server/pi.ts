@@ -297,7 +297,7 @@ export async function runBoundedPi<T = void>(options: {
 }
 
 async function restrictedRuntime(cwd = process.cwd()) {
-  const faux = fauxProvider({ provider: "personal-job-search-faux", models: [{ id: "phase0", reasoning: false }] });
+  const faux = fauxProvider({ provider: "job-sequencer-faux", models: [{ id: "phase0", reasoning: false }] });
   const runtime = await ModelRuntime.create({
     authPath: join(cwd, ".pi-disabled", "auth.json"),
     modelsPath: null,

@@ -1,4 +1,4 @@
-# Personal Job Search — PRD v1.2
+# Job Sequencer — PRD v1.2
 
 ## 1. Summary
 
@@ -780,7 +780,7 @@ Fastify server
 ### Repository layout
 
 ```text
-personal-job-search/
+job-sequencer/
 ├── PRD.md
 ├── README.md
 ├── package.json

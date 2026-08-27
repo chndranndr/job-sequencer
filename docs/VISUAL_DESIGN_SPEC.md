@@ -1,4 +1,4 @@
-# Personal Job Search — Visual Design Specification
+# Job Sequencer — Visual Design Specification
 
 **Version:** 1.0  
 **Status:** Implementation-ready  

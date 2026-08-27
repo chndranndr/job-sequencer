@@ -250,7 +250,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     reply.code(status).send({ error: status >= 500 ? "Request failed." : error.message });
   });
 
-  app.get("/health", async () => ({ ok: true, service: "personal-job-search" }));
+  app.get("/health", async () => ({ ok: true, service: "job-sequencer" }));
 
   app.get("/api/profile", async () => {
     const state = await readStructuredProfile(dataDir);

@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import type { Job, JobStage, Run, RunTaskRow, TrajectoryEvent } from "../shared.js";
 import { deriveRunTaskRows } from "../shared.js";
 import { SurferLoader } from "../surfer-loader.js";
@@ -55,6 +56,14 @@ function formatElapsed(startedAt: string, finishedAt: string | null | undefined,
   return `${((end - start) / 1000).toFixed(1)}s`;
 }
 
+const MIN_AGENT_WIDTH = 260;
+const MAX_AGENT_WIDTH = 420;
+const COLLAPSED_AGENT_WIDTH = 48;
+
+function clampAgentWidth(value: number) {
+  return Math.max(MIN_AGENT_WIDTH, Math.min(MAX_AGENT_WIDTH, value));
+}
+
 export function ActiveRunStrip({ run, events, now, navigate, onCancel }: { run: Run | null; events: TrajectoryEvent[]; now: number; navigate: (href: string) => void; onCancel: () => void }) {
   if (!run) return null;
   const rows = deriveRunTaskRows(events, run.workflow, run.status);
@@ -83,6 +92,10 @@ export function AgentPane({
   now: number;
 }) {
   const [tab, setTab] = useState<"Steps" | "Reasoning" | "Search">("Steps");
+  const [agentWidth, setAgentWidth] = useState(280);
+  const [agentCollapsed, setAgentCollapsed] = useState(false);
+  const [resizingAgent, setResizingAgent] = useState(false);
+  const agentResizeStart = useRef<{ clientX: number; width: number } | null>(null);
   const running = run?.status === "running";
   const rows = run ? deriveRunTaskRows(events, run.workflow, run.status) : [];
   const tools = toolNames(events);
@@ -91,8 +104,66 @@ export function AgentPane({
   const selected = jobs.filter((job) => job.stage === "Selected");
   const elapsed = run ? formatElapsed(run.started_at, run.finished_at, now) : "0.0s";
 
-  return <aside className="panel agent">
-    <div className="panel-h">AGENT <span>{run ? run.workflow : "idle"}</span></div>
+  useEffect(() => {
+    if (!resizingAgent) return;
+    const onMove = (event: globalThis.PointerEvent) => {
+      const start = agentResizeStart.current;
+      if (!start) return;
+      setAgentWidth(clampAgentWidth(start.width + start.clientX - event.clientX));
+      setAgentCollapsed(false);
+    };
+    const stop = () => {
+      agentResizeStart.current = null;
+      setResizingAgent(false);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+  }, [resizingAgent]);
+
+  function beginAgentResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    agentResizeStart.current = { clientX: event.clientX, width: agentCollapsed ? COLLAPSED_AGENT_WIDTH : agentWidth };
+    setResizingAgent(true);
+  }
+
+  function resizeAgentWithKeyboard(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const step = event.shiftKey ? 40 : 16;
+    let next: number | null = null;
+    if (event.key === "ArrowLeft") next = agentWidth + step;
+    if (event.key === "ArrowRight") next = agentWidth - step;
+    if (event.key === "Home") next = MIN_AGENT_WIDTH;
+    if (event.key === "End") next = MAX_AGENT_WIDTH;
+    if (next === null) return;
+    event.preventDefault();
+    setAgentWidth(clampAgentWidth(next));
+    setAgentCollapsed(false);
+  }
+
+  return <aside className={`panel agent ${agentCollapsed ? "is-collapsed" : ""} ${resizingAgent ? "is-resizing" : ""}`} style={{ width: agentCollapsed ? COLLAPSED_AGENT_WIDTH : agentWidth }} aria-label="Agent panel">
+    <div
+      className="agent__resize"
+      role="separator"
+      tabIndex={0}
+      aria-label="Resize agent panel"
+      aria-orientation="vertical"
+      aria-valuemin={MIN_AGENT_WIDTH}
+      aria-valuemax={MAX_AGENT_WIDTH}
+      aria-valuenow={agentWidth}
+      aria-valuetext={agentCollapsed ? "Collapsed" : `${agentWidth} pixels`}
+      onPointerDown={beginAgentResize}
+      onKeyDown={resizeAgentWithKeyboard}
+    />
+    <div className="panel-h agent__head">
+      <span className="agent__title">AGENT <span>{run ? run.workflow : "idle"}</span></span>
+      <button type="button" className="agent__toggle" aria-controls="agent-panel" aria-expanded={!agentCollapsed} aria-label={agentCollapsed ? "Open agent panel" : "Collapse agent panel"} onClick={() => setAgentCollapsed((value) => !value)}>{agentCollapsed ? "OPEN" : "CLOSE"}</button>
+    </div>
+    <div id="agent-panel" className="agent__content" hidden={agentCollapsed}>
     {pendingScrape && <div className="ask">
       <h2>Start scrape?</h2>
       {scrapeIssues.length ? <p>{scrapeIssues.join(" ")}</p> : <p>Pi will search enabled sources and rank jobs. Nothing is selected for you.</p>}
@@ -129,5 +200,6 @@ export function AgentPane({
       <div className="sources"><span className="src">@profile</span><span className="src">@criteria</span></div>
       <div className="sel-actions"><button onClick={() => onFilter("Recommended")}>Show Recommended</button></div>
     </div>}
+    </div>
   </aside>;
 }

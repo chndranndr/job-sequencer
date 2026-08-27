@@ -1,8 +1,8 @@
-# Personal Job Search — UI/UX Functional Specification
+# Job Sequencer — UI/UX Functional Specification
 
 ## 1. Purpose
 
-This document describes what users can see and do in the Personal Job Search dashboard.
+This document describes what users can see and do in the Job Sequencer dashboard.
 
 ### Runtime entry
 

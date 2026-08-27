@@ -1,10 +1,20 @@
+import { useState } from "react";
 import type { Job, JobStage } from "../shared.js";
 import { jobSourceLabel, type Settings } from "../shared.js";
 import { AgentPane } from "./agent.js";
 import { trackerHref } from "./hash.js";
 import { inboxAgeDays, rowHex, scoreToSignal } from "./notes.js";
+import { sortPatternJobs, type PatternSortDirection, type PatternSortKey } from "./pattern-sort.js";
 
 const filters: Array<JobStage | "all"> = ["all", "Recommended", "Discarded", "Selected", "Drafting", "Ready", "Applied", "Interview"];
+const sortableColumns: Array<{ key: PatternSortKey; label: string }> = [
+  { key: "sample", label: "SAMPLE" },
+  { key: "sig", label: "SIG" },
+  { key: "fit", label: "FIT" },
+  { key: "age", label: "AGE" },
+  { key: "fx", label: "FX" },
+  { key: "src", label: "SRC" },
+];
 
 function patternEmptyCopy(filter: JobStage | "all", total: number) {
   switch (filter) {
@@ -51,9 +61,18 @@ export function PatternView({
   running: boolean;
   navigate: (href: string) => void;
 } & Omit<Parameters<typeof AgentPane>[0], "jobs" | "navigate" | "onFilter">) {
+  const [sortKey, setSortKey] = useState<PatternSortKey | null>(null);
+  const [sortDirection, setSortDirection] = useState<PatternSortDirection>("ascending");
   const visible = jobs.filter((job) => filter === "all" || job.stage === filter);
+  const sorted = sortPatternJobs(visible, sortKey, sortDirection, now, settings?.customSources ?? []);
   const empty = patternEmptyCopy(filter, jobs.length);
   const ranked = jobs.filter((job) => job.stage === "Recommended").length;
+
+  function toggleSort(key: PatternSortKey) {
+    if (sortKey === key) setSortDirection((value) => value === "ascending" ? "descending" : "ascending");
+    else { setSortKey(key); setSortDirection("ascending"); }
+  }
+
   return <>
     <section className="panel">
       <div className="panel-h">PATTERN 00 <span>{visible.length} notes</span></div>
@@ -70,9 +89,14 @@ export function PatternView({
             </button>
           )}
         </div> : <table className="tracker" aria-label="Job pattern: SIG keyword signal, FIT score, AGE inbox days, FX workflow stage, SRC job source">
-          <thead><tr><th>ROW</th><th>SAMPLE</th><th>SIG</th><th>FIT</th><th>AGE</th><th>FX</th><th>SRC</th></tr></thead>
+          <thead><tr>
+            <th scope="col">ROW</th>
+            {sortableColumns.map(({ key, label }) => <th key={key} scope="col" aria-sort={sortKey === key ? sortDirection : "none"} className="sortable">
+              <button type="button" title={`Sort ${label}`} onClick={() => toggleSort(key)}>{label}<span className="sort-indicator" aria-hidden="true">{sortKey === key ? (sortDirection === "ascending" ? "↑" : "↓") : ""}</span></button>
+            </th>)}
+          </tr></thead>
           <tbody>
-            {visible.map((job, index) => {
+            {sorted.map((job, index) => {
               const signal = scoreToSignal(job);
               const fitValue = Number.isFinite(job.score) ? String(job.score) : "—";
               const fitWidth = Number.isFinite(job.score) ? Math.max(0, Math.min(100, job.score)) : 0;
