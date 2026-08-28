@@ -173,6 +173,9 @@ h1, h2, h3, p { margin: 0; }
   padding: 7px 10px; border-bottom: 1px solid var(--line);
   font-family: var(--disp); font-size: 12px; letter-spacing: .08em; color: var(--mute);
 }
+.panel-h-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.panel-action { min-height: 32px; padding: 5px 9px; border-color: var(--phos); background: var(--phos); color: #07140c; font: 10px var(--disp); letter-spacing: .06em; }
+.panel-action:hover { filter: brightness(1.08); }
 .agent { min-height: 0; }
 .agent .think { min-height: 0; }
 
@@ -866,6 +869,7 @@ h1, h2, h3, p { margin: 0; }
 .sample-dialog-head button { border: 0; padding: 0 4px; background: transparent; font-size: 18px; }
 .sample-dialog-body { display: grid; gap: 10px; padding: 12px; }
 .sample-dialog-copy, .sample-dialog-body > p { color: var(--mute); font-size: 11px; }
+.sample-dialog-error { margin: 0; color: var(--fail); font-size: 11px; line-height: 1.45; }
 .sample-dialog-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--well); }
 .sample-dialog-actions button { min-height: 30px; padding: 6px 10px; }
 .sample-dialog-actions .sample-confirm { background: var(--phos); border-color: var(--phos); color: #07140c; }

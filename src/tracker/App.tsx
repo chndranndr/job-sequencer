@@ -220,6 +220,12 @@ export function TrackerApp() {
       started_at: new Date().toISOString(),
     } satisfies Run }));
   }
+  async function startManualImport(input: string) {
+    if (running) throw new Error("Another AI run is already active.");
+    const result = await api<{ runId: string }>("/api/jobs/manual", { method: "POST", body: JSON.stringify({ input }) });
+    announce({ id: result.runId, workflow: "manual_import", status: "running" });
+    setToast("Manual import started.");
+  }
   async function runCommand(value: string) {
     const text = value.trim();
     if (!text) { setToast("Type a /command. Tracker has no freeform workspace chat."); return; }
@@ -230,11 +236,8 @@ export function TrackerApp() {
     if (text.startsWith("/import")) {
       const input = text.replace(/^\/import\s*/i, "");
       if (!input) { setToast("Usage: /import <url or pasted posting>"); return; }
-      try {
-        const result = await api<{ runId: string }>("/api/jobs/manual", { method: "POST", body: JSON.stringify({ input }) });
-        announce({ id: result.runId, workflow: "manual_import", status: "running" });
-        setToast("Manual import started.");
-      } catch (caught) { setToast(caught instanceof Error ? caught.message : "Import failed."); }
+      try { await startManualImport(input); }
+      catch (caught) { setToast(caught instanceof Error ? caught.message : "Import failed."); }
       return;
     }
     setToast("Use a /command. Pi does not take freeform workspace chat.");
@@ -333,7 +336,7 @@ export function TrackerApp() {
       {["pattern", "order", "phrase"].includes(route.view) && (
         <WorkflowRack jobs={jobs} route={route} filter={filter} orderFocus={orderFocus} onChannel={activateChannel} />
       )}
-      {route.view === "pattern" && <PatternView settings={settings} filter={filter} playIndex={playIndex} running={running} {...agentProps} />}
+      {route.view === "pattern" && <PatternView settings={settings} filter={filter} playIndex={playIndex} running={running} onManualImport={startManualImport} {...agentProps} />}
       {route.view === "order" && <OrderView jobs={jobs} orderFocus={orderFocus} onGenerate={(ids) => void generate(ids)} navigate={navigate} run={run} onRun={announce} onReload={() => void reloadJobs()} toast={setToast} />}
       {route.view === "phrase" && <PhraseView jobId={route.jobId} navigate={navigate} onRun={announce} toast={setToast} />}
       {route.view === "sample" && <SampleView jobId={route.jobId} settings={settings} navigate={navigate} toast={setToast} onRun={announce} onReload={() => void reloadJobs()} run={run} />}
