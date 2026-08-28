@@ -34,6 +34,44 @@ test("Tracker browser smoke covers every route and responsive error contract", (
   assert.match(smoke, /Collapse fine-tune sidebar/);
 });
 
+test("Tracker PATTERN manual add uses the shared manual import flow", () => {
+  const pattern = readFileSync(new URL("../src/tracker/pattern.tsx", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../src/tracker/App.tsx", import.meta.url), "utf8");
+
+  assert.match(pattern, /ADD JOB/);
+  assert.match(pattern, /onManualImport: \(input: string\) => Promise<void>/);
+  assert.match(pattern, /Add job manually/);
+  assert.match(pattern, /role="dialog"/);
+  assert.match(pattern, /aria-modal="true"/);
+  assert.match(pattern, /aria-label="Job URL or pasted posting"/);
+  assert.match(pattern, /required/);
+  assert.match(pattern, /noValidate/);
+  assert.match(pattern, /event\.key === "Escape"/);
+  assert.match(pattern, /setSubmitting\(true\)/);
+  assert.match(pattern, /sample-dialog-error/);
+
+  assert.match(app, /async function startManualImport\(input: string\)/);
+  assert.match(app, /await api<\{ runId: string \}>\("\/api\/jobs\/manual"/);
+  assert.match(app, /workflow: "manual_import"/);
+  assert.match(app, /onManualImport=\{startManualImport\}/);
+  assert.match(app, /if \(text\.startsWith\("\/import"\)\) \{[\s\S]*?await startManualImport\(input\)/);
+  assert.equal((app.match(/\/api\/jobs\/manual/g) ?? []).length, 1);
+});
+
+test("Tracker browser smoke covers the manual add flow with isolated fixtures", () => {
+  const smoke = readFileSync(new URL("../scripts/browser-smoke-tracker.ts", import.meta.url), "utf8");
+
+  assert.match(smoke, /writeSettings\(dataDir/);
+  assert.match(smoke, /writeStructuredProfile\(dataDir/);
+  assert.match(smoke, /manualImporter: async/);
+  assert.match(smoke, /getByRole\("button", \{ name: "ADD JOB" \}\)/);
+  assert.match(smoke, /getByRole\("dialog", \{ name: "Add job manually" \}\)/);
+  assert.match(smoke, /getByLabel\("Job URL or pasted posting"\)/);
+  assert.match(smoke, /Enter a posting URL or paste job text/);
+  assert.match(smoke, /Tracker Manual/);
+  assert.match(smoke, /rm\(dataDir, \{ recursive: true, force: true \}\)/);
+});
+
 test("tracker DISK loads profile-editor CSS so field labels stack above inputs", () => {
   const editor = readFileSync(new URL("../src/profile-editor.tsx", import.meta.url), "utf8");
   const studio = readFileSync(new URL("../src/tracker/studio.css", import.meta.url), "utf8");

@@ -7,7 +7,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
 import { expect } from "playwright/test";
 import { buildServer } from "../src/server/app.js";
+import { writeSettings, writeStructuredProfile } from "../src/server/config.js";
 import { listJobs, openDatabase, persistScrape, setJobStage } from "../src/server/db.js";
+import { createEmptyProfile } from "../src/shared.js";
+import type { ManualJobImportResult } from "../src/server/manual-job.js";
 import type { CommandRunner } from "../src/server/documents.js";
 
 const fixtures = [
@@ -38,6 +41,36 @@ const fixtures = [
     gaps: ["Scale is not stated."],
   },
 ];
+
+const manualPostingFixture = "Tracker Manual\nSite Reliability Engineer\nRemote\n\nOwn resilient systems and improve service reliability.";
+const manualImportFixture: ManualJobImportResult = {
+  inputType: "text",
+  url: "manual://tracker-browser-manual",
+  job: {
+    company: "Tracker Manual",
+    role: "Site Reliability Engineer",
+    location: "Remote",
+    posting: "Own resilient systems and improve service reliability.",
+    sourceUrl: "",
+    score: 91,
+    reason: "Reliability work matches the smoke profile.",
+    strengths: ["Reliability"],
+    gaps: ["Cloud scope is not stated."],
+  },
+};
+
+const smokeSettings = {
+  provider: "job-sequencer-faux",
+  model: "fixture",
+  source: "freehire" as const,
+  enabledSources: ["freehire"],
+  customSources: [],
+  sourceMaxAgeDays: { freehire: 9999, linkedin: 9999, tokyodev: 45, "japan-dev": 45 },
+  scoreThreshold: 60,
+  maxResults: 50,
+  cvPages: 2,
+  coverLetterPages: 1,
+};
 
 async function freePort() {
   const probe = createNetServer();
@@ -75,6 +108,11 @@ async function assertNoOverflow(page: import("playwright").Page, label: string) 
 
 const fakeRunner: CommandRunner = async () => ({ code: 0, stdout: "", stderr: "" });
 const dataDir = await mkdtemp(join(tmpdir(), "pjs-tracker-browser-"));
+await writeSettings(dataDir, smokeSettings);
+const smokeProfile = createEmptyProfile();
+smokeProfile.identity.headline = "Backend Engineer";
+smokeProfile.identity.summary = "TypeScript backend engineer focused on reliable services.";
+await writeStructuredProfile(dataDir, smokeProfile);
 const db = openDatabase(":memory:");
 persistScrape(db, { jobs: fixtures });
 const seededJob = listJobs(db).find((job) => job.source_id === fixtures[0].sourceId);
@@ -86,6 +124,7 @@ const app = await buildServer({
   db,
   documentStatusRunner: fakeRunner,
   availableModels: async () => [{ id: "fixture", name: "Fixture" }],
+  manualImporter: async () => manualImportFixture,
   projectRoot: process.cwd(),
 });
 let frontend: ChildProcess | undefined;
@@ -104,7 +143,11 @@ try {
   const requestFailures: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  page.on("requestfailed", (request) => requestFailures.push(`${request.url()} — ${request.failure()?.errorText ?? "unknown"}`));
+  page.on("requestfailed", (request) => {
+    const failure = request.failure()?.errorText;
+    if (request.url().endsWith("/audio/workflow-run.mp3") && failure === "net::ERR_ABORTED") return;
+    requestFailures.push(`${request.url()} — ${failure ?? "unknown"}`);
+  });
   const base = `http://127.0.0.1:${frontendPort}`;
 
   await openTracker(page, base);
@@ -163,6 +206,23 @@ try {
   await page.mouse.move(agentSeparatorBox.x - 32, agentSeparatorBox.y + 12);
   await page.mouse.up();
   await expect.poll(async () => Number(await agentSeparator.getAttribute("aria-valuenow"))).toBeGreaterThan(agentBeforeDrag);
+
+  const addJob = page.getByRole("button", { name: "ADD JOB" });
+  await expect(addJob).toBeVisible();
+  await addJob.click();
+  const manualDialog = page.getByRole("dialog", { name: "Add job manually" });
+  await expect(manualDialog).toBeVisible();
+  const manualInput = page.getByLabel("Job URL or pasted posting");
+  await expect(manualInput).toBeVisible();
+  await manualDialog.getByRole("button", { name: "Add job", exact: true }).click();
+  await expect(manualDialog.getByRole("alert")).toContainText("Enter a posting URL or paste job text.");
+  await page.keyboard.press("Escape");
+  await expect(manualDialog).toBeHidden();
+  await addJob.click();
+  await manualInput.fill(manualPostingFixture);
+  await manualDialog.getByRole("button", { name: "Add job", exact: true }).click();
+  await expect(manualDialog).toBeHidden();
+  await expect(patternTable.locator("tbody tr").filter({ hasText: "Tracker Manual" })).toBeVisible({ timeout: 30_000 });
 
   await openTracker(page, base, `#/sample/${seededJob.id}`);
   await page.locator(".sample-aside").waitFor();
@@ -226,8 +286,14 @@ try {
   if (mobileBoard.scrollWidth <= mobileBoard.clientWidth) throw new Error(`Mobile ORDER board is not horizontally scrollable: ${JSON.stringify(mobileBoard)}`);
   await assertNoOverflow(page, "mobile order board");
   await openTracker(page, base, "#/disk");
-  const mobileDiskMain = await page.locator(".disk-main").boundingBox();
-  const mobileDiskTune = await page.locator(".disk-tune-panel").boundingBox();
+  const mobileDiskMainLocator = page.locator(".disk-main");
+  const mobileDiskTuneLocator = page.locator(".disk-tune-panel");
+  await Promise.all([
+    mobileDiskMainLocator.waitFor({ state: "visible", timeout: 30_000 }),
+    mobileDiskTuneLocator.waitFor({ state: "visible", timeout: 30_000 }),
+  ]);
+  const mobileDiskMain = await mobileDiskMainLocator.boundingBox();
+  const mobileDiskTune = await mobileDiskTuneLocator.boundingBox();
   if (!mobileDiskMain || !mobileDiskTune || mobileDiskTune.y < mobileDiskMain.y + mobileDiskMain.height - 1) throw new Error("DISK sidebar did not stack below the editor on mobile");
   if (mobileDiskTune.width > 390) throw new Error(`DISK sidebar exceeds mobile viewport: ${JSON.stringify(mobileDiskTune)}`);
   await assertNoOverflow(page, "mobile disk sidebar");

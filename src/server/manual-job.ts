@@ -269,6 +269,177 @@ function normalizeFetchedHtml(value: string) {
   return normalized.length > MAX_MANUAL_INPUT_LENGTH ? normalized.slice(0, MAX_MANUAL_INPUT_LENGTH).trimEnd() : normalized;
 }
 
+const MAX_STRUCTURED_FIELD_LENGTH = 300;
+const MAX_STRUCTURED_DESCRIPTION_LENGTH = 40_000;
+const MAX_JSON_LD_LENGTH = 200_000;
+
+type StructuredJobPosting = {
+  title: string;
+  company: string;
+  location: string;
+  identifier: string;
+  description: string;
+};
+
+function htmlAttribute(tag: string, name: "content" | "property" | "type") {
+  const match = tag.match(new RegExp("\\b" + name + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'=<>`]+))", "i"));
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
+}
+
+function metadataText(value: unknown, maxLength: number) {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  return normalizeFetchedHtml(String(value).slice(0, maxLength * 2)).slice(0, maxLength).trimEnd();
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function jsonLdJobPosting(value: unknown, depth = 0): Record<string, unknown> | undefined {
+  if (depth > 4) return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const posting = jsonLdJobPosting(item, depth + 1);
+      if (posting) return posting;
+    }
+    return undefined;
+  }
+  const object = recordValue(value);
+  if (!object) return undefined;
+  const types = Array.isArray(object["@type"]) ? object["@type"] : [object["@type"]];
+  if (types.some((type) => typeof type === "string" && type.toLowerCase().split(/[/:]/).pop() === "jobposting")) return object;
+  return jsonLdJobPosting(object["@graph"], depth + 1);
+}
+
+function parseJsonLd(value: string) {
+  const candidate = value.trim().replace(/^<!--/, "").replace(/-->$/, "").trim();
+  for (const source of [candidate, decodeHtmlEntities(candidate)]) {
+    try { return JSON.parse(source) as unknown; } catch { /* malformed page metadata is ignored */ }
+  }
+  return undefined;
+}
+
+function firstStructuredValue(value: unknown, keys: readonly string[], maxLength = MAX_STRUCTURED_FIELD_LENGTH) {
+  const values = Array.isArray(value) ? value : [value];
+  for (const item of values) {
+    if (typeof item === "string" || typeof item === "number") {
+      const text = metadataText(item, maxLength);
+      if (text) return text;
+      continue;
+    }
+    const object = recordValue(item);
+    if (!object) continue;
+    for (const key of keys) {
+      const text = metadataText(object[key], maxLength);
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function structuredLocation(value: unknown) {
+  const locations = Array.isArray(value) ? value : [value];
+  const result: string[] = [];
+  for (const location of locations) {
+    const object = recordValue(location);
+    const address = object?.address;
+    const addressObject = recordValue(address);
+    const parts = addressObject
+      ? [addressObject.addressLocality, addressObject.addressRegion, recordValue(addressObject.addressCountry)?.name ?? addressObject.addressCountry]
+      : [address, object?.name];
+    const text = parts.map((part) => metadataText(part, MAX_STRUCTURED_FIELD_LENGTH)).filter(Boolean).join(", ");
+    if (text && !result.includes(text)) result.push(text);
+  }
+  return result.join("; ").slice(0, MAX_STRUCTURED_FIELD_LENGTH);
+}
+
+function structuredIdentifier(value: unknown) {
+  const values = Array.isArray(value) ? value : [value];
+  for (const item of values) {
+    const object = recordValue(item);
+    if (!object) {
+      const text = metadataText(item, MAX_STRUCTURED_FIELD_LENGTH);
+      if (text) return text;
+      continue;
+    }
+    const identifier = firstStructuredValue(object.value ?? object.identifier ?? object.propertyID, [], MAX_STRUCTURED_FIELD_LENGTH);
+    const name = metadataText(object.name, MAX_STRUCTURED_FIELD_LENGTH);
+    if (identifier) return name ? `${name}: ${identifier}`.slice(0, MAX_STRUCTURED_FIELD_LENGTH) : identifier;
+  }
+  return "";
+}
+
+function extractStructuredJobPosting(value: string): StructuredJobPosting | undefined {
+  let ogTitle = "";
+  let ogDescription = "";
+  let posting: Record<string, unknown> | undefined;
+  const lower = value.toLowerCase();
+  let cursor = 0;
+  while (cursor < value.length) {
+    const open = value.indexOf("<", cursor);
+    if (open < 0) break;
+    const end = htmlTagEnd(value, open);
+    if (end < 0) break;
+    const rawTag = value.slice(open, end);
+    if (/^<\s*meta\b/i.test(rawTag)) {
+      const property = decodeHtmlEntities(htmlAttribute(rawTag, "property")).toLowerCase();
+      const content = htmlAttribute(rawTag, "content");
+      if (property === "og:title" && !ogTitle) ogTitle = content;
+      if (property === "og:description" && !ogDescription) ogDescription = content;
+      cursor = end;
+      continue;
+    }
+    if (!/^<\s*script\b/i.test(rawTag)) {
+      cursor = end;
+      continue;
+    }
+    const scriptEnd = lower.indexOf("</script", end);
+    if (scriptEnd < 0) break;
+    if (htmlAttribute(rawTag, "type").toLowerCase().split(";", 1)[0].trim() === "application/ld+json") {
+      const script = value.slice(end, scriptEnd);
+      if (script.length <= MAX_JSON_LD_LENGTH) posting ??= jsonLdJobPosting(parseJsonLd(script));
+    }
+    const closingEnd = htmlTagEnd(value, scriptEnd);
+    cursor = closingEnd < 0 ? value.length : closingEnd;
+  }
+  if (!posting && !ogTitle && !ogDescription) return undefined;
+  return {
+    title: firstStructuredValue(posting?.title ?? posting?.name, [], MAX_STRUCTURED_FIELD_LENGTH) || metadataText(ogTitle, MAX_STRUCTURED_FIELD_LENGTH),
+    company: firstStructuredValue(posting?.hiringOrganization, ["name"]),
+    location: structuredLocation(posting?.jobLocation),
+    identifier: structuredIdentifier(posting?.identifier),
+    description: metadataText(posting?.description, MAX_STRUCTURED_DESCRIPTION_LENGTH) || metadataText(ogDescription, MAX_STRUCTURED_DESCRIPTION_LENGTH),
+  };
+}
+
+function isJavascriptShell(value: string, visible: string) {
+  if (!visible) return true;
+  if (/^(?:loading\b|please enable javascript\b|javascript (?:is )?required\b)/i.test(visible)) return true;
+  if (!/<\s*script\b/i.test(value) || visible.length > 500) return false;
+  const body = value.match(/<\s*body\b[^>]*>([\s\S]*?)<\s*\/\s*body\s*>/i)?.[1] ?? value;
+  return /<(?:div|main|section)\b[^>]*(?:id|class|data-[\w-]+)\s*=\s*["'][^"']*(?:root|app|workday|job)[^"']*["']/i.test(body);
+}
+
+function structuredPostingText(metadata: StructuredJobPosting) {
+  const lines = [
+    metadata.title && `Title: ${metadata.title}`,
+    metadata.company && `Company: ${metadata.company}`,
+    metadata.location && `Location: ${metadata.location}`,
+    metadata.identifier && `Identifier: ${metadata.identifier}`,
+    metadata.description && `Description:\n${metadata.description}`,
+  ].filter(Boolean).join("\n");
+  return lines.length > MAX_MANUAL_INPUT_LENGTH ? lines.slice(0, MAX_MANUAL_INPUT_LENGTH).trimEnd() : lines;
+}
+
+function normalizeFetchedPosting(value: string) {
+  const visible = normalizeFetchedHtml(value);
+  const metadata = extractStructuredJobPosting(value);
+  if (!metadata || !isJavascriptShell(value, visible)) return visible;
+  const structured = structuredPostingText(metadata);
+  const combined = [visible, structured].filter(Boolean).join("\n\n");
+  return combined.length > MAX_MANUAL_INPUT_LENGTH ? combined.slice(0, MAX_MANUAL_INPUT_LENGTH).trimEnd() : combined;
+}
+
 function explicitUrls(value: string) {
   return [...value.matchAll(/https?:\/\/[^\s<>"'`]+/gi)]
     .map((match) => match[0].replace(/[),.;:!?]+$/, ""))
@@ -422,7 +593,7 @@ export async function importManualJob(value: string, settings: Settings, options
       return { inputType: "url", url: linkedIn.url, job };
     }
     const url = normalizeUrl(inputUrl.toString());
-    const content = normalizeFetchedHtml(await fetchPosting(new URL(url), options));
+    const content = normalizeFetchedPosting(await fetchPosting(new URL(url), options));
     const job = await parseManualJobText(content, settings, { createSession: options.createSession, profile: options.profile, criteria: options.criteria, signal: options.signal, runId: options.runId, trajectory: options.trajectory, sourceUrls: [url] });
     return { inputType: "url", url, job };
   }
@@ -461,6 +632,7 @@ export class ManualJobRunManager {
   isActive() { return Boolean(this.active); }
 
   async start(input: string) {
+    const normalizedInput = cleanInput(input);
     if (this.active || this.options.otherActive?.()) throw Object.assign(new Error("Another AI run is already active."), { statusCode: 409 });
     const id = randomUUID();
     const controller = new AbortController();
@@ -474,7 +646,7 @@ export class ManualJobRunManager {
       const startedAt = new Date().toISOString();
       this.options.db.prepare("INSERT INTO runs(id,workflow,status,provider,model,started_at) VALUES(?,'manual_import','running',?,?,?)").run(id, context.settings.provider, context.settings.model, startedAt);
       recordManualRunEvent(this.options.trajectory, id, "run_started", "running");
-      void this.work(id, controller, input, context);
+      void this.work(id, controller, normalizedInput, context);
       return id;
     } catch (error) {
       if (this.active?.id === id) this.active = undefined;
