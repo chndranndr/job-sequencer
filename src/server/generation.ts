@@ -11,6 +11,7 @@ import { loadGuidance } from "./guidance.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "./pi.js";
 import { runStructured } from "./structured.js";
 import { loadTemplateMetadata } from "./templates.js";
+import { runDocumentVerifier } from "./verifier.js";
 
 export const GenerationOutputSchema = z.object({
   cvTemplate: z.string().min(1),
@@ -440,7 +441,15 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   tasks.start({ taskId: `generate:${options.jobId}:content`, label: "Generate tailored content", detail: jobDetail });
   const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, signal: options.signal, runId: options.runId, trajectory: options.trajectory, onUsage: options.onUsage });
   const output = validateGenerationOutput(raw, options.profile, Object.keys(metadata.cv), Array.isArray(rank.gaps) ? rank.gaps : [], `${String(job.role)} ${String(job.company)} ${String(job.posting)}`);
-  tasks.complete(`generate:${options.jobId}:content`, jobDetail);
+  const documentVerification = await runDocumentVerifier({
+    output,
+    profile: options.profile,
+    jobContext: `${String(job.role)} ${String(job.company)} ${String(job.posting)}`,
+    trajectory: options.trajectory,
+    runId: options.runId,
+  });
+  if (documentVerification.needsReview) tasks.complete(`generate:${options.jobId}:content`, `${jobDetail} · needs review`);
+  else tasks.complete(`generate:${options.jobId}:content`, jobDetail);
   const info = metadata.cv[output.cvTemplate]!;
   tasks.start({ taskId: `generate:${options.jobId}:documents`, label: "Compile and verify documents", detail: jobDetail });
   const appDir = containedPath(options.dataDir, "applications", options.jobId);

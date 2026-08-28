@@ -1,0 +1,9 @@
+{
+  "id": "duplicate-job",
+  "profile": "Backend engineer.",
+  "jobs": [
+    { "sourceId": "dup-1", "url": "https://example.test/jobs/1", "score": 80 },
+    { "sourceId": "dup-2", "url": "https://example.test/jobs/1", "score": 70 }
+  ],
+  "expect": { "uniqueUrls": 1 }
+}

@@ -1,0 +1,12 @@
+{
+  "id": "strong-backend-java",
+  "profile": "Senior backend engineer with Java, Spring, and distributed systems experience.",
+  "job": {
+    "company": "Acme",
+    "role": "Senior Java Backend Engineer",
+    "posting": "Build JVM services with Spring Boot and Kafka.",
+    "score": 88,
+    "reason": "Strong Java backend overlap"
+  },
+  "expect": { "minScore": 75, "template": "moderncv" }
+}

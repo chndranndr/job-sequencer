@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { PiRunCancelledError, PiRunTimeoutError, type PiRunUsage } from "./pi.js";
 import { createTaskReporter, persistScrape } from "./db.js";
 import { hydrateScrapeResult, sanitizeFallbackQueries, ScrapeResultSchema, validateScrapeResult, type ScrapeResult } from "./scrape.js";
+import { runRankVerifier } from "./verifier.js";
 import type { Criteria, Settings } from "./config.js";
 import { createLiveRestrictedScrapeSession, runBoundedPi, type PiSessionLike } from "./pi.js";
 import { createScrapeTools } from "./scrape.js";
@@ -320,6 +321,8 @@ export class RunManager {
         tasks.fail("scrape:validate", "Result validation failed.");
         throw error;
       }
+      const rankVerification = await runRankVerifier({ result, trajectory: this.trajectory, runId: id });
+      if (rankVerification.needsReview.length) output.warnings = [...(output.warnings ?? []), `Rank verifier flagged ${rankVerification.needsReview.length} job(s) for review.`];
       tasks.start({ taskId: "scrape:persist", label: "Persist jobs and finalize" });
       let counts: { inserted: number; updated: number };
       try {

@@ -1,0 +1,11 @@
+{
+  "id": "ambiguous-requirement",
+  "profile": "Backend engineer.",
+  "job": {
+    "company": "Example",
+    "role": "Engineer",
+    "posting": "Must have relevant experience.",
+    "score": 55
+  },
+  "expect": { "scoreBand": [40, 70] }
+}

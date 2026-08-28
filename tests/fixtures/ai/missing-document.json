@@ -1,0 +1,7 @@
+{
+  "id": "missing-document",
+  "profile": "Backend engineer.",
+  "job": { "company": "Example", "role": "Engineer", "posting": "API work." },
+  "documents": { "cv": null, "coverLetter": null },
+  "expect": { "documentsMissing": true }
+}

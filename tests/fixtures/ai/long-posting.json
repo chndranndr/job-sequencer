@@ -1,0 +1,11 @@
+{
+  "id": "long-posting",
+  "profile": "Backend engineer.",
+  "job": {
+    "company": "Example",
+    "role": "Engineer",
+    "posting": "LONG_POSTING_PLACEHOLDER",
+    "score": 75
+  },
+  "expect": { "minPostingLength": 1000 }
+}

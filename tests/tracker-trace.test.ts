@@ -3,6 +3,7 @@ import test from "node:test";
 import type { Run, TrajectoryEvent } from "../src/shared.js";
 import { parseTrackerHash, trackerHref } from "../src/tracker/hash.js";
 import {
+  deriveTraceOperations,
   eventSummary,
   formatTraceDuration,
   isRunSyncMessage,
@@ -65,4 +66,35 @@ test("TRACE duration formatting handles terminal and live runs", () => {
   assert.equal(formatTraceDuration(65_000), "1m 5s");
   assert.equal(formatTraceDuration(null), "—");
   assert.equal(formatTraceDuration(Date.parse(run.finished_at!) - Date.parse(run.started_at)), "2.5s");
+});
+
+test("TRACE operations derive retry, usage, verifier, and review markers", () => {
+  const run = {
+    id: "run-ops",
+    workflow: "scrape",
+    status: "succeeded",
+    provider: "fixture",
+    model: "model",
+    summary: null,
+    error_code: null,
+    attempt_count: 2,
+    input_tokens: 10,
+    output_tokens: 20,
+    total_tokens: 30,
+    estimated_cost: 0.4,
+    started_at: "2026-08-24T00:00:00.000Z",
+    finished_at: "2026-08-24T00:00:01.000Z",
+  } as Run;
+  const events = [
+    event(1, "structured_output_invalid", { error: "schema mismatch" }, "error"),
+    event(2, "verifier_needs_review", { verifier: "rank", status: "needs_review" }),
+    event(3, "session_start", null),
+  ];
+  const ops = deriveTraceOperations(run, events);
+  assert.equal(ops.attempt, 2);
+  assert.equal(ops.retryReason, "schema mismatch");
+  assert.equal(ops.totalTokens, 30);
+  assert.equal(ops.verifierStatus, "needs_review");
+  assert.equal(ops.needsReview, true);
+  assert.equal(ops.sessionReuse, "reused");
 });
