@@ -6,9 +6,9 @@ import type { StructuredProfile, TrajectoryRecorder } from "../shared.js";
 import { ProfileSchema, type Settings } from "./config.js";
 import { compileAndVerify, containedPath, type CommandRunner } from "./documents.js";
 import { createTaskReporter } from "./db.js";
-import { projectPromptContext, projectPromptText } from "./context.js";
+import { projectPromptContext, projectPromptText, trustedSection, untrustedSection } from "./context.js";
 import { loadGuidance } from "./guidance.js";
-import { createRestrictedGenerationSession, runBoundedPi } from "./pi.js";
+import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "./pi.js";
 import { runStructured } from "./structured.js";
 import { loadTemplateMetadata } from "./templates.js";
 
@@ -23,7 +23,7 @@ export const GenerationOutputSchema = z.object({
   gaps: z.array(z.string().trim().min(1)).max(20),
 }).strict();
 export type GenerationOutput = z.infer<typeof GenerationOutputSchema>;
-export type GenerationExecutor = (context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; guidance?: string; settings: Settings; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder }) => Promise<unknown>;
+export type GenerationExecutor = (context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; guidance?: string; settings: Settings; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void }) => Promise<unknown>;
 
 function availableCvTemplateIds(templates: unknown) {
   if (!templates || typeof templates !== "object" || Array.isArray(templates) || !("cv" in templates)) return [];
@@ -40,31 +40,13 @@ export function buildGenerationPrompt(context: { profile: string; job: Record<st
   const posting = context.job.posting;
   const jobMetadata = Object.fromEntries(Object.entries(context.job).filter(([key]) => key !== "posting"));
   return [
-    `Return JSON only matching {"cvTemplate":"","roleEmphasis":["verified facts relevant to the role"],"cvEdits":["specific truthful edits"],"profileFacts":["exact verbatim excerpts from profile"],"coverLetterSubject":"","coverLetterParagraphs":["2-4 substantive truthful paragraphs carrying the main narrative and evidence"],"coverLetterBullets":["optional verified complementary points not already stated in paragraphs"],"gaps":["exact entries from rank.gaps"]}. Allowed local CV template IDs: ${JSON.stringify(availableCvTemplateIds(context.templates))}. Set cvTemplate to exactly one ID from this list, verbatim; do not invent, alias, or map template IDs. Use only supplied facts, job data, and gaps; never invent metrics, employers, technologies, responsibilities, or company claims. Keep bullets optional and complementary: omit them when no new evidence remains, and never repeat a paragraph's achievement, metric, or claim. Do not use em-dashes.`,
-    "TRUSTED INSTRUCTIONS",
-    "---",
-    `Guidance:\n${projectPromptText(guidance)}`,
-    "---",
-    "TRUSTED CANDIDATE PROFILE",
-    "---",
-    projectPromptText(context.profile),
-    "---",
-    "TRUSTED JOB METADATA",
-    "---",
-    JSON.stringify(projectPromptContext(jobMetadata)),
-    "---",
-    "UNTRUSTED EXTERNAL JOB POSTING",
-    "---",
-    typeof posting === "string" ? projectPromptText(posting) : JSON.stringify(projectPromptContext(posting)) ?? "null",
-    "---",
-    "TRUSTED RANK DATA",
-    "---",
-    JSON.stringify(projectPromptContext(context.rank)),
-    "---",
-    "TRUSTED LOCAL TEMPLATE DATA",
-    "---",
-    JSON.stringify(projectPromptContext(context.templates)),
-    "---",
+    trustedSection("INSTRUCTIONS", `Return JSON only matching {"cvTemplate":"","roleEmphasis":["verified facts relevant to the role"],"cvEdits":["specific truthful edits"],"profileFacts":["exact verbatim excerpts from profile"],"coverLetterSubject":"","coverLetterParagraphs":["2-4 substantive truthful paragraphs carrying the main narrative and evidence"],"coverLetterBullets":["optional verified complementary points not already stated in paragraphs"],"gaps":["exact entries from rank.gaps"]}. Allowed local CV template IDs: ${JSON.stringify(availableCvTemplateIds(context.templates))}. Set cvTemplate to exactly one ID from this list, verbatim; do not invent, alias, or map template IDs. Use only supplied facts, job data, and gaps; never invent metrics, employers, technologies, responsibilities, or company claims. Keep bullets optional and complementary: omit them when no new evidence remains, and never repeat a paragraph's achievement, metric, or claim. Do not use em-dashes.`),
+    trustedSection("GUIDANCE", guidance),
+    trustedSection("CANDIDATE PROFILE", context.profile),
+    untrustedSection("JOB METADATA", JSON.stringify(projectPromptContext(jobMetadata))),
+    untrustedSection("EXTERNAL JOB POSTING", typeof posting === "string" ? posting : JSON.stringify(projectPromptContext(posting)) ?? "null"),
+    trustedSection("RANK DATA", JSON.stringify(projectPromptContext(context.rank))),
+    trustedSection("LOCAL TEMPLATE DATA", JSON.stringify(projectPromptContext(context.templates))),
   ].join("\n");
 }
 
@@ -83,6 +65,7 @@ export const liveGenerationExecutor: GenerationExecutor = async context => {
         createSession: () => createRestrictedGenerationSession(context.settings),
         runId: context.runId,
         trajectory: context.trajectory,
+        onUsage: context.onUsage,
         onEvent: event => {
           const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
           if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
@@ -431,7 +414,7 @@ function render(template: string, replacements: Record<string, string>) {
   return template.replace(pattern, token => replacements[token] ?? token);
 }
 
-export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder }) {
+export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void }) {
   const job = options.db.prepare("SELECT * FROM jobs WHERE id=?").get(options.jobId) as Record<string, unknown> | undefined;
   if (!job) throw new Error("Job not found.");
   const allowed = options.allowDrafting ? ["Drafting"] : ["Selected"];
@@ -455,7 +438,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   tasks.complete(`generate:${options.jobId}:prepare`, jobDetail);
   const rank = JSON.parse(String(job.rank_json));
   tasks.start({ taskId: `generate:${options.jobId}:content`, label: "Generate tailored content", detail: jobDetail });
-  const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, signal: options.signal, runId: options.runId, trajectory: options.trajectory });
+  const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, signal: options.signal, runId: options.runId, trajectory: options.trajectory, onUsage: options.onUsage });
   const output = validateGenerationOutput(raw, options.profile, Object.keys(metadata.cv), Array.isArray(rank.gaps) ? rank.gaps : [], `${String(job.role)} ${String(job.company)} ${String(job.posting)}`);
   tasks.complete(`generate:${options.jobId}:content`, jobDetail);
   const info = metadata.cv[output.cvTemplate]!;

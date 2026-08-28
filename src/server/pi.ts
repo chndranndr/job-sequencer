@@ -13,7 +13,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { createScrapeTools } from "./scrape.js";
 import type { Settings } from "./config.js";
 import { jobSourceLabel, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
-import { telemetryAssistantPayload, telemetryPromptPayload, telemetrySystemPromptPayload } from "./telemetry.js";
+import { telemetryAssistantPayload, telemetryPromptPayload, telemetrySystemPromptPayload, telemetryToolPayload } from "./telemetry.js";
 
 export interface PiSessionLike {
   subscribe(listener: (event: unknown) => void): () => void;
@@ -57,8 +57,6 @@ export type PiRunUsage = {
   estimatedCost: number | null;
 };
 
-let activeRun = false;
-
 type ModelLike = { provider: string; id: string };
 
 export function selectConfiguredModel<T extends ModelLike>(
@@ -99,13 +97,15 @@ function textValue(value: unknown) {
 }
 
 export function redactTelemetryText(value: string, limit = trajectoryTextLimit) {
+  const safeLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : trajectoryTextLimit;
   return value
     .replace(/(https?:\/\/)([^/\s:@]+)(?::[^/\s@]*)?@/gi, "$1[redacted]@")
-    .replace(/(authorization\s*[:=]\s*bearer\s+|bearer\s+)[^\s,}]+/gi, "$1[redacted]")
-    .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|access_token)=)[^&\s]*/gi, "$1[redacted]")
-    .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|bearer)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]")
+    .replace(/\b(bearer|basic)\s+[^\s,}]+/gi, "$1 [redacted]")
+    .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|access_token|credential(?:s)?|client[_-]?secret|private[_-]?key|refresh[_-]?token)=)[^&#\s]*/gi, "$1[redacted]")
+    .replace(/([\"']?(?:credentials?|auth(?:orization)?|api[_-]?key|client[_-]?secret|private[_-]?key)[\"']?\s*[:=]\s*)\{[^{}]*\}/gi, "$1[redacted]")
+    .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|bearer|credential(?:s)?|client[_-]?secret|private[_-]?key|refresh[_-]?token)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]")
     .replace(/\bsk-[A-Za-z0-9_-]+\b/g, "[redacted]")
-    .slice(0, limit);
+    .slice(0, safeLimit);
 }
 
 function safeTelemetryError(error: unknown) {
@@ -262,8 +262,6 @@ export async function runBoundedPi<T = void>(options: {
   runId?: string;
   trajectory?: TrajectoryRecorder;
 }): Promise<T> {
-  if (activeRun) throw new Error("another Pi run is already active");
-  activeRun = true;
   let session: PiSessionLike | undefined;
   let unsubscribe: (() => void) | undefined;
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
@@ -344,8 +342,8 @@ export async function runBoundedPi<T = void>(options: {
   const flushTools = () => {
     for (const state of toolStates.values()) {
       const endedAt = isoNow();
-      if (state.partialResult !== undefined) record({ kind: "tool_update", type: "tool_execution_update", startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: { toolCallId: state.toolCallId, toolName: state.toolName, partialResult: state.partialResult } });
-      record({ kind: "tool_result", type: "tool_execution_end", startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: { toolCallId: state.toolCallId, toolName: state.toolName, result: state.partialResult ?? null, isError: true, interrupted: true } });
+      if (state.partialResult !== undefined) record({ kind: "tool_update", type: "tool_execution_update", startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: telemetryToolPayload({ toolCallId: state.toolCallId, toolName: state.toolName, partialResult: state.partialResult }, redactTelemetryText) });
+      record({ kind: "tool_result", type: "tool_execution_end", startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: telemetryToolPayload({ toolCallId: state.toolCallId, toolName: state.toolName, result: state.partialResult ?? null, isError: true, interrupted: true }, redactTelemetryText) });
     }
     toolStates.clear();
   };
@@ -382,7 +380,7 @@ export async function runBoundedPi<T = void>(options: {
       const toolCallId = textValue(event.toolCallId) || `tool-${toolStates.size + 1}`;
       const startedAt = isoNow();
       toolStates.set(toolCallId, { toolCallId, toolName: textValue(event.toolName), args: event.args, startedAt });
-      record({ kind: "tool_call", type, startedAt, payload: { toolCallId, toolName: textValue(event.toolName), args: event.args } });
+      record({ kind: "tool_call", type, startedAt, payload: telemetryToolPayload({ toolCallId, toolName: textValue(event.toolName), args: event.args }, redactTelemetryText) });
     } else if (type === "tool_execution_update") {
       const toolCallId = textValue(event.toolCallId) || `tool-${toolStates.size + 1}`;
       const state = toolStates.get(toolCallId) ?? { toolCallId, toolName: textValue(event.toolName), args: event.args, startedAt: isoNow() };
@@ -393,10 +391,10 @@ export async function runBoundedPi<T = void>(options: {
       const state = toolStates.get(toolCallId) ?? { toolCallId, toolName: textValue(event.toolName), args: undefined, startedAt: isoNow() };
       if (state.partialResult !== undefined) {
         const updateEndedAt = isoNow();
-        record({ kind: "tool_update", type: "tool_execution_update", startedAt: state.startedAt, endedAt: updateEndedAt, durationMs: durationBetween(state.startedAt, updateEndedAt), payload: { toolCallId, toolName: state.toolName, partialResult: state.partialResult } });
+        record({ kind: "tool_update", type: "tool_execution_update", startedAt: state.startedAt, endedAt: updateEndedAt, durationMs: durationBetween(state.startedAt, updateEndedAt), payload: telemetryToolPayload({ toolCallId, toolName: state.toolName, partialResult: state.partialResult }, redactTelemetryText) });
       }
       const endedAt = isoNow();
-      record({ kind: "tool_result", type, startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: { toolCallId, toolName: textValue(event.toolName) || state.toolName, result: event.result, isError: event.isError === true } });
+      record({ kind: "tool_result", type, startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: telemetryToolPayload({ toolCallId, toolName: textValue(event.toolName) || state.toolName, result: event.result, isError: event.isError === true }, redactTelemetryText) });
       toolStates.delete(toolCallId);
     }
     if (type && !type.startsWith("tool_execution_") && type !== "message_update") {
@@ -442,7 +440,7 @@ export async function runBoundedPi<T = void>(options: {
       try { sessionModel = session.model; } catch (error) { record({ kind: "error", type: "model_read_error", payload: { error: safeTelemetryError(error) } }); }
     }
     record({ kind: "system", type: "system_prompt", payload: telemetrySystemPromptPayload(systemPrompt, redactTelemetryText) });
-    record({ kind: "system", type: "tool_catalog", payload: { activeToolNames, tools } });
+    record({ kind: "system", type: "tool_catalog", payload: telemetryToolPayload({ activeToolNames, tools }, redactTelemetryText) });
     record({
       kind: "system",
       type: "run_context",
@@ -500,7 +498,6 @@ export async function runBoundedPi<T = void>(options: {
     if (session) record({ kind: "lifecycle", type: "session_disposed", endedAt: isoNow(), payload: null });
     unsubscribe?.();
     session?.dispose();
-    activeRun = false;
   }
 }
 

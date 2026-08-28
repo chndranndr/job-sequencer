@@ -4,17 +4,24 @@ const maxPromptCollectionEntries = 100;
 const truncatedMarker = "\n[truncated]";
 
 const controlCharPattern = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
-const zeroWidthPattern = /[\u200B-\u200D\uFEFF]/g;
+const zeroWidthPattern = /[\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
 
 export function normalizePromptText(value: string) {
-  return value.replace(controlCharPattern, "").replace(zeroWidthPattern, "");
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, " ")
+    .replace(controlCharPattern, "")
+    .replace(zeroWidthPattern, "");
 }
 
 export function projectPromptText(value: string, limit = maxPromptFieldLength) {
+  const safeLimit = Number.isFinite(limit)
+    ? Math.min(maxPromptFieldLength, Math.max(0, Math.floor(limit)))
+    : maxPromptFieldLength;
   const normalized = normalizePromptText(value);
-  if (normalized.length <= limit) return normalized;
-  if (limit <= truncatedMarker.length) return truncatedMarker.slice(0, limit);
-  return `${normalized.slice(0, limit - truncatedMarker.length)}${truncatedMarker}`;
+  if (normalized.length <= safeLimit) return normalized;
+  if (safeLimit <= truncatedMarker.length) return truncatedMarker.slice(0, safeLimit);
+  return `${normalized.slice(0, safeLimit - truncatedMarker.length)}${truncatedMarker}`;
 }
 
 function projectPromptValue(value: unknown): unknown {
@@ -26,7 +33,7 @@ function projectPromptValue(value: unknown): unknown {
       Object.entries(value)
         .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
         .slice(0, maxPromptCollectionEntries)
-        .map(([key, current]) => [key, projectPromptValue(current)]),
+        .map(([key, current]) => [projectPromptText(key), projectPromptValue(current)]),
     );
   }
   return value;
@@ -36,12 +43,23 @@ export function projectPromptContext(value: unknown) {
   return projectPromptValue(value);
 }
 
+function sectionLabel(value: string) {
+  const normalized = normalizePromptText(value).replace(/\s+/g, " ").trim();
+  return normalized.slice(0, 200) || "DATA";
+}
+
+function section(kind: "TRUSTED" | "UNTRUSTED", label: string, body: string) {
+  const safeLabel = sectionLabel(label);
+  const projected = projectPromptText(body).replace(/^[ \t]*---[ \t]*$/gm, "[separator]");
+  return [`${kind} ${safeLabel}`, "---", projected, "---"].join("\n");
+}
+
 export function trustedSection(label: string, body: string) {
-  return [`TRUSTED ${label}`, "---", projectPromptText(body), "---"].join("\n");
+  return section("TRUSTED", label, body);
 }
 
 export function untrustedSection(label: string, body: string) {
-  return [`UNTRUSTED ${label}`, "---", projectPromptText(body), "---"].join("\n");
+  return section("UNTRUSTED", label, body);
 }
 
 // ponytail: injection detection is advisory; deterministic boundaries remain the security gate.

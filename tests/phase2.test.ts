@@ -22,7 +22,7 @@ function insertJob(db: any, stage = "Selected", suffix = "1") {
 async function wait(app: any, id: string) {
   for (let i = 0; i < 100; i++) {
     const body = (await app.inject({ url: `/api/runs/${id}` })).json();
-    if (body.status !== "running") return body;
+    if (body.status !== "running" && body.status !== "queued") return body;
     await new Promise(resolve => setTimeout(resolve, 5));
   }
   throw new Error("run did not finish");
@@ -175,7 +175,7 @@ test("generation prompt enumerates only available local CV templates", () => {
   assert.doesNotMatch(prompt, /fixture/);
 });
 
-test("busy generation returns HTTP 409", async () => {
+test("busy generation queues the next job", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-busy-"));
   const db = openDatabase(":memory:");
   const first = insertJob(db, "Selected", "busy-1");
@@ -187,11 +187,11 @@ test("busy generation returns HTTP 409", async () => {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [first] } });
     assert.equal(start.statusCode, 202);
-    const conflict = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [second] } });
-    assert.equal(conflict.statusCode, 409);
-    assert.deepEqual(conflict.json(), { error: "Another AI run is already active." });
+    const queued = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [second] } });
+    assert.equal(queued.statusCode, 202);
     release();
     assert.equal((await wait(app, start.json().runId)).status, "succeeded");
+    assert.equal((await wait(app, queued.json().runId)).status, "succeeded");
   } finally { release(); await app.close(); db.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

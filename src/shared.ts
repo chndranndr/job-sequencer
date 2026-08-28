@@ -265,8 +265,8 @@ export type FollowUpContext = {
   tone: string;
 };
 
-export type RunStatus = "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
-export type RunWorkflow = "scrape" | "generate" | "interview" | "follow_up" | "manual_import" | "test";
+export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
+export type RunWorkflow = "scrape" | "generate" | "interview" | "follow_up" | "manual_import" | "profile_import" | "test";
 
 export type TrajectoryEventKind = "system" | "user" | "assistant" | "thinking" | "tool_call" | "tool_update" | "tool_result" | "lifecycle" | "error";
 
@@ -357,6 +357,7 @@ const fallbackTaskPlan: Record<RunWorkflow, Array<[string, string]>> = {
     ["manual_import:fallback:parse-score", "Fetch or parse and score job"],
     ["manual_import:fallback:persist", "Persist scored job"],
   ],
+  profile_import: [["profile_import:fallback:parse", "Parse resume profile"]],
   test: [["test:fallback:provider", "Test provider connection"]],
 };
 
@@ -366,7 +367,7 @@ function fallbackTaskRows(workflow: RunWorkflow, status: RunStatus): RunTaskRow[
   return plan.map(([taskId, label], index) => ({
     taskId,
     label,
-    status: status === "running" ? (index === 0 ? "active" : "pending") : status === "succeeded" ? "completed" : index === 0 ? "failed" : "pending",
+    status: status === "queued" ? "pending" : status === "running" ? (index === 0 ? "active" : "pending") : status === "succeeded" ? "completed" : index === 0 ? "failed" : "pending",
     detail: status !== "running" && status !== "succeeded" && index === 0 ? terminalDetail : undefined,
   }));
 }
@@ -389,7 +390,7 @@ export function deriveRunTaskRows(events: readonly TrajectoryEvent[], workflow: 
   if (!rows.size) return fallbackTaskRows(workflow, runStatus);
 
   const result = [...rows.values()];
-  if (runStatus !== "running") {
+  if (runStatus !== "running" && runStatus !== "queued") {
     for (const row of result) {
       if (row.status !== "active") continue;
       row.status = runStatus === "succeeded" ? "completed" : "failed";
@@ -416,6 +417,7 @@ export type Run = {
   provider: string;
   model: string;
   summary: unknown;
+  idempotency_key?: string | null;
   error?: string | null;
   error_code?: string | null;
   attempt_count?: number | null;

@@ -52,7 +52,7 @@ const fixtureImport: ManualJobImportResult = {
 async function waitForRun(app: Awaited<ReturnType<typeof buildServer>>, id: string) {
   for (let attempt = 0; attempt < 200; attempt++) {
     const run = (await app.inject({ url: `/api/runs/${id}` })).json() as { status: string; error?: string };
-    if (run.status !== "running") return run;
+    if (run.status !== "running" && run.status !== "queued") return run;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error("manual run did not finish");
@@ -320,7 +320,7 @@ test("manual API starts an async scored run and persists Pi trajectory", async (
   } finally { await app.close(); db.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("manual run rejects overlap and leaves no job on importer failure", async () => {
+test("manual run queues overlap and leaves no job on importer failure", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-manual-failure-"));
   const db = openDatabase(":memory:");
   await writeSettings(dir, settings);
@@ -336,9 +336,11 @@ test("manual run rejects overlap and leaves no job on importer failure", async (
     const first = await app.inject({ method: "POST", url: "/api/jobs/manual", payload: { input: "blocked" } });
     assert.equal(first.statusCode, 202);
     const overlap = await app.inject({ method: "POST", url: "/api/jobs/manual", payload: { input: "second" } });
-    assert.equal(overlap.statusCode, 409);
+    assert.equal(overlap.statusCode, 202);
     release();
     assert.equal((await waitForRun(app, first.json().runId)).status, "succeeded");
+    const overlapRun = await waitForRun(app, overlap.json().runId);
+    assert.equal(overlapRun.status, "failed");
     const duplicate = await app.inject({ method: "POST", url: "/api/jobs/manual", payload: { input: "duplicate" } });
     assert.equal(duplicate.statusCode, 202);
     const duplicateRun = await waitForRun(app, duplicate.json().runId);

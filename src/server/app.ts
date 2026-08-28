@@ -62,6 +62,7 @@ import { type FollowUpContext, type InterviewMessage } from "../shared.js";
 import { createRestrictedGenerationSession, getAvailablePiModels, runBoundedPi, type PiModelOption } from "./pi.js";
 import { importResumeProfile, MAX_PROFILE_UPLOAD_BYTES, type ProfileImportFile, type ProfileImportResult } from "./profile-import.js";
 import { importManualJob, ManualJobRunManager, MAX_MANUAL_INPUT_LENGTH, type ManualJobImporter } from "./manual-job.js";
+import { RunCoordinator } from "./coordinator.js";
 
 export interface ServerOptions {
   dataDir?: string;
@@ -88,6 +89,10 @@ const isoDate = z.string().refine((value) => {
 }, "Invalid date.");
 
 function requestId(req: { params: unknown }) { return (req.params as { id: string }).id; }
+function requestIdempotencyKey(req: { headers: Record<string, string | string[] | undefined> }) {
+  const value = req.headers["idempotency-key"];
+  return typeof value === "string" ? value : Array.isArray(value) ? value[0] : undefined;
+}
 function notFound(message: string) { return Object.assign(new Error(message), { statusCode: 404 }); }
 async function readOptionalFile(path: string) {
   try { return await readFile(path, "utf8"); }
@@ -108,6 +113,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   const db = options.db ?? (await import("./db.js")).openDatabase(join(dataDir, "jobs.sqlite3"));
   const ownsDb = !options.db;
   const trajectory = createTrajectoryRecorder(db);
+  const coordinator = new RunCoordinator({ db, trajectory });
   const baseLoad = async (purpose: "scrape" | "generation" | "interview" | "follow_up") => ({
     profile: await (async () => {
       try { return await readProviderContext(dataDir, purpose); }
@@ -125,7 +131,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   const manager = new RunManager(db, options.scrapeExecutor ?? liveScrapeExecutor, async () => {
     const context = await baseLoad("scrape");
     return { profile: context.profile, criteria: context.criteria, settings: context.settings };
-  }, trajectory);
+  }, trajectory, coordinator);
   let generation!: GenerationRunManager;
   let interview!: TaskRunManager;
   let followUp!: TaskRunManager;
@@ -144,7 +150,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       catch { throw Object.assign(new Error("Review and save a structured profile before adding a job."), { statusCode: 409 }); }
       return { profile, criteria: await readCriteria(dataDir), settings };
     },
-    otherActive: () => manager.isActive() || generation.isActive() || interview.isActive() || followUp.isActive(),
+    coordinator,
   });
   generation = new GenerationRunManager({
     db,
@@ -157,7 +163,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       const context = await baseLoad("generation");
       return { profile: context.profile, settings: context.settings };
     },
-    otherActive: () => manager.isActive() || interview.isActive() || followUp.isActive() || manual.isActive(),
+    coordinator,
   });
   interview = new TaskRunManager({
     db,
@@ -166,9 +172,9 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       const context = await baseLoad("interview");
       return { profile: context.profile, settings: context.settings };
     },
-    otherActive: () => manager.isActive() || generation.isActive() || followUp.isActive() || manual.isActive(),
+    coordinator,
     trajectory,
-    execute: async ({ jobId, payload, profile, settings, signal, runId, trajectory: runTrajectory }) => {
+    execute: async ({ jobId, payload, profile, settings, signal, runId, trajectory: runTrajectory, onUsage }) => {
       const tasks = createTaskReporter(runTrajectory, runId);
       tasks.start({ taskId: `interview:${jobId}:prepare`, label: "Prepare interview context", detail: jobId });
       // The buffer entry is inserted by the POST route right after start() resolves,
@@ -195,6 +201,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
           runId,
           trajectory: runTrajectory,
           onDelta: (fullText) => { const stream = streamFor(); if (stream) stream.text = fullText; },
+          onUsage,
         });
         tasks.complete(`interview:${jobId}:response`, jobDetail);
         tasks.start({ taskId: `interview:${jobId}:save`, label: "Save response", detail: jobDetail });
@@ -217,9 +224,9 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       const context = await baseLoad("follow_up");
       return { profile: context.profile, settings: context.settings };
     },
-    otherActive: () => manager.isActive() || generation.isActive() || interview.isActive() || manual.isActive(),
+    coordinator,
     trajectory,
-    execute: async ({ jobId, payload, profile, settings, signal, runId, trajectory: runTrajectory }) => {
+    execute: async ({ jobId, payload, profile, settings, signal, runId, trajectory: runTrajectory, onUsage }) => {
       const tasks = createTaskReporter(runTrajectory, runId);
       tasks.start({ taskId: `follow_up:${jobId}:prepare`, label: "Prepare follow-up context", detail: jobId });
       try {
@@ -229,7 +236,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         const jobDetail = `${String(job.role)} · ${String(job.company)}`;
         tasks.complete(`follow_up:${jobId}:prepare`, jobDetail);
         tasks.start({ taskId: `follow_up:${jobId}:draft`, label: "Draft follow-up message", detail: jobDetail });
-        const draft = await (options.followUpExecutor ?? liveFollowUpExecutor)({ profile, job: job as unknown as Record<string, unknown>, interviewNotes: String(job.interview_notes ?? ""), followUp: input.context, settings, signal, runId, trajectory: runTrajectory });
+        const draft = await (options.followUpExecutor ?? liveFollowUpExecutor)({ profile, job: job as unknown as Record<string, unknown>, interviewNotes: String(job.interview_notes ?? ""), followUp: input.context, settings, signal, runId, trajectory: runTrajectory, onUsage });
         tasks.complete(`follow_up:${jobId}:draft`, jobDetail);
         tasks.start({ taskId: `follow_up:${jobId}:save`, label: "Save draft", detail: jobDetail });
         saveFollowUpDraft(db, jobId, draft, input.context, input.dueAt || null);
@@ -318,13 +325,37 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       };
     }
   });
-  app.post("/api/ai/test", async () => {
+  app.post("/api/ai/test", async (req) => {
     const settings = await readSettings(dataDir);
+    const existing = coordinator.findByIdempotencyKey(requestIdempotencyKey(req));
+    if (existing) {
+      const run = await coordinator.waitForCompletion(existing);
+      if (run.status !== "succeeded") throw new Error(run.error ?? "Provider test failed.");
+      return { ok: true };
+    }
     let text = "";
-    await runBoundedPi({ prompt: "Reply with exactly OK and nothing else.", timeoutMs: 30_000, createSession: () => createRestrictedGenerationSession(settings, "You are a connection test. Reply with exactly OK."), onEvent: (event) => {
-      const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
-      if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
-    }});
+    const runId = await coordinator.enqueue({
+      workflow: "test",
+      provider: settings.provider,
+      model: settings.model,
+      idempotencyKey: requestIdempotencyKey(req),
+      execute: ({ runId: admittedRunId, signal, onUsage }) => runBoundedPi({
+        prompt: "Reply with exactly OK and nothing else.",
+        timeoutMs: 30_000,
+        signal,
+        runId: admittedRunId,
+        trajectory,
+        onUsage,
+        createSession: () => createRestrictedGenerationSession(settings, "You are a connection test. Reply with exactly OK."),
+        onEvent: (event) => {
+          const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
+          if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
+        },
+      }),
+      onError: () => ({ error: "Provider test failed." }),
+    });
+    const run = await coordinator.waitForCompletion(runId);
+    if (run.status !== "succeeded") throw new Error(run.error ?? "Provider test failed.");
     if (!text.trim()) throw new Error("Provider returned no test response.");
     return { ok: true };
   });
@@ -337,7 +368,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   app.get("/api/applications", async () => ({ jobs: listJobs(db, ["Selected", "Drafting", "Ready", "Applied", "Interview", "Offer", "Rejected"]) }));
   app.post("/api/jobs/manual", async (req, reply) => {
     const body = z.object({ input: z.string().max(MAX_MANUAL_INPUT_LENGTH).refine((value) => Boolean(value.trim()), "Enter a posting URL or paste job text.") }).strict().parse(req.body);
-    return reply.code(202).send({ runId: await manual.start(body.input) });
+    return reply.code(202).send({ runId: await manual.start(body.input, requestIdempotencyKey(req)) });
   });
   app.get("/api/jobs/:id", async (req) => {
     const row = getJobDetail(db, requestId(req));
@@ -379,25 +410,30 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     return row;
   });
 
-  app.post("/api/scrape", async (_req, reply) => {
-    if (generation.isActive() || interview.isActive() || followUp.isActive() || manual.isActive()) throw Object.assign(new Error("Another AI run is already active."), { statusCode: 409 });
-    return reply.code(202).send({ runId: await manager.start() });
+  app.post("/api/scrape", async (req, reply) => {
+    return reply.code(202).send({ runId: await manager.start(requestIdempotencyKey(req)) });
   });
   app.post("/api/generate", async (req, reply) => {
+    const idempotencyKey = requestIdempotencyKey(req);
+    const existing = coordinator.findByIdempotencyKey(idempotencyKey);
+    if (existing) return reply.code(202).send({ runId: existing });
     const { jobIds } = z.object({ jobIds: z.array(z.string().uuid()).min(1).max(20).refine((value) => new Set(value).size === value.length, "Duplicate job IDs are not allowed.") }).strict().parse(req.body);
     for (const id of jobIds) {
       const job = getJob(db, id) as { stage: string } | undefined;
       if (!job) throw notFound("Job not found.");
       if (job.stage !== "Selected") throw Object.assign(new Error("Only Selected jobs may generate."), { statusCode: 409 });
     }
-    return reply.code(202).send({ runId: await generation.start(jobIds) });
+    return reply.code(202).send({ runId: await generation.start(jobIds, false, idempotencyKey) });
   });
   app.post("/api/jobs/:id/regenerate", async (req, reply) => {
+    const idempotencyKey = requestIdempotencyKey(req);
+    const existing = coordinator.findByIdempotencyKey(idempotencyKey);
+    if (existing) return reply.code(202).send({ runId: existing });
     const id = requestId(req);
     const job = getJob(db, id) as { stage: string } | undefined;
     if (!job) throw notFound("Job not found.");
     if (job.stage !== "Drafting") throw Object.assign(new Error("Only Drafting jobs may regenerate."), { statusCode: 409 });
-    return reply.code(202).send({ runId: await generation.start([id], true) });
+    return reply.code(202).send({ runId: await generation.start([id], true, idempotencyKey) });
   });
   app.post("/api/jobs/:id/approve", async (req) => approveApplication(db, requestId(req)));
   app.post("/api/jobs/:id/applied", async (req) => {
@@ -412,11 +448,17 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     return { job, messages: job.interview_messages ?? [], notes: job.interview_notes ?? "" };
   });
   app.post("/api/jobs/:id/interview", async (req, reply) => {
+    const idempotencyKey = requestIdempotencyKey(req);
+    const existing = coordinator.findByIdempotencyKey(idempotencyKey);
+    if (existing) {
+      if (!interviewStreams.has(existing)) interviewStreams.set(existing, { jobId: requestId(req), text: "", done: false });
+      return reply.code(202).send({ runId: existing });
+    }
     const id = requestId(req);
     const job = getJobDetail(db, id);
     if (!job || (job.stage !== "Applied" && job.stage !== "Interview")) throw Object.assign(new Error("Interview practice is only available for Applied or Interview jobs."), { statusCode: 409 });
     for (const [finishedRunId, entry] of interviewStreams) if (entry.done) interviewStreams.delete(finishedRunId);
-    const runId = await interview.start(id, InterviewRequestSchema.parse(req.body));
+    const runId = await interview.start(id, InterviewRequestSchema.parse(req.body), idempotencyKey);
     interviewStreams.set(runId, { jobId: id, text: "", done: false });
     return reply.code(202).send({ runId });
   });
@@ -450,11 +492,14 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   app.delete("/api/jobs/:id/interview", async (req) => resetInterview(db, requestId(req)));
 
   app.post("/api/jobs/:id/follow-up", async (req, reply) => {
+    const idempotencyKey = requestIdempotencyKey(req);
+    const existing = coordinator.findByIdempotencyKey(idempotencyKey);
+    if (existing) return reply.code(202).send({ runId: existing });
     const id = requestId(req);
     const job = getJobDetail(db, id);
     if (!job || (job.stage !== "Applied" && job.stage !== "Interview")) throw Object.assign(new Error("Follow-up is only available for Applied or Interview jobs."), { statusCode: 409 });
     const payload = z.object({ context: FollowUpContextSchema, dueAt: z.union([isoDate, z.literal("")]).default("") }).strict().parse(req.body);
-    return reply.code(202).send({ runId: await followUp.start(id, payload) });
+    return reply.code(202).send({ runId: await followUp.start(id, payload, idempotencyKey) });
   });
   app.patch("/api/jobs/:id/follow-up", async (req) => {
     const body = z.object({ draft: z.string().max(30_000) }).strict().parse(req.body);
@@ -495,11 +540,14 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   });
   app.post("/api/runs/:id/cancel", async (req) => {
     const id = requestId(req);
-    if (!manager.cancel(id) && !generation.cancel(id) && !interview.cancel(id) && !followUp.cancel(id) && !manual.cancel(id)) throw notFound("Running job not found.");
+    if (!coordinator.cancel(id)) throw notFound("Running job not found.");
     return { ok: true };
   });
 
-  if (ownsDb) app.addHook("onClose", async () => db.close());
+  app.addHook("onClose", async () => {
+    await coordinator.close();
+    if (ownsDb) db.close();
+  });
   return app;
 }
 
