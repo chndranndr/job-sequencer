@@ -2,14 +2,16 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { PiRunCancelledError, PiRunTimeoutError } from "./pi.js";
 import { createTaskReporter, persistScrape } from "./db.js";
-import { hydrateScrapeResult, sanitizeFallbackQueries, validateScrapeResult, type ScrapeResult } from "./scrape.js";
+import { hydrateScrapeResult, sanitizeFallbackQueries, ScrapeResultSchema, validateScrapeResult, type ScrapeResult } from "./scrape.js";
 import type { Criteria, Settings } from "./config.js";
 import { createLiveRestrictedScrapeSession, runBoundedPi, type PiSessionLike } from "./pi.js";
 import { createScrapeTools } from "./scrape.js";
+import { projectPromptContext, projectPromptText } from "./context.js";
 import { loadGuidance } from "./guidance.js";
 import { generateJob, liveGenerationExecutor, type GenerationExecutor } from "./generation.js";
 import type { CommandRunner } from "./documents.js";
 import { defaultSourceMaxAgeDays, isJobSource, jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
+import { runStructured } from "./structured.js";
 
 export interface ScrapeContext { profile:string; criteria:Criteria; settings:Settings; signal:AbortSignal; runId?:string; trajectory?:TrajectoryRecorder }
 export type ScrapeExecution = { result: unknown; provenance: Map<string, string>; errors?: string[]; warnings?: string[] };
@@ -121,6 +123,7 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
     catch (error) { tasks.failActive("Search tools could not be prepared."); throw error; }
     try {
       const provenance = new Map<string, string>();
+      const detailDescriptions = new Map<string, string>();
       const warnings: string[] = [];
       const errors: string[] = [];
       let preflightJson = "";
@@ -145,62 +148,80 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
           : `\nNo usable Japan-board preflight jobs were returned. You may use searchJobs for your own bounded search if calls remain, but do not invent jobs.`
           : ``;
       const detailPostingInstruction = "For every accepted job, call fetchJobDetails and copy its complete fetched description/text into posting verbatim, preserving all paragraphs and line breaks. Never use a date-only, metadata-only, or shortened summary in posting.";
-      const base = `Search ${label} for jobs matching these criteria, fetch every returned job before using it, then score against the profile. ${detailPostingInstruction} Use source key "${source}" and return only JSON matching {"jobs":[{"sourceId":"","source":"${source}","url":"","company":"","role":"","location":"","posting":"","score":0,"reason":"","strengths":[],"gaps":[]}]}. Maximum jobs: ${context.criteria.maxJobsPerRun}. ${locationRule} Criteria: ${JSON.stringify(context.criteria)} Profile: ${context.profile}\nUse these bounded query and evaluation guidelines; the configured strict threshold overrides any legacy label:\n${guidance}${preflightInstruction}`;
+      const base = [
+        `Search ${label} for jobs matching these criteria, fetch every returned job before using it, then score against the profile. ${detailPostingInstruction} Use source key "${source}" and return only JSON matching {"jobs":[{"sourceId":"","source":"${source}","url":"","company":"","role":"","location":"","posting":"","score":0,"reason":"","strengths":[],"gaps":[]}]}. Maximum jobs: ${context.criteria.maxJobsPerRun}. ${locationRule}`,
+        "TRUSTED INSTRUCTIONS",
+        "---",
+        `Use these bounded query and evaluation guidelines; the configured strict threshold overrides any legacy label:\n${projectPromptText(guidance)}`,
+        "---",
+        "TRUSTED CANDIDATE PROFILE",
+        "---",
+        projectPromptText(context.profile),
+        "---",
+        "TRUSTED SEARCH CRITERIA",
+        "---",
+        JSON.stringify(projectPromptContext(context.criteria)),
+        "---",
+        "UNTRUSTED TOOL DATA",
+        "---",
+        projectPromptText(preflightInstruction || "No preflight tool data was returned."),
+        "---",
+      ].join("\n");
       tasks.complete(prepareTaskId, label);
-      let previous = "";
-      let lastError: unknown;
-
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const tools = sharedTools ?? makeTools(toolOptions);
-        const fetchTaskIds = new Map<string, string>();
-        let text = "";
-        const validationTaskId = `scrape:${source}:validate`;
-        const prompt = attempt === 0
-          ? base
-          : `The prior output failed validation. Return corrected JSON only with source "${source}". ${detailPostingInstruction}${preflightInstruction} Prior output: ${previous}`;
-        await runPi({
-          prompt,
-          timeoutMs: 120_000,
-          signal: context.signal,
-          createSession: () => makeSession(context.settings, tools, source),
-          runId: context.runId,
-          trajectory: context.trajectory,
-          onEvent: event => {
-            const value = event as { type?: string; toolCallId?: string; toolName?: string; args?: unknown; isError?: boolean; assistantMessageEvent?: { type?: string; delta?: string } };
-            if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
-            if (value.type === "tool_execution_start" && value.toolName === "fetchJobDetails") {
-              const callId = value.toolCallId || `fetch-${fetchTaskIds.size + 1}`;
-              const resultId = value.args && typeof value.args === "object" && !Array.isArray(value.args) && typeof (value.args as { resultId?: unknown }).resultId === "string" ? (value.args as { resultId: string }).resultId : "";
-              const taskId = `scrape:${source}:fetch-details`;
-              fetchTaskIds.set(callId, taskId);
-              tasks.start({ taskId, label: "Fetch job details", detail: resultId ? `${label} · ${resultId}` : label });
-            }
-            if (value.type === "tool_execution_end" && value.toolName === "fetchJobDetails") {
-              const callId = value.toolCallId || [...fetchTaskIds.keys()].at(-1) || "";
-              const taskId = fetchTaskIds.get(callId);
-              if (!taskId) return;
-              if (value.isError) tasks.fail(taskId, `${label} detail fetch failed.`);
-              else tasks.complete(taskId);
-              fetchTaskIds.delete(callId);
-            }
-          },
-        });
-        previous = text.slice(0, 200_000);
-        for (const entry of tools.provenance) provenance.set(...entry);
-        for (const warning of tools.warnings) if (!warnings.includes(warning)) warnings.push(warning);
-        tasks.start({ taskId: validationTaskId, label: "Validate and score results", detail: label });
-        try {
-          const result = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
+      const validationTaskId = `scrape:${source}:validate`;
+      tasks.start({ taskId: validationTaskId, label: "Validate and score results", detail: label });
+      const structured = await runStructured({
+        prompt: base,
+        schema: ScrapeResultSchema,
+        signal: context.signal,
+        runId: context.runId,
+        trajectory: context.trajectory,
+        execute: async attemptPrompt => {
+          const tools = sharedTools ?? makeTools(toolOptions);
+          let text = "";
+          const fetchTaskIds = new Map<string, string>();
+          try {
+            await runPi({
+              prompt: attemptPrompt,
+              timeoutMs: 120_000,
+              signal: context.signal,
+              createSession: () => makeSession(context.settings, tools, source),
+              runId: context.runId,
+              trajectory: context.trajectory,
+              onEvent: event => {
+                const value = event as { type?: string; toolCallId?: string; toolName?: string; args?: unknown; isError?: boolean; assistantMessageEvent?: { type?: string; delta?: string } };
+                if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
+                if (value.type === "tool_execution_start" && value.toolName === "fetchJobDetails") {
+                  const callId = value.toolCallId || `fetch-${fetchTaskIds.size + 1}`;
+                  const resultId = value.args && typeof value.args === "object" && !Array.isArray(value.args) && typeof (value.args as { resultId?: unknown }).resultId === "string" ? (value.args as { resultId: string }).resultId : "";
+                  const taskId = `scrape:${source}:fetch-details`;
+                  fetchTaskIds.set(callId, taskId);
+                  tasks.start({ taskId, label: "Fetch job details", detail: resultId ? `${label} · ${resultId}` : label });
+                }
+                if (value.type === "tool_execution_end" && value.toolName === "fetchJobDetails") {
+                  const callId = value.toolCallId || [...fetchTaskIds.keys()].at(-1) || "";
+                  const taskId = fetchTaskIds.get(callId);
+                  if (!taskId) return;
+                  if (value.isError) tasks.fail(taskId, `${label} detail fetch failed.`);
+                  else tasks.complete(taskId);
+                  fetchTaskIds.delete(callId);
+                }
+              },
+            });
+          } finally {
+            for (const entry of tools.provenance) provenance.set(...entry);
+            for (const entry of tools.detailDescriptions) detailDescriptions.set(...entry);
+            for (const warning of tools.warnings) if (!warnings.includes(warning)) warnings.push(warning);
+          }
+          return text;
+        },
+        validateBusiness: result => {
           const validated = validateScrapeResult(result, provenance, context.criteria.maxJobsPerRun, source);
           if (preflightHasJobs && !validated.jobs.length) throw new Error("Model output was empty while preflight search returned jobs.");
-          tasks.complete(validationTaskId, `${validated.jobs.length} result(s) from ${label}`);
-          return { result: hydrateScrapeResult(validated, tools.detailDescriptions), provenance, errors, warnings };
-        } catch (error) {
-          tasks.fail(validationTaskId, attempt === 0 ? "Validation failed; retrying." : "Validation failed.");
-          lastError = error;
-        }
-      }
-      throw lastError;
+        },
+      });
+      tasks.complete(validationTaskId, `${structured.jobs.length} result(s) from ${label}`);
+      return { result: hydrateScrapeResult(structured, detailDescriptions), provenance, errors, warnings };
     } catch (error) {
       tasks.failActive(error instanceof PiRunCancelledError || context.signal.aborted ? "Run cancelled." : "Task failed.");
       throw error;

@@ -120,6 +120,47 @@ test("manual URL import validates destinations, redirects manually, and bounds r
   }), /too large/i);
 });
 
+test("manual Workday URL import uses bounded structured metadata when the body is a JS shell", async () => {
+  const url = "https://japfa.wd102.myworkdayjobs.com/en-US/External/job/Head-Office-STP_Head-Office-Jakarta/SOFTWARE-DEVELOPER-SENIOR-STAFF-HO_JR484?source=LinkedIn";
+  const html = `<!doctype html><html><head>
+    <meta property="og:title" content="SOFTWARE DEVELOPER SENIOR STAFF - HO">
+    <meta property="og:description" content="Develop and support enterprise software &amp; services in Jakarta.">
+    <script type="application/ld+json">${JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "JobPosting",
+      title: "SOFTWARE DEVELOPER SENIOR STAFF - HO",
+      description: "Develop and support enterprise software &amp; services in Jakarta. Job identifier: JR484.",
+      hiringOrganization: { "@type": "Organization", name: "PT Japfa Comfeed Indonesia Tbk" },
+      jobLocation: { "@type": "Place", address: { "@type": "PostalAddress", addressLocality: "Jakarta", addressCountry: "ID" } },
+      identifier: { "@type": "PropertyValue", name: "Workday", value: "JR484" },
+    })}</script>
+  </head><body><div id="root"></div><script>window.__INITIAL_STATE__ = {};</script></body></html>`;
+  let prompt = "";
+  const result = await importManualJob(url, settings, {
+    profile: profileContext,
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    fetch: async (_input, init) => {
+      assert.equal(init?.redirect, "manual");
+      return new Response(html, { headers: { "content-type": "text/html" } });
+    },
+    createSession: async () => new FakeSession(parsedJob({
+      company: "PT Japfa Comfeed Indonesia Tbk",
+      role: "SOFTWARE DEVELOPER SENIOR STAFF - HO",
+      location: "Jakarta",
+      posting: "Develop and support enterprise software & services in Jakarta. Job identifier: JR484.",
+      sourceUrl: url,
+    }), (value) => { prompt = value; }),
+  });
+
+  assert.equal(result.inputType, "url");
+  assert.equal(result.url, url);
+  assert.match(prompt, /SOFTWARE DEVELOPER SENIOR STAFF - HO/);
+  assert.match(prompt, /PT Japfa Comfeed Indonesia Tbk/);
+  assert.match(prompt, /Jakarta/);
+  assert.match(prompt, /JR484/);
+  assert.match(prompt, /enterprise software & services/);
+});
+
 test("manual URL import strips oversized HTML noise before sending visible job text to Pi", async () => {
   const hiddenScript = "hidden-script-marker ".repeat(7_000);
   const hiddenStyle = "hidden-style-marker ".repeat(2_000);
@@ -186,6 +227,25 @@ test("manual LinkedIn duplicate checks use the canonical view URL", async () => 
     });
     await assert.rejects(manager.start("https://www.linkedin.com/jobs/collections/recommended?currentJobId=4457070333"), /already exists/i);
     assert.equal((db.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count, 1);
+  } finally { db.close(); }
+});
+
+test("manual run rejects blank input before creating state or invoking importer", async () => {
+  const db = openDatabase(":memory:");
+  let importerCalls = 0;
+  const manager = new ManualJobRunManager({
+    db,
+    load: async () => ({ profile: profileContext, criteria: criteriaContext, settings }),
+    importer: async () => {
+      importerCalls++;
+      await new Promise<void>(() => {});
+      return fixtureImport;
+    },
+  });
+  try {
+    await assert.rejects(manager.start("   "), { message: "Enter a posting URL or paste job text." });
+    assert.equal(importerCalls, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM runs").get() as { count: number }).count, 0);
   } finally { db.close(); }
 });
 
