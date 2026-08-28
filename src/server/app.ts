@@ -51,8 +51,9 @@ import { containedPath, friendlyDocumentFilename, runCommand } from "./documents
 import {
   FollowUpContextSchema,
   InterviewRequestSchema,
+  boundedInterviewHistory,
+  createLiveInterviewExecutor,
   liveFollowUpExecutor,
-  liveInterviewExecutor,
   TaskRunManager,
   type FollowUpExecutor,
   type InterviewDocumentContext,
@@ -60,6 +61,7 @@ import {
 } from "./interview.js";
 import { type FollowUpContext, type InterviewMessage } from "../shared.js";
 import { createRestrictedGenerationSession, getAvailablePiModels, runBoundedPi, type PiModelOption } from "./pi.js";
+import { InterviewSessionPool, type InterviewSessionFactory } from "./interview-sessions.js";
 import { importResumeProfile, MAX_PROFILE_UPLOAD_BYTES, type ProfileImportFile, type ProfileImportResult } from "./profile-import.js";
 import { importManualJob, ManualJobRunManager, MAX_MANUAL_INPUT_LENGTH, type ManualJobImporter } from "./manual-job.js";
 import { RunCoordinator } from "./coordinator.js";
@@ -70,6 +72,7 @@ export interface ServerOptions {
   scrapeExecutor?: ScrapeExecutor;
   generationExecutor?: GenerationExecutor;
   interviewExecutor?: InterviewExecutor;
+  interviewSessionFactory?: InterviewSessionFactory;
   followUpExecutor?: FollowUpExecutor;
   commandRunner?: CommandRunner;
   documentStatusRunner?: CommandRunner;
@@ -114,13 +117,20 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   const ownsDb = !options.db;
   const trajectory = createTrajectoryRecorder(db);
   const coordinator = new RunCoordinator({ db, trajectory });
+  const interviewSessionPool = options.interviewExecutor ? undefined : new InterviewSessionPool({
+    createSession: options.interviewSessionFactory ?? (({ settings, systemPrompt }) => createRestrictedGenerationSession(settings, systemPrompt)),
+  });
+  const defaultInterviewExecutor: InterviewExecutor = options.interviewExecutor
+    ?? (interviewSessionPool
+      ? createLiveInterviewExecutor(interviewSessionPool)
+      : async () => { throw new Error("Live interview executor is unavailable."); });
   const baseLoad = async (purpose: "scrape" | "generation" | "interview" | "follow_up") => ({
     profile: await (async () => {
       try { return await readProviderContext(dataDir, purpose); }
       catch (error) {
         // Injected deterministic test executors predate structured-profile persistence;
         // live Pi workflows never take this compatibility path.
-        const injected = purpose === "scrape" ? options.scrapeExecutor : purpose === "generation" ? options.generationExecutor : purpose === "interview" ? options.interviewExecutor : options.followUpExecutor;
+        const injected = purpose === "scrape" ? options.scrapeExecutor : purpose === "generation" ? options.generationExecutor : purpose === "interview" ? (options.interviewExecutor ?? options.interviewSessionFactory) : options.followUpExecutor;
         if (injected) return readProfile(dataDir);
         throw error;
       }
@@ -185,11 +195,11 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         const job = getJobDetail(db, jobId);
         if (!job || (job.stage !== "Applied" && job.stage !== "Interview")) throw Object.assign(new Error("Interview practice is only available for Applied or Interview jobs."), { statusCode: 409 });
         const jobDetail = `${String(job.role)} · ${String(job.company)}`;
-        const messages = ((job.interview_messages ?? []) as InterviewMessage[]).slice(-40);
+        const messages = boundedInterviewHistory((job.interview_messages ?? []) as InterviewMessage[]);
         const documents = await readInterviewDocuments(dataDir, jobId);
         tasks.complete(`interview:${jobId}:prepare`, jobDetail);
         tasks.start({ taskId: `interview:${jobId}:response`, label: "Generate interviewer response", detail: jobDetail });
-        const assistant = await (options.interviewExecutor ?? liveInterviewExecutor)({
+        const assistant = await defaultInterviewExecutor({
           profile,
           job: job as unknown as Record<string, unknown>,
           documents,
@@ -207,7 +217,12 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         tasks.start({ taskId: `interview:${jobId}:save`, label: "Save response", detail: jobDetail });
         const now = new Date().toISOString();
         const next = [...messages, { role: "user", content: input.message, createdAt: now } as InterviewMessage, { role: "assistant", content: assistant, createdAt: new Date().toISOString() } as InterviewMessage];
-        saveInterviewMessages(db, jobId, next, now);
+        try {
+          saveInterviewMessages(db, jobId, next, now);
+        } catch (error) {
+          try { await interviewSessionPool?.invalidate(jobId); } catch { /* preserve the persistence failure */ }
+          throw error;
+        }
         tasks.complete(`interview:${jobId}:save`, jobDetail);
         return { jobId, messageCount: next.length };
       } finally {
@@ -489,7 +504,12 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const body = z.object({ notes: z.string().max(30_000) }).strict().parse(req.body);
     return saveInterviewNotes(db, requestId(req), body.notes);
   });
-  app.delete("/api/jobs/:id/interview", async (req) => resetInterview(db, requestId(req)));
+  app.delete("/api/jobs/:id/interview", async (req) => {
+    const id = requestId(req);
+    const result = resetInterview(db, id);
+    await interviewSessionPool?.invalidate(id);
+    return result;
+  });
 
   app.post("/api/jobs/:id/follow-up", async (req, reply) => {
     const idempotencyKey = requestIdempotencyKey(req);
@@ -546,6 +566,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
 
   app.addHook("onClose", async () => {
     await coordinator.close();
+    await interviewSessionPool?.close();
     if (ownsDb) db.close();
   });
   return app;

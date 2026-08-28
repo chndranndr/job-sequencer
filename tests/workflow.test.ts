@@ -8,6 +8,7 @@ import { openDatabase, markFollowUpSent, resetInterview, saveFollowUpDraft, save
 import { buildServer } from "../src/server/app.js";
 import { containedPath } from "../src/server/documents.js";
 import type { InterviewExecutor } from "../src/server/interview.js";
+import type { PiSessionLike } from "../src/server/pi.js";
 
 function insert(db: ReturnType<typeof openDatabase>, stage: "Applied" | "Interview" = "Applied") {
   const id = randomUUID();
@@ -145,6 +146,72 @@ test("interview stream endpoint streams live interviewer text and closes on done
     await app.close();
     db.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("pooled live interview keeps native sessions and SSE deltas across turns", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-interview-pooled-stream-"));
+  const db = openDatabase(":memory:");
+  const id = insert(db, "Applied");
+  const sessions: Array<{ promptTexts: string[]; disposed: boolean }> = [];
+  const app = await buildServer({
+    dataDir: dir,
+    db,
+    interviewSessionFactory: async ({ systemPrompt }) => {
+      const state = { promptTexts: [] as string[], disposed: false };
+      const listeners = new Set<(event: unknown) => void>();
+      const session: PiSessionLike = {
+        systemPrompt,
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => { listeners.delete(listener); };
+        },
+        async prompt(text) {
+          state.promptTexts.push(text);
+          const message = { role: "assistant", timestamp: state.promptTexts.length, content: [] };
+          for (const listener of listeners) listener({
+            type: "message_update",
+            message,
+            assistantMessageEvent: { type: "text_delta", delta: "Pooled response" },
+          });
+        },
+        async abort() {},
+        dispose() { state.disposed = true; },
+      };
+      sessions.push(state);
+      return session;
+    },
+  });
+  try {
+    const first = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "First answer.", focus: "opening" } });
+    assert.equal(first.statusCode, 202);
+    const firstRunId = first.json().runId;
+    const firstStream = await app.inject({ url: `/api/jobs/${id}/interview/stream?runId=${encodeURIComponent(firstRunId)}` });
+    assert.equal(firstStream.statusCode, 200);
+    assert.ok(firstStream.body.includes(JSON.stringify({ text: "Pooled response" })));
+    assert.match(firstStream.body, /event: done/);
+    assert.equal((await waitForRun(app, firstRunId)).status, "succeeded");
+
+    const second = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "Second answer.", focus: "tradeoffs" } });
+    assert.equal(second.statusCode, 202);
+    assert.equal((await waitForRun(app, second.json().runId)).status, "succeeded");
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0]?.promptTexts.length, 2);
+    assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().interview_messages.length, 4);
+
+    const reset = await app.inject({ method: "DELETE", url: `/api/jobs/${id}/interview` });
+    assert.equal(reset.statusCode, 200);
+    const third = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "After reset.", focus: "restart" } });
+    assert.equal(third.statusCode, 202);
+    assert.equal((await waitForRun(app, third.json().runId)).status, "succeeded");
+    assert.equal(sessions.length, 2);
+    assert.equal(sessions[0]?.disposed, true);
+    assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().interview_messages.length, 2);
+  } finally {
+    await app.close();
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+    assert.equal(sessions[0]?.disposed, true);
   }
 });
 

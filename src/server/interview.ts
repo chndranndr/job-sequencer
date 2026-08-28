@@ -6,6 +6,7 @@ import { createRestrictedGenerationSession, PiRunCancelledError, PiRunTimeoutErr
 import { loadGuidance } from "./guidance.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 import { RunCoordinator } from "./coordinator.js";
+import { InterviewSessionPool } from "./interview-sessions.js";
 
 export const InterviewMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
@@ -79,18 +80,75 @@ async function runTextSession(prompt: string, settings: Settings, signal: AbortS
   return text.trim();
 }
 
-export const liveInterviewExecutor: InterviewExecutor = async (context) => runTextSession(
-  [
+// ponytail: fallback history remains 40 messages; replace with token-aware compaction after context-pressure evidence.
+const maxInterviewHistory = 40;
+
+export function boundedInterviewHistory(messages: readonly InterviewMessage[]) {
+  return messages.slice(-maxInterviewHistory);
+}
+
+function stableInterviewJob(job: Record<string, unknown>) {
+  const changingApplicationFields = new Set([
+    "interview_messages",
+    "interview_notes",
+    "application_notes",
+    "follow_up_draft",
+    "follow_up_context",
+    "outcome",
+  ]);
+  return Object.fromEntries(Object.entries(job).filter(([key]) => !changingApplicationFields.has(key) && !key.endsWith("_at")));
+}
+
+async function interviewSystemPrompt(context: Parameters<InterviewExecutor>[0]) {
+  return [
+    trustedSection("SYSTEM", "You are a bounded mock interviewer. Do not invent candidate facts or job requirements."),
     trustedSection("INSTRUCTIONS", "Act as a concise, truthful interviewer. Ask one question at a time, respond to the latest answer with short feedback, and use only the supplied context."),
     trustedSection("INTERVIEW GUIDANCE", await loadGuidance(["interviewPrep"])),
     trustedSection("CANDIDATE PROFILE", context.profile),
-    untrustedSection("JOB METADATA", JSON.stringify(projectPromptContext(Object.fromEntries(Object.entries(context.job).filter(([key]) => key !== "posting"))))),
+    untrustedSection("JOB METADATA", JSON.stringify(projectPromptContext(Object.fromEntries(Object.entries(stableInterviewJob(context.job)).filter(([key]) => key !== "posting")))) ?? "null"),
     untrustedSection("JOB POSTING", String(context.job.posting ?? "")),
     untrustedSection("GENERATED DOCUMENTS", JSON.stringify(projectPromptContext(context.documents))),
-    untrustedSection("PRIOR MESSAGES", JSON.stringify(projectPromptContext(context.messages))),
+  ].join("\n");
+}
+
+function interviewTurnPrompt(context: Parameters<InterviewExecutor>[0]) {
+  return [
     untrustedSection("FOCUS", context.focus || "(none)"),
     untrustedSection("LATEST USER ANSWER", context.message),
-  ].join("\n"),
+  ].join("\n");
+}
+
+function interviewRebuildPrompt(context: Parameters<InterviewExecutor>[0]) {
+  return [
+    untrustedSection("PRIOR MESSAGES", JSON.stringify(projectPromptContext(boundedInterviewHistory(context.messages))) ?? "[]"),
+    interviewTurnPrompt(context),
+  ].join("\n");
+}
+
+function interviewJobId(context: Parameters<InterviewExecutor>[0]) {
+  const jobId = context.job.id;
+  if (typeof jobId !== "string" || !jobId) throw new Error("Interview context is missing a job ID.");
+  return jobId;
+}
+
+export function createLiveInterviewExecutor(pool: InterviewSessionPool): InterviewExecutor {
+  return async (context) => pool.run({
+    jobId: interviewJobId(context),
+    systemPrompt: await interviewSystemPrompt(context),
+    prompt: interviewTurnPrompt(context),
+    rebuildPrompt: interviewRebuildPrompt(context),
+    settings: context.settings,
+    signal: context.signal,
+    runId: context.runId,
+    trajectory: context.trajectory,
+    onDelta: context.onDelta,
+    onUsage: context.onUsage,
+  });
+}
+
+// Kept for callers that still import the one-shot executor; buildServer uses the pooled factory.
+export const liveInterviewExecutor: InterviewExecutor = async (context) => runTextSession(
+  [await interviewSystemPrompt(context), interviewRebuildPrompt(context)].join("\n"),
   context.settings,
   context.signal,
   "You are a bounded mock interviewer. Do not invent candidate facts or job requirements.",
