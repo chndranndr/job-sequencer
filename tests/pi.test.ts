@@ -10,6 +10,13 @@ import {
   type PiSessionLike,
 } from "../src/server/pi.js";
 
+const priorTelemetryMode = process.env.TELEMETRY_MODE;
+process.env.TELEMETRY_MODE = "redacted";
+test.after(() => {
+  if (priorTelemetryMode === undefined) delete process.env.TELEMETRY_MODE;
+  else process.env.TELEMETRY_MODE = priorTelemetryMode;
+});
+
 test("configured OpenAI Codex provider is passed to the Pi model registry", () => {
   const calls: string[][] = [];
   const model = selectConfiguredModel({

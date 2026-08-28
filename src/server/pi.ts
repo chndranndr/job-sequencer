@@ -13,6 +13,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { createScrapeTools } from "./scrape.js";
 import type { Settings } from "./config.js";
 import { jobSourceLabel, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
+import { telemetryAssistantPayload, telemetryPromptPayload, telemetrySystemPromptPayload } from "./telemetry.js";
 
 export interface PiSessionLike {
   subscribe(listener: (event: unknown) => void): () => void;
@@ -330,8 +331,8 @@ export async function runBoundedPi<T = void>(options: {
       usage: state.usage ?? null,
     } : { usage: state.usage ?? null };
     if (state.usage) reportUsage(key, state.usage);
-    if (state.text) record({ kind: "assistant", type: "assistant_message", startedAt: state.startedAt, endedAt, durationMs, payload: { text: redactTelemetryText(state.text), ...metadata } });
-    if (state.thinking) record({ kind: "thinking", type: "assistant_thinking", startedAt: state.startedAt, endedAt, durationMs, payload: { text: redactTelemetryText(state.thinking), ...metadata } });
+    if (state.text) record({ kind: "assistant", type: "assistant_message", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.text), ...metadata }, redactTelemetryText) });
+    if (state.thinking) record({ kind: "thinking", type: "assistant_thinking", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.thinking), ...metadata }, redactTelemetryText) });
     assistantStates.delete(key);
     finalizedAssistants.add(key);
   };
@@ -440,7 +441,7 @@ export async function runBoundedPi<T = void>(options: {
     if (sessionModel === undefined) {
       try { sessionModel = session.model; } catch (error) { record({ kind: "error", type: "model_read_error", payload: { error: safeTelemetryError(error) } }); }
     }
-    record({ kind: "system", type: "system_prompt", payload: { text: redactTelemetryText(systemPrompt) } });
+    record({ kind: "system", type: "system_prompt", payload: telemetrySystemPromptPayload(systemPrompt, redactTelemetryText) });
     record({ kind: "system", type: "tool_catalog", payload: { activeToolNames, tools } });
     record({
       kind: "system",
@@ -453,7 +454,7 @@ export async function runBoundedPi<T = void>(options: {
       },
     });
     unsubscribe = session.subscribe((event) => { handleEvent(event); options.onEvent?.(event); });
-    record({ kind: "user", type: "user_prompt", payload: { text: redactTelemetryText(options.prompt) } });
+    record({ kind: "user", type: "user_prompt", payload: telemetryPromptPayload(options.prompt, redactTelemetryText) });
     record({ kind: "lifecycle", type: "prompt_start", startedAt: isoNow(), payload: null });
     const onAbort = () => {
       if (session && rejectOutcome) void abortAndReject(session, new PiRunCancelledError(), rejectOutcome);

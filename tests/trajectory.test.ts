@@ -126,6 +126,8 @@ class TrajectoryFakeSession implements PiSessionLike {
 }
 
 test("runBoundedPi persists prompts, aggregated assistant/thinking, tools, and terminal events", async () => {
+  const previousMode = process.env.TELEMETRY_MODE;
+  process.env.TELEMETRY_MODE = "redacted";
   const db = openDatabase(":memory:");
   const runId = insertRun(db, "trajectory-pi");
   const recorder = createTrajectoryRecorder(db);
@@ -151,5 +153,9 @@ test("runBoundedPi persists prompts, aggregated assistant/thinking, tools, and t
     assert.equal((events.find((event) => event.type === "assistant_thinking")?.payload as { text: string }).text, "Plan");
     assert.equal((events.find((event) => event.type === "tool_execution_end")?.payload as { isError: boolean }).isError, false);
     assert.match(String((events.find((event) => event.type === "run_context")?.payload as { promptHash?: string }).promptHash), /^[0-9a-f]{64}$/);
-  } finally { db.close(); }
+  } finally {
+    if (previousMode === undefined) delete process.env.TELEMETRY_MODE;
+    else process.env.TELEMETRY_MODE = previousMode;
+    db.close();
+  }
 });

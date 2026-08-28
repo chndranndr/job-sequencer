@@ -5,6 +5,7 @@ import { type FollowUpContext, type InterviewMessage, type RunStatus, type RunWo
 import type { Settings } from "./config.js";
 import { createRestrictedGenerationSession, PiRunCancelledError, PiRunTimeoutError, runBoundedPi } from "./pi.js";
 import { loadGuidance } from "./guidance.js";
+import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 
 export const InterviewMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
@@ -77,9 +78,15 @@ async function runTextSession(prompt: string, settings: Settings, signal: AbortS
 
 export const liveInterviewExecutor: InterviewExecutor = async (context) => runTextSession(
   [
-    "Act as a concise, truthful interviewer.",
-    "Ask one question at a time, respond to the latest answer with short feedback, and use only the supplied context.",
-    `Interview guidance:\n${await loadGuidance(["interviewPrep"])}\n${JSON.stringify({ profile: context.profile, job: context.job, documents: context.documents, focus: context.focus, messages: context.messages, latestAnswer: context.message })}`,
+    trustedSection("INSTRUCTIONS", "Act as a concise, truthful interviewer. Ask one question at a time, respond to the latest answer with short feedback, and use only the supplied context."),
+    trustedSection("INTERVIEW GUIDANCE", await loadGuidance(["interviewPrep"])),
+    trustedSection("CANDIDATE PROFILE", context.profile),
+    trustedSection("JOB METADATA", JSON.stringify(projectPromptContext(Object.fromEntries(Object.entries(context.job).filter(([key]) => key !== "posting"))))),
+    untrustedSection("JOB POSTING", String(context.job.posting ?? "")),
+    trustedSection("GENERATED DOCUMENTS", JSON.stringify(projectPromptContext(context.documents))),
+    trustedSection("PRIOR MESSAGES", JSON.stringify(projectPromptContext(context.messages))),
+    trustedSection("FOCUS", context.focus || "(none)"),
+    untrustedSection("LATEST USER ANSWER", context.message),
   ].join("\n"),
   context.settings,
   context.signal,
@@ -91,8 +98,12 @@ export const liveInterviewExecutor: InterviewExecutor = async (context) => runTe
 
 export const liveFollowUpExecutor: FollowUpExecutor = async (context) => runTextSession(
   [
-    "Draft one editable professional follow-up message. Return only the message body.",
-    `Writing guidance:\n${await loadGuidance(["writingStyle", "coverLetterTemplates"])}\n${JSON.stringify({ profile: context.profile, job: context.job, interviewNotes: context.interviewNotes, request: context.followUp })}`,
+    trustedSection("INSTRUCTIONS", "Draft one editable professional follow-up message. Return only the message body."),
+    trustedSection("WRITING GUIDANCE", await loadGuidance(["writingStyle", "coverLetterTemplates"])),
+    trustedSection("CANDIDATE PROFILE", context.profile),
+    trustedSection("JOB METADATA", JSON.stringify(projectPromptContext(context.job))),
+    trustedSection("INTERVIEW NOTES", context.interviewNotes),
+    trustedSection("FOLLOW-UP REQUEST", JSON.stringify(projectPromptContext(context.followUp))),
   ].join("\n"),
   context.settings,
   context.signal,
