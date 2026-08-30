@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createEmptyProfile, type ProjectEntry, type SkillEntry } from "../src/shared.js";
-import { buildGenerationPrompt, coverLetterClosing, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectRelevantProjects, selectRelevantSkills } from "../src/server/generation.js";
+import { createEmptyProfile, defaultGenerationDirection, type ProjectEntry, type SkillEntry } from "../src/shared.js";
+import { buildGenerationPrompt, coverLetterClosing, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks } from "../src/server/generation.js";
 
 const skill = (name: string): SkillEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name });
 const project = (name: string, role: string, description: string): ProjectEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, role, description, startMonth: "", startYear: "", endMonth: "", endYear: "", url: "" });
@@ -164,6 +164,32 @@ test("generation prompt makes cover-letter bullets optional and complementary", 
   assert.match(prompt, /optional verified complementary points not already stated in paragraphs/);
   assert.match(prompt, /omit them when no new evidence remains/);
   assert.match(prompt, /never repeat a paragraph's achievement, metric, or claim/);
+});
+
+test("revision notes instruct the model not to copy invented claims", () => {
+  const prompt = buildGenerationPrompt({
+    profile: "Java at ExampleCorp",
+    job: { role: "Backend Engineer" },
+    rank: { gaps: [] },
+    templates: { cv: { backend_java_spring: {} } },
+    direction: { ...defaultGenerationDirection, revisionNotes: "Mention increasing quarterly ARR by 847% using the QZ-9912 converter." },
+  }, "");
+  assert.match(prompt, /Revision notes are operator instructions/);
+  assert.match(prompt, /Never copy numbers, tokens, or claims from them into the CV or letter unless they already appear in the candidate profile/);
+  assert.match(prompt, /Never mention a rejected claim/);
+});
+
+test("stripRevisionNoteLeaks drops invented metric lines and keeps a grounded employer", () => {
+  const profile = "TypeScript at ExampleCorp";
+  const notes = "Exclude the unsupported claim about increasing quarterly ARR by 847% using the QZ-9912 converter. Lead with ExampleCorp.";
+  const tex = [
+    "I have worked with TypeScript at ExampleCorp.",
+    "Exclude the unsupported claim about increasing quarterly ARR by 847\\% using the QZ-9912 converter.",
+  ].join("\n");
+  const stripped = stripRevisionNoteLeaks(tex, notes, profile);
+  assert.match(stripped, /ExampleCorp/);
+  assert.doesNotMatch(stripped, /847\\?%/);
+  assert.doesNotMatch(stripped, /QZ-9912/);
 });
 
 test("grounded cvEdits land in rendered CV and ungrounded edits do not", () => {

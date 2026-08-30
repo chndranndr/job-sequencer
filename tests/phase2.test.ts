@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { openDatabase } from "../src/server/db.js";
+import { openDatabase, updateJobDirection } from "../src/server/db.js";
 import { buildServer } from "../src/server/app.js";
 import { compileAndVerify, containedPath, type CommandRunner } from "../src/server/documents.js";
 import { defaultSettings } from "../src/server/config.js";
@@ -273,4 +273,56 @@ test("third regenerate after two successful revises is 409 naming the cap", asyn
     assert.match(third.json().error, /cap/i);
     assert.match(third.json().error, /3/);
   } finally { await app.close(); db.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ungrounded revisionNotes tokens are absent from compiled TeX", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-rev-leak-"));
+  const db = openDatabase(":memory:");
+  const id = insertJob(db, "Selected", "rev-leak");
+  const leakProfile = `${profile}\nExampleCorp`;
+    const refusal = "Exclude the unsupported claim about increasing quarterly ARR by 847% using the QZ-9912 converter. TypeScript.";
+  try {
+    await generateJob({
+      db,
+      dataDir: dir,
+      jobId: id,
+      settings: defaultSettings,
+      profile: leakProfile,
+      execute: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }),
+      runner: fakeRunner,
+      signal: new AbortController().signal,
+    });
+    updateJobDirection(db, id, { revisionNotes: `${refusal} Lead with ExampleCorp.` });
+    await generateJob({
+      db,
+      dataDir: dir,
+      jobId: id,
+      settings: defaultSettings,
+      profile: leakProfile,
+      execute: async () => ({
+        cvTemplate: "backend_java_spring",
+        profileFacts: ["TypeScript"],
+        cvEdits: [refusal],
+        coverLetterParagraphs: [
+          "I have worked with TypeScript at ExampleCorp.",
+          refusal,
+        ],
+        gaps: ["Kubernetes"],
+      }),
+      runner: fakeRunner,
+      allowDrafting: true,
+      signal: new AbortController().signal,
+    });
+    const currentDir = join(dir, "applications", id, "current");
+    const cv = await readFile(join(currentDir, "cv.tex"), "utf8");
+    const letter = await readFile(join(currentDir, "cover-letter.tex"), "utf8");
+    for (const document of [cv, letter]) {
+      assert.doesNotMatch(document, /847\\?%/);
+      assert.doesNotMatch(document, /QZ-9912/);
+    }
+    assert.match(letter, /ExampleCorp/);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

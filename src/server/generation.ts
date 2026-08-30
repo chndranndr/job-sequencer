@@ -51,7 +51,10 @@ function userDirectionText(direction: GenerationDirection) {
   const narration = direction.letterNarration.trim();
   if (narration) lines.push(`Letter narration: ${narration}`);
   const notes = direction.revisionNotes.trim();
-  if (notes) lines.push(`Revision notes: ${notes}`);
+  if (notes) {
+    lines.push("Revision notes are operator instructions. Never copy numbers, tokens, or claims from them into the CV or letter unless they already appear in the candidate profile. Never mention a rejected claim.");
+    lines.push(`Revision notes: ${notes}`);
+  }
   return lines.join("\n");
 }
 
@@ -256,6 +259,32 @@ function certificationEntry(entry: StructuredProfile["certifications"][number]) 
 }
 
 const relevanceStopWords = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "can", "for", "from", "has", "have", "how", "in", "into", "is", "it", "its", "of", "on", "or", "our", "per", "that", "the", "their", "this", "to", "using", "via", "was", "were", "what", "when", "where", "which", "who", "with", "you", "your"]);
+
+function revisionNoteTokens(value: string) {
+  return value.match(/\d+(?:\.\d+)?%|[A-Za-z][A-Za-z0-9+#._-]{1,}/g) ?? [];
+}
+
+function revisionNoteLeaks(notes: string, profile: string) {
+  if (!notes.trim()) return [];
+  const profileTokens = new Set(revisionNoteTokens(profile).map(token => token.toLowerCase()));
+  return revisionNoteTokens(notes).filter(token => /\d/.test(token) && !profileTokens.has(token.toLowerCase()));
+}
+
+function texTokenPattern(token: string) {
+  const escaped = [...token].map(character => {
+    if ("\\^$*+?()[]{}|.".includes(character)) return `\\${character}`;
+    if ("#$%&_".includes(character)) return `\\\\?${character}`;
+    return character;
+  }).join("");
+  return new RegExp(escaped, "i");
+}
+
+export function stripRevisionNoteLeaks(tex: string, revisionNotes: string, profile: string) {
+  const leaks = revisionNoteLeaks(revisionNotes, profile);
+  if (!leaks.length) return tex;
+  const patterns = leaks.map(texTokenPattern);
+  return tex.split("\n").filter(line => !patterns.some(pattern => pattern.test(line))).join("\n");
+}
 
 function relevanceTokens(value: string) {
   const tokens = value.toLowerCase().match(/[a-z0-9]+(?:[+#./-][a-z0-9]+|[+#])*/g) ?? [];
@@ -502,8 +531,8 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     BULLETS: letterBullets(output, paragraphs),
     CLOSING: coverLetterClosing(paragraphs, role, company),
   };
-  const cv = render(await readFile(containedPath(templatesDir, info.file), "utf8"), replacements);
-  const letter = render(await readFile(containedPath(templatesDir, metadata.coverLetter), "utf8"), replacements);
+  const cv = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, info.file), "utf8"), replacements), direction.revisionNotes, options.profile);
+  const letter = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, metadata.coverLetter), "utf8"), replacements), direction.revisionNotes, options.profile);
   await writeFile(containedPath(currentDir, "cv.tex"), cv, "utf8");
   await writeFile(containedPath(currentDir, "cover-letter.tex"), letter, "utf8");
   const verification = await compileAndVerify({ currentDir, cvPages: options.settings.cvPages, coverLetterPages: options.settings.coverLetterPages, email, phone, runner: options.runner, now });
