@@ -4,6 +4,7 @@ import type { DocumentVerification, Job, JobStage, Run, Settings } from "../shar
 import { jobSourceLabel } from "../shared.js";
 import { api, getJob } from "../api.js";
 import { trackerHref } from "./hash.js";
+import { isNarrowLayout, NARROW_LAYOUT_MQ } from "./narrow.js";
 import { scoreToNote } from "./notes.js";
 
 export type SampleAction =
@@ -102,9 +103,16 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [runStarting, setRunStarting] = useState<"generate" | "regenerate" | null>(null);
   const [inspectorWidth, setInspectorWidth] = useState(280);
-  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(isNarrowLayout);
   const [resizingInspector, setResizingInspector] = useState(false);
   const inspectorResizeStart = useRef<{ clientX: number; width: number } | null>(null);
+  useEffect(() => {
+    const media = window.matchMedia(NARROW_LAYOUT_MQ);
+    const collapseWhenNarrow = () => { if (media.matches) setInspectorCollapsed(true); };
+    collapseWhenNarrow();
+    media.addEventListener("change", collapseWhenNarrow);
+    return () => media.removeEventListener("change", collapseWhenNarrow);
+  }, []);
 
   const syncJob = useCallback((value: Job) => {
     setJob(value);
@@ -315,7 +323,7 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
       />
       <div className="sample-aside__head">
         <span className="sample-aside__title">INSPECTOR</span>
-        <button type="button" className="sample-aside__toggle" aria-controls="sample-inspector" aria-expanded={!inspectorCollapsed} aria-label={inspectorCollapsed ? "Open inspector" : "Collapse inspector"} onClick={() => setInspectorCollapsed((value) => !value)}>{inspectorCollapsed ? "OPEN" : "CLOSE"}</button>
+        <button type="button" className="sample-aside__toggle" aria-controls="sample-inspector" aria-expanded={!inspectorCollapsed} aria-label={inspectorCollapsed ? "Open inspector" : "Collapse inspector"} onClick={() => setInspectorCollapsed((value) => !value)}>{inspectorCollapsed ? "‹" : "›"}</button>
       </div>
       <div id="sample-inspector" className="sample-aside__content" hidden={inspectorCollapsed}>
       <div className="tune">

@@ -50,6 +50,6 @@ test("cancelled runs persist no jobs and expose safe errors",async()=>{
 test("failed and timed-out runs are safe and persist nothing",async()=>{
   for(const [error,status,message] of [[new Error("credential value"),"failed","Scrape failed. Check provider settings and try again."],[new PiRunTimeoutError(),"timed_out","Scrape timed out."]] as const){
     const dir=await mkdtemp(join(tmpdir(),"pjs-fail-")); const db=openDatabase(":memory:"); const app=await buildServer({dataDir:dir,db,scrapeExecutor:async()=>{throw error;}});
-    try{const started=(await app.inject({method:"POST",url:"/api/scrape"})).json();const done=await wait(app,started.runId);assert.equal(done.status,status);assert.equal(done.error,message);assert.equal((db.prepare("SELECT count(*) n FROM jobs").get() as any).n,0);}finally{await app.close();db.close();await rm(dir,{recursive:true,force:true});}
+    try{const started=(await app.inject({method:"POST",url:"/api/scrape"})).json();const done=await wait(app,started.runId);assert.equal(done.status,status);assert.equal(done.error,message);assert.equal(done.error_code,status==="failed"?"provider":status==="timed_out"?"timeout":null);assert.equal((db.prepare("SELECT count(*) n FROM jobs").get() as any).n,0);}finally{await app.close();db.close();await rm(dir,{recursive:true,force:true});}
   }
 });

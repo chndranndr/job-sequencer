@@ -102,21 +102,102 @@ export type TraceOperations = {
   cancellationReason: string | null;
 };
 
+function finiteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function usageFromPayload(payload: Record<string, unknown> | null) {
+  const usage = record(payload?.usage);
+  if (!usage) return null;
+  const inputTokens = finiteNumber(usage.inputTokens) ?? finiteNumber(usage.input);
+  const outputTokens = finiteNumber(usage.outputTokens) ?? finiteNumber(usage.output);
+  const totalTokens = finiteNumber(usage.totalTokens) ?? finiteNumber(usage.total) ?? (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
+  const cost = record(usage.cost);
+  const estimatedCost = finiteNumber(usage.estimatedCost) ?? finiteNumber(cost?.total);
+  if (inputTokens === null && outputTokens === null && totalTokens === null && estimatedCost === null) return null;
+  return { inputTokens, outputTokens, totalTokens, estimatedCost };
+}
+
+function aggregateEventUsage(events: readonly TrajectoryEvent[]) {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let estimatedCost = 0;
+  let hasInput = false;
+  let hasOutput = false;
+  let hasTotal = false;
+  let hasCost = false;
+  const add = (usage: NonNullable<ReturnType<typeof usageFromPayload>>) => {
+    if (usage.inputTokens !== null) { inputTokens += usage.inputTokens; hasInput = true; }
+    if (usage.outputTokens !== null) { outputTokens += usage.outputTokens; hasOutput = true; }
+    if (usage.totalTokens !== null) { totalTokens += usage.totalTokens; hasTotal = true; }
+    if (usage.estimatedCost !== null) { estimatedCost += usage.estimatedCost; hasCost = true; }
+  };
+  for (const event of events) {
+    if (event.type !== "assistant_message" && event.type !== "assistant_thinking") continue;
+    const usage = usageFromPayload(record(event.payload));
+    if (usage) add(usage);
+  }
+  return {
+    inputTokens: hasInput ? inputTokens : null,
+    outputTokens: hasOutput ? outputTokens : null,
+    totalTokens: hasTotal ? totalTokens : null,
+    estimatedCost: hasCost ? estimatedCost : null,
+  };
+}
+
+function terminalErrorCode(events: readonly TrajectoryEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (!["run_failed", "run_timed_out", "run_cancelled"].includes(event.type)) continue;
+    const code = record(event.payload)?.errorCode;
+    if (typeof code === "string" && code) return code;
+  }
+  return null;
+}
+
+function inferErrorCode(run: Run) {
+  if (run.status === "cancelled") return "cancelled";
+  if (run.status === "timed_out") return "timeout";
+  const error = run.error ?? "";
+  if (/timed out/i.test(error)) return "timeout";
+  if (/cancel/i.test(error)) return "cancelled";
+  if (run.status === "failed") return "provider";
+  return null;
+}
+
+function deriveVerifierStatus(run: Run, verifierEvents: readonly TrajectoryEvent[]) {
+  if (verifierEvents.some((event) => event.type === "verifier_needs_review")) return "needs_review";
+  if (verifierEvents.some((event) => event.type === "verifier_completed")) return "passed";
+  if (verifierEvents.some((event) => event.type === "verifier_failed")) return "warning";
+  if (verifierEvents.some((event) => event.type === "verifier_skipped")) return "skipped";
+  if ((run.status === "failed" || run.status === "cancelled" || run.status === "timed_out") && (run.workflow === "scrape" || run.workflow === "generate")) return "skipped";
+  return "—";
+}
+
+export function formatEstimatedCost(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "—";
+  if (value === 0) return "$0.00";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
+}
+
 export function deriveTraceOperations(run: Run, events: readonly TrajectoryEvent[]): TraceOperations {
   const invalid = events.filter((event) => event.type === "structured_output_invalid");
   const lastRetry = invalid.at(-1);
   const verifierEvents = events.filter((event) => event.type.startsWith("verifier_"));
   const needsReview = verifierEvents.some((event) => event.type === "verifier_needs_review");
   const sessionStarts = events.filter((event) => event.type === "session_start").length;
+  const eventUsage = aggregateEventUsage(events);
   return {
     attempt: run.attempt_count ?? (invalid.length > 0 ? invalid.length + 1 : 1),
     retryReason: typeof record(lastRetry?.payload)?.error === "string" ? String(record(lastRetry?.payload)?.error) : null,
-    errorCode: run.error_code ?? null,
-    inputTokens: run.input_tokens ?? null,
-    outputTokens: run.output_tokens ?? null,
-    totalTokens: run.total_tokens ?? null,
-    estimatedCost: run.estimated_cost ?? null,
-    verifierStatus: needsReview ? "needs_review" : verifierEvents.some((event) => event.type === "verifier_completed") ? "passed" : verifierEvents.some((event) => event.type === "verifier_failed") ? "warning" : "—",
+    errorCode: run.error_code ?? terminalErrorCode(events) ?? inferErrorCode(run),
+    inputTokens: run.input_tokens ?? eventUsage.inputTokens,
+    outputTokens: run.output_tokens ?? eventUsage.outputTokens,
+    totalTokens: run.total_tokens ?? eventUsage.totalTokens,
+    estimatedCost: run.estimated_cost ?? eventUsage.estimatedCost,
+    verifierStatus: deriveVerifierStatus(run, verifierEvents),
     needsReview,
     sessionReuse: sessionStarts > 1 ? "rebuilt" : sessionStarts === 1 ? "reused" : "—",
     queuePosition: run.status === "queued" ? "queued" : null,
@@ -320,8 +401,8 @@ function TraceDetail({ id, navigate, now }: { id: string; navigate: (href: strin
     <section className="trace-meta" aria-label="Run operations">
       <TraceMeta label="ATTEMPT">{operations.attempt}</TraceMeta>
       <TraceMeta label="ERROR CODE">{operations.errorCode ?? "—"}</TraceMeta>
-      <TraceMeta label="TOKENS">{operations.totalTokens ?? "—"}</TraceMeta>
-      <TraceMeta label="EST. COST">{operations.estimatedCost ?? "—"}</TraceMeta>
+      <TraceMeta label="TOKENS">{operations.totalTokens ?? operations.inputTokens ?? "—"}</TraceMeta>
+      <TraceMeta label="EST. COST">{formatEstimatedCost(operations.estimatedCost)}</TraceMeta>
       <TraceMeta label="VERIFIER">{operations.verifierStatus}</TraceMeta>
       <TraceMeta label="SESSION">{operations.sessionReuse}</TraceMeta>
       {operations.needsReview && <TraceMeta label="REVIEW">needs review</TraceMeta>}

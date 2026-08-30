@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import type { Job, JobStage, Run, RunTaskRow, TrajectoryEvent } from "../shared.js";
+import type { JobStage, Run, RunTaskRow, TrajectoryEvent } from "../shared.js";
 import { deriveRunTaskRows } from "../shared.js";
 import { SurferLoader } from "../surfer-loader.js";
 import { trackerHref } from "./hash.js";
+import { isNarrowLayout, NARROW_LAYOUT_MQ } from "./narrow.js";
 
 function payloadRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -77,32 +78,42 @@ export function ActiveRunStrip({ run, events, now, navigate, onCancel }: { run: 
 }
 
 export function AgentPane({
-  run, events, jobs, pendingScrape, scrapeIssues, onConfirmScrape, onCancelPending, onGenerate, navigate, onFilter, now,
+  run, events, pendingScrape, scrapeIssues, onConfirmScrape, onCancelPending, navigate, onFilter, now,
 }: {
   run: Run | null;
   events: TrajectoryEvent[];
-  jobs: Job[];
   pendingScrape: boolean;
   scrapeIssues: string[];
   onConfirmScrape: () => void;
   onCancelPending: () => void;
-  onGenerate: (ids: string[]) => void;
   navigate: (href: string) => void;
   onFilter: (stage: JobStage | "all") => void;
   now: number;
 }) {
   const [tab, setTab] = useState<"Steps" | "Reasoning" | "Search">("Steps");
   const [agentWidth, setAgentWidth] = useState(280);
-  const [agentCollapsed, setAgentCollapsed] = useState(false);
+  const [agentCollapsed, setAgentCollapsed] = useState(isNarrowLayout);
   const [resizingAgent, setResizingAgent] = useState(false);
   const agentResizeStart = useRef<{ clientX: number; width: number } | null>(null);
+  useEffect(() => {
+    const media = window.matchMedia(NARROW_LAYOUT_MQ);
+    const collapseWhenNarrow = () => { if (media.matches) setAgentCollapsed(true); };
+    collapseWhenNarrow();
+    media.addEventListener("change", collapseWhenNarrow);
+    return () => media.removeEventListener("change", collapseWhenNarrow);
+  }, []);
   const running = run?.status === "running";
   const rows = run ? deriveRunTaskRows(events, run.workflow, run.status) : [];
   const tools = toolNames(events);
   const thought = thinkingText(events);
   const search = searchText(events);
-  const selected = jobs.filter((job) => job.stage === "Selected");
+  const showReasoning = Boolean(thought) || running;
   const elapsed = run ? formatElapsed(run.started_at, run.finished_at, now) : "0.0s";
+  const agentTabs = showReasoning ? (["Steps", "Reasoning", "Search"] as const) : (["Steps", "Search"] as const);
+
+  useEffect(() => {
+    if (tab === "Reasoning" && !showReasoning) setTab("Steps");
+  }, [tab, showReasoning]);
 
   useEffect(() => {
     if (!resizingAgent) return;
@@ -161,7 +172,7 @@ export function AgentPane({
     />
     <div className="panel-h agent__head">
       <span className="agent__title">AGENT <span>{run ? run.workflow : "idle"}</span></span>
-      <button type="button" className="agent__toggle" aria-controls="agent-panel" aria-expanded={!agentCollapsed} aria-label={agentCollapsed ? "Open agent panel" : "Collapse agent panel"} onClick={() => setAgentCollapsed((value) => !value)}>{agentCollapsed ? "OPEN" : "CLOSE"}</button>
+      <button type="button" className="agent__toggle" aria-controls="agent-panel" aria-expanded={!agentCollapsed} aria-label={agentCollapsed ? "Open agent panel" : "Collapse agent panel"} onClick={() => setAgentCollapsed((value) => !value)}>{agentCollapsed ? "‹" : "›"}</button>
     </div>
     <div id="agent-panel" className="agent__content" hidden={agentCollapsed}>
     {pendingScrape && <div className="ask">
@@ -172,31 +183,22 @@ export function AgentPane({
         <button onClick={onCancelPending}>No</button>
       </div>
     </div>}
-    {!running && !pendingScrape && run?.workflow === "scrape" && run.status === "succeeded" && selected.length > 0 && <div className="reco">
-      <h2>Generate documents for armed SELECT rows?</h2>
-      <div className="conf" aria-label="ready"><i style={{ width: "80%" }} /></div>
-      <p>{selected.length} Selected job{selected.length === 1 ? "" : "s"}. Generation still waits on this confirm.</p>
-      <div className="choices">
-        <button onClick={() => onGenerate(selected.map((job) => job.id))}>Accept · /generate</button>
-        <button onClick={() => navigate("#/order")}>Inspect ORDER</button>
-      </div>
-    </div>}
     {running && run?.workflow === "scrape" && <SurferLoader variant="tracker" label="Subway surfing" elapsed={elapsed} />}
     {running && run?.workflow !== "scrape" && <PixelLoader label={`${run?.workflow ?? "run"} playing`} elapsed={elapsed} />}
     <div className="think">
       <div className="think-h"><span className="pulse">{running ? "Thinking" : "Last trace"}</span>{!running && <span>{elapsed}</span>}</div>
       <div className="trace open">
         <div className="trace-tabs">
-          {(["Steps", "Reasoning", "Search"] as const).map((item) => <button key={item} className={`tbtn ${tab === item ? "on" : ""}`} onClick={() => setTab(item)}>{item}</button>)}
+          {agentTabs.map((item) => <button key={item} className={`tbtn ${tab === item ? "on" : ""}`} onClick={() => setTab(item)}>{item}</button>)}
         </div>
         {tab === "Steps" && (rows.length ? rows.map((row) => <div className={`step ${taskClass(row.status)}`} key={row.taskId}><i className="dot" /><span>{row.label}{row.detail ? ` · ${row.detail}` : ""}</span><span>{row.status}</span></div>) : <p className="empty">No task events yet.</p>)}
-        {tab === "Reasoning" && <p className="stream">{thought || "No reasoning captured for this run."}{running && <span className="caret" />}</p>}
+        {tab === "Reasoning" && showReasoning && <p className="stream">{thought || "No reasoning captured for this run."}{running && <span className="caret" />}</p>}
         {tab === "Search" && <div className="code"><div className="code-h"><span>tool payload</span></div><pre>{search || "No tool payload yet."}</pre></div>}
       </div>
     </div>
     {tools.length > 0 && <div className="chips">{tools.map((name) => <span className="tchip tool" key={name}><i />{name}</span>)}</div>}
     {!running && !pendingScrape && !run && <div className="stream">
-      Arm PLAY to scrape, or send a /command. Stages never move unless you say so.
+      Arm PLAY to scrape, or press Ctrl+K for commands. Stages never move unless you say so.
       <div className="sources"><span className="src">@profile</span><span className="src">@criteria</span></div>
       <div className="sel-actions"><button onClick={() => onFilter("Recommended")}>Show Recommended</button></div>
     </div>}

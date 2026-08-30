@@ -38,7 +38,6 @@ export function TrackerApp() {
   const [run, setRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<TrajectoryEvent[]>([]);
   const [toast, setToast] = useState("");
-  const [prompt, setPrompt] = useState("");
   const [pendingScrape, setPendingScrape] = useState(false);
   const [palette, setPalette] = useState(false);
   const [query, setQuery] = useState("");
@@ -228,7 +227,7 @@ export function TrackerApp() {
   }
   async function runCommand(value: string) {
     const text = value.trim();
-    if (!text) { setToast("Type a /command. Tracker has no freeform workspace chat."); return; }
+    if (!text) return;
     if (text.startsWith("/scrape")) { setPendingScrape(true); navigate("#/pattern"); return; }
     if (text.startsWith("/generate")) { setOrderFocus("draft"); void generate(jobs.filter((job) => job.stage === "Selected").map((job) => job.id)); navigate(trackerHref("order", undefined, "draft")); return; }
     if (text.startsWith("/interview")) { navigate("#/phrase"); return; }
@@ -263,12 +262,6 @@ export function TrackerApp() {
     try { await api(`/api/runs/${run.id}/cancel`, { method: "POST" }); syncRef.current?.notify(run.id); setToast("Cancel requested."); }
     catch (caught) { setToast(caught instanceof Error ? caught.message : "Could not cancel."); }
   }
-  async function sendPrompt() {
-    const value = prompt;
-    setPrompt("");
-    await runCommand(value);
-  }
-
   function activateChannel(id: WorkflowChannelId) {
     const channel = WORKFLOW_CHANNELS.find((item) => item.id === id);
     if (!channel) return;
@@ -284,10 +277,9 @@ export function TrackerApp() {
   }
 
   const agentProps = {
-    run, events, jobs, pendingScrape, scrapeIssues,
+    run, events, pendingScrape, scrapeIssues,
     onConfirmScrape: () => void confirmScrape(),
     onCancelPending: () => setPendingScrape(false),
-    onGenerate: (ids: string[]) => void generate(ids),
     navigate, onFilter: setFilter, now,
   };
 
@@ -301,20 +293,6 @@ export function TrackerApp() {
         <button className="ico play" title="Start scrape" aria-label="Play scrape" onClick={() => { setPendingScrape(true); navigate("#/pattern"); }}>
           <svg viewBox="0 0 14 14"><path d="M3 1v12l10-6z" /></svg>
         </button>
-        <button className="ico stop" title="Cancel run" aria-label="Stop" disabled={!running} onClick={() => void cancelRun()}>
-          <svg viewBox="0 0 14 14"><rect x="3" y="3" width="8" height="8" /></svg>
-        </button>
-        <button className="ico rec" title="Human gates stay armed" aria-label="Arm" onClick={() => setToast("Armed. Pi waits for your next explicit action.")}>
-          <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="4" /></svg>
-        </button>
-        <nav className="pat-chain" aria-label="Song chain">
-          <button type="button" className={route.view === "pattern" && filter === "all" ? "on" : ""} onClick={() => activateChannel("scrape")}>00 SCRAPE</button>
-          <button type="button" className={route.view === "pattern" && filter === "Recommended" ? "on" : ""} onClick={() => activateChannel("rank")}>01 RANK</button>
-          <span className="wait">02 WAIT</span>
-          <button type="button" className={route.view === "order" && orderFocus === "draft" ? "on" : ""} onClick={() => activateChannel("docs")}>03 DOCS</button>
-          <button type="button" className={route.view === "order" && orderFocus === "ready" ? "on" : ""} onClick={() => activateChannel("apply")}>04 APPLY</button>
-          <button type="button" className={route.view === "phrase" ? "on" : ""} onClick={() => activateChannel("phrase")}>05 PHRASE</button>
-        </nav>
         <div className={`meter-wrap ${running || tapeLive ? "live" : ""}`} aria-hidden="true"><i style={{ height: 8 }} /><i style={{ height: 14 }} /><i style={{ height: 6 }} /><i style={{ height: 18 }} /></div>
         <canvas className="osc" ref={osc} width={120} height={28} aria-hidden="true" />
       </div>
@@ -322,6 +300,7 @@ export function TrackerApp() {
         <span>FIT <b>&gt;{settings?.scoreThreshold ?? 60}</b></span>
         <span>SRC <b>{enabledLabels}</b></span>
         <span>MDL <b>{settings?.model || "none"}</b></span>
+        <span>CMD <b>Ctrl+K</b></span>
         <span className="clock">{clock}</span>
       </div>
     </header>
@@ -330,33 +309,19 @@ export function TrackerApp() {
       <ActiveRunStrip run={run} events={events} now={now} navigate={navigate} onCancel={() => void cancelRun()} />
     </div>
     <nav className="modes" aria-label="Editor">
-      {TRACKER_VIEWS.map((view) => { const id = view === "trace" && route.view === "trace" ? route.runId : view === route.view ? route.jobId : undefined; const href = trackerHref(view, id, view === "order" ? orderFocus : undefined); return <a key={view} className={route.view === view ? "on" : ""} href={href} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href); }}>{orderTabLabel(view)}</a>; })}
+      {TRACKER_VIEWS.filter((view) => view !== "sample" || (route.view === "sample" && Boolean(route.jobId))).map((view) => { const id = view === "trace" && route.view === "trace" ? route.runId : view === route.view ? route.jobId : undefined; const href = trackerHref(view, id, view === "order" ? orderFocus : undefined); return <a key={view} className={route.view === view ? "on" : ""} href={href} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href); }}>{orderTabLabel(view)}</a>; })}
     </nav>
     <div className={`workspace ${route.view}`}>
       {["pattern", "order", "phrase"].includes(route.view) && (
         <WorkflowRack jobs={jobs} route={route} filter={filter} orderFocus={orderFocus} onChannel={activateChannel} />
       )}
-      {route.view === "pattern" && <PatternView settings={settings} filter={filter} playIndex={playIndex} running={running} onManualImport={startManualImport} {...agentProps} />}
+      {route.view === "pattern" && <PatternView jobs={jobs} settings={settings} filter={filter} playIndex={playIndex} running={running} onManualImport={startManualImport} {...agentProps} />}
       {route.view === "order" && <OrderView jobs={jobs} orderFocus={orderFocus} onGenerate={(ids) => void generate(ids)} navigate={navigate} run={run} onRun={announce} onReload={() => void reloadJobs()} toast={setToast} />}
       {route.view === "phrase" && <PhraseView jobId={route.jobId} navigate={navigate} onRun={announce} toast={setToast} />}
       {route.view === "sample" && <SampleView jobId={route.jobId} settings={settings} navigate={navigate} toast={setToast} onRun={announce} onReload={() => void reloadJobs()} run={run} />}
       {route.view === "disk" && <DiskView toast={setToast} onSettings={setSettings} />}
       {route.view === "trace" && <TraceView runId={route.runId} activeRun={run} navigate={navigate} now={now} />}
     </div>
-    <footer className="prompt">
-      <select className="model" aria-label="Model" value={settings?.model ?? ""} disabled>
-        <option value={settings?.model ?? ""}>{settings?.model || "Select a model on DISK"}</option>
-      </select>
-      <div className="composer">
-        <div className="at-row">
-          <span className="at on">@profile</span>
-          <span className="at on">@criteria</span>
-          <span className="slash">/scrape /generate /interview /import /disk · Ctrl+K</span>
-        </div>
-        <textarea value={prompt} placeholder="Tell Pi what to play next. It will not advance the song without you." onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendPrompt(); } }} />
-      </div>
-      <button className="send" onClick={() => void sendPrompt()}>SEND</button>
-    </footer>
     {toast && <div className="toast" role="status">{toast}</div>}
     <div className={`palette ${palette ? "open" : ""}`} onClick={(event) => { if (event.target === event.currentTarget) setPalette(false); }}>
       <div className="box">

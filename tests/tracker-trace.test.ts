@@ -5,6 +5,7 @@ import { parseTrackerHash, trackerHref } from "../src/tracker/hash.js";
 import {
   deriveTraceOperations,
   eventSummary,
+  formatEstimatedCost,
   formatTraceDuration,
   isRunSyncMessage,
   runSyncMessage,
@@ -97,4 +98,46 @@ test("TRACE operations derive retry, usage, verifier, and review markers", () =>
   assert.equal(ops.verifierStatus, "needs_review");
   assert.equal(ops.needsReview, true);
   assert.equal(ops.sessionReuse, "reused");
+});
+
+test("TRACE operations fall back to trajectory and inferred values when run telemetry is missing", () => {
+  const run = {
+    id: "run-fallback",
+    workflow: "scrape",
+    status: "failed",
+    provider: "openai-codex",
+    model: "gpt-3.5-turbo",
+    summary: null,
+    error: "Scrape failed. Check provider settings and try again.",
+    started_at: "2026-08-24T00:00:00.000Z",
+    finished_at: "2026-08-24T00:00:03.500Z",
+  } as Run;
+  const events = [
+    event(1, "session_start", null),
+    event(2, "assistant_message", { usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20, estimatedCost: 0.004 } }, "assistant"),
+    event(3, "run_failed", { status: "failed", error: run.error, errorCode: "provider" }, "error"),
+  ];
+  const ops = deriveTraceOperations(run, events);
+  assert.equal(ops.errorCode, "provider");
+  assert.equal(ops.totalTokens, 20);
+  assert.equal(ops.estimatedCost, 0.004);
+  assert.equal(ops.verifierStatus, "skipped");
+  assert.equal(formatEstimatedCost(ops.estimatedCost), "$0.0040");
+});
+
+test("TRACE operations infer provider failures when only the safe run error is persisted", () => {
+  const run = {
+    id: "run-infer",
+    workflow: "scrape",
+    status: "failed",
+    provider: "openai-codex",
+    model: "gpt-3.5-turbo",
+    summary: null,
+    error: "Scrape failed. Check provider settings and try again.",
+    started_at: "2026-08-24T00:00:00.000Z",
+    finished_at: "2026-08-24T00:00:03.500Z",
+  } as Run;
+  const ops = deriveTraceOperations(run, [event(1, "session_start", null)]);
+  assert.equal(ops.errorCode, "provider");
+  assert.equal(ops.verifierStatus, "skipped");
 });

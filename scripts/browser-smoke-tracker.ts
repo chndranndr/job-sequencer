@@ -118,6 +118,9 @@ persistScrape(db, { jobs: fixtures });
 const seededJob = listJobs(db).find((job) => job.source_id === fixtures[0].sourceId);
 if (!seededJob) throw new Error("Tracker smoke fixture job was not persisted");
 for (const stage of ["Selected", "Drafting", "Ready", "Applied"] as const) setJobStage(db, seededJob.id, stage);
+const selectedJob = listJobs(db).find((job) => job.source_id === fixtures[1].sourceId);
+if (!selectedJob) throw new Error("Tracker smoke second fixture job was not persisted");
+setJobStage(db, selectedJob.id, "Selected");
 
 const app = await buildServer({
   dataDir,
@@ -153,6 +156,16 @@ try {
   await openTracker(page, base);
   await expect(page).toHaveTitle("TRACKER - Job Sequencer");
   await page.locator(".panel-h").filter({ hasText: "PATTERN 00" }).waitFor();
+  await expect(page.locator(".pat-chain")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Arm", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
+  await expect(page.locator(".transport-meta")).toContainText("Ctrl+K");
+  await expect(page.locator(".modes a", { hasText: "SAMPLE" })).toHaveCount(0);
+  await expect(page.locator(".workflow-rack")).toBeVisible();
+  await page.getByRole("button", { name: "Play scrape" }).click();
+  await expect(page.locator(".ask").getByRole("heading", { name: "Start scrape?" })).toBeVisible();
+  await page.locator(".ask").getByRole("button", { name: "No" }).click();
+  await expect(page.locator(".ask")).toHaveCount(0);
 
   const routes = [
     { hash: "#/pattern", marker: ".panel-h", text: "PATTERN 00" },
@@ -170,6 +183,11 @@ try {
   }
 
   await openTracker(page, base, "#/pattern");
+  await page.getByRole("button", { name: "Collapse workflow rack" }).click();
+  await expect(page.getByRole("button", { name: "Open workflow rack" })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#workflow-rack")).toBeHidden();
+  await page.getByRole("button", { name: "Open workflow rack" }).click();
+  await expect(page.locator("#workflow-rack")).toBeVisible();
   const patternTable = page.getByRole("table", { name: /Job pattern/ });
   const fitHeader = patternTable.locator("th", { hasText: "FIT" });
   await expect(fitHeader).toHaveAttribute("aria-sort", "none");
@@ -225,6 +243,7 @@ try {
   await expect(patternTable.locator("tbody tr").filter({ hasText: "Tracker Manual" })).toBeVisible({ timeout: 30_000 });
 
   await openTracker(page, base, `#/sample/${seededJob.id}`);
+  await expect(page.locator(".modes a", { hasText: "SAMPLE" })).toBeVisible();
   await page.locator(".sample-aside").waitFor();
   await expect(page.locator(".sample-panel .sample-verification")).toHaveCount(1);
   await expect(page.locator(".sample-panel .sample-document-summary")).toHaveCount(0);
@@ -271,6 +290,9 @@ try {
 
   await openTracker(page, base, "#/order");
   await page.locator(".order-board").waitFor();
+  await expect(page.locator(".reco")).toContainText("Generate");
+  await expect(page.locator(".reco button", { hasText: "Accept · generate" })).toBeVisible();
+  await expect(page.locator(".reco .conf")).toHaveCount(0);
   const desktopBoard = await page.locator(".order-list").evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
   if (desktopBoard.scrollWidth <= desktopBoard.clientWidth) throw new Error(`ORDER board is not horizontally scrollable: ${JSON.stringify(desktopBoard)}`);
 

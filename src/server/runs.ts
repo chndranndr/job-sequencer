@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { PiRunCancelledError, PiRunTimeoutError, type PiRunUsage } from "./pi.js";
+import { classifyPiError, PiRunCancelledError, PiRunTimeoutError, type PiRunUsage } from "./pi.js";
 import { createTaskReporter, persistScrape } from "./db.js";
 import { hydrateScrapeResult, sanitizeFallbackQueries, ScrapeResultSchema, validateScrapeResult, type ScrapeResult } from "./scrape.js";
 import { runRankVerifier } from "./verifier.js";
@@ -292,6 +292,7 @@ export class RunManager {
       onError: error => ({
         summary: error instanceof AllSourcesFailedError ? { jobsFound: 0, recommended: 0, discarded: 0, duplicatesSkipped: 0, errors: error.errors, warnings: error.warnings } : null,
         error: safeMessage(error),
+        errorCode: classifyPiError(error),
       }),
     });
   }
@@ -371,6 +372,7 @@ export class GenerationRunManager {
       onError: (error, { signal }) => ({
         summary: error instanceof GenerationRunFailedError ? error.summary : null,
         error: signal.aborted || error instanceof PiRunCancelledError ? "Generation cancelled." : "Document generation failed.",
+        errorCode: classifyPiError(error),
       }),
     });
   }

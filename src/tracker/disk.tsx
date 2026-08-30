@@ -13,6 +13,7 @@ import {
   type RepeatableSectionId,
 } from "../profile-editor.js";
 import { api, getAvailableModels, getCriteria, getProfile, getSettings, importProfile, type PiModelOption } from "../api.js";
+import { isNarrowLayout, NARROW_LAYOUT_MQ } from "./narrow.js";
 import {
   CustomSourceEditor,
   blankCustomSource,
@@ -37,7 +38,6 @@ type DocumentStatus = {
 const variant = "tracker" as const;
 
 const DISK_BANKS = [
-  { id: "load", label: "LOAD", hint: "import sample" },
   { id: "a", label: "A·ID", hint: "identity bank" },
   { id: "b", label: "B·WORK", hint: "experience + education" },
   { id: "c", label: "C·EXTRA", hint: "skills + more" },
@@ -138,9 +138,16 @@ export function DiskView({ toast, onSettings }: { toast: (message: string) => vo
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
   const [tuneWidth, setTuneWidth] = useState(280);
-  const [tuneCollapsed, setTuneCollapsed] = useState(false);
+  const [tuneCollapsed, setTuneCollapsed] = useState(isNarrowLayout);
   const [resizingTune, setResizingTune] = useState(false);
   const tuneResizeStart = useRef<{ clientX: number; width: number } | null>(null);
+  useEffect(() => {
+    const media = window.matchMedia(NARROW_LAYOUT_MQ);
+    const collapseWhenNarrow = () => { if (media.matches) setTuneCollapsed(true); };
+    collapseWhenNarrow();
+    media.addEventListener("change", collapseWhenNarrow);
+    return () => media.removeEventListener("change", collapseWhenNarrow);
+  }, []);
 
   useEffect(() => {
     void Promise.all([getProfile(), getCriteria(), getSettings(), api<DocumentStatus>("/api/document-status")])
@@ -382,9 +389,9 @@ export function DiskView({ toast, onSettings }: { toast: (message: string) => vo
         >{item.label}</button>)}
       </nav>
       <div className={`disk-bank-pane pe-disk pe-theme-tracker disk-bank-pane--${bank}`}>
-        {bank === "load" && <ResumeImportPanel importing={importing} onFile={(file) => void parseResume(file)} variant={variant} />}
         {bank === "a" && <>
           <ProfileSaveBar dirty={profileDirty} label="Profile bank" onSave={() => void saveProfile()} onDiscard={() => savedProfile && setProfile(cloneProfile(savedProfile))} variant={variant} />
+          <ResumeImportPanel importing={importing} onFile={(file) => void parseResume(file)} variant={variant} />
           <ProfileFields profile={profile} setProfile={setProfile} variant={variant} />
           <div className="disk-review-stack">
             <DiskLegacyPanel available={legacyAvailable} open={legacyOpen} content={legacy} error={legacyError} onOpen={() => void showLegacy()} onImport={importLegacy} onClose={() => setLegacyOpen(false)} />
@@ -438,83 +445,106 @@ export function DiskView({ toast, onSettings }: { toast: (message: string) => vo
       />
       <div className="panel-h disk-tune-panel__head">
         <span className="disk-tune-panel__title">FINE-TUNE <span>{settingsDirty ? "settings dirty" : "settings synced"}</span></span>
-        <button type="button" className="disk-tune-panel__toggle" aria-controls="disk-tune" aria-expanded={!tuneCollapsed} aria-label={tuneCollapsed ? "Open fine-tune sidebar" : "Collapse fine-tune sidebar"} onClick={() => setTuneCollapsed((value) => !value)}>{tuneCollapsed ? "OPEN" : "CLOSE"}</button>
+        <button type="button" className="disk-tune-panel__toggle" aria-controls="disk-tune" aria-expanded={!tuneCollapsed} aria-label={tuneCollapsed ? "Open fine-tune sidebar" : "Collapse fine-tune sidebar"} onClick={() => setTuneCollapsed((value) => !value)}>{tuneCollapsed ? "‹" : "›"}</button>
       </div>
       <div id="disk-tune" className="disk-tune-panel__content" hidden={tuneCollapsed}>
-      <div className="tune disk-tune">
-        <h2>Search knobs</h2>
+      <div className="disk-tune">
         {settingsDirty && <div className="disk-settings-state" role="status">UNSAVED SETTINGS</div>}
-        <div className="slats">
-          <div className="slat"><span>FIT</span><input type="range" min={1} max={99} value={settings.scoreThreshold} onChange={(event) => setSettings({ ...settings, scoreThreshold: Number(event.target.value) })} /><span>{settings.scoreThreshold}</span></div>
-        </div>
-        <label className="field">Provider
-          <select value={settings.provider} onChange={(event) => { setSettings({ ...settings, provider: event.target.value, model: "" }); setSettingsError(""); }}>
-            <option value="google">Google</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI API key</option>
-            <option value="openai-codex">OpenAI Codex</option>
-          </select>
-        </label>
-        <label className="field">Model
-          <select value={settings.model} disabled={modelsLoading || Boolean(modelsError) || !models.length} onChange={(event) => { setSettings({ ...settings, model: event.target.value }); setSettingsError(""); }}>
-            <option value="">{modelsLoading ? "Loading authenticated models..." : modelsError ? "Models unavailable" : models.length ? "Select a model" : "No authenticated models"}</option>
-            {models.map((model) => <option key={model.id} value={model.id}>{model.name === model.id ? model.id : `${model.name} · ${model.id}`}</option>)}
-          </select>
-          <small>{modelsLoading ? "Loading authenticated models..." : modelsError || (models.length ? `${models.length} authenticated model${models.length === 1 ? "" : "s"} available.` : "No authenticated models. Run Pi /login or configure provider credentials.")}</small>
-        </label>
-        {settingsError && <p className="disk-settings-error" role="alert">{settingsError}</p>}
-        <div className="disk-source-rack">
-          <div className="disk-source-rack__head">ARMED SOURCES</div>
-          {jobSourceKeys.map((source) => {
-            const armed = enabled.includes(source);
-            return <label className={`disk-source ${armed ? "armed" : ""}`} key={source}>
-              <input type="checkbox" checked={armed} onChange={(event) => setEnabledSource(source, event.target.checked)} />
-              <span className="disk-source__led" aria-hidden="true" />
-              <span>{jobSourceLabel(source)}</span>
-              <span className="disk-source__age">MAX <input aria-label={`${jobSourceLabel(source)} max age in days`} type="number" min={1} max={9999} step={1} value={sourceMaxAge(settings, source)} onChange={(event) => setSourceMaxAge(source, Number(event.target.value))} /></span>
-            </label>;
-          })}
-          {(settings.customSources ?? []).map((custom) => {
-            const armed = enabled.includes(custom.key);
-            return <label className={`disk-source disk-source--custom ${armed ? "armed" : ""}`} key={custom.key}>
-              <input type="checkbox" checked={armed} onChange={(event) => setEnabledSource(custom.key, event.target.checked)} />
-              <span className="disk-source__led" aria-hidden="true" />
-              <span>{custom.label} <small>({custom.key})</small></span>
-            </label>;
-          })}
-        </div>
-        <div className="disk-custom-source-actions">
-          <button type="button" className="disk-action ghost" onClick={startCustomSource}>Add custom source</button>
-          {customError && <p className="disk-settings-error" role="alert">{customError}</p>}
-        </div>
-        {(settings.customSources ?? []).length > 0 && <div className="disk-custom-source-list">
-          {(settings.customSources ?? []).map((custom) => <div className="disk-custom-source" key={custom.key}>
-            <span><strong>{custom.label}</strong><small>{custom.key} / {custom.parser.format.toUpperCase()}</small></span>
-            <span className="sel-actions"><button type="button" className="disk-action ghost" onClick={() => editCustomSource(custom)}>Edit</button><button type="button" className="disk-action ghost" onClick={() => removeCustomSource(custom.key)}>Remove</button></span>
-          </div>)}
-        </div>}
-        {customDraft && <CustomSourceEditor draft={customDraft} onChange={setCustomDraft} onCancel={() => { setCustomDraft(null); setCustomError(""); }} onSave={saveCustomSource} editing={Boolean(editingCustomKey)} variant="tracker" />}
+        <section className="pe-section pe-theme-tracker">
+          <div className="pe-section-head"><h2>PROVIDER</h2><span className="pe-eyebrow">MODEL</span></div>
+          <div className="pe-section-body">
+            <label className="field">Provider
+              <select value={settings.provider} onChange={(event) => { setSettings({ ...settings, provider: event.target.value, model: "" }); setSettingsError(""); }}>
+                <option value="google">Google</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI API key</option>
+                <option value="openai-codex">OpenAI Codex</option>
+              </select>
+            </label>
+            <label className="field">Model
+              <select value={settings.model} disabled={modelsLoading || Boolean(modelsError) || !models.length} onChange={(event) => { setSettings({ ...settings, model: event.target.value }); setSettingsError(""); }}>
+                <option value="">{modelsLoading ? "Loading authenticated models..." : modelsError ? "Models unavailable" : models.length ? "Select a model" : "No authenticated models"}</option>
+                {models.map((model) => <option key={model.id} value={model.id}>{model.name === model.id ? model.id : `${model.name} · ${model.id}`}</option>)}
+              </select>
+              <small>{modelsLoading ? "Loading authenticated models..." : modelsError || (models.length ? `${models.length} authenticated model${models.length === 1 ? "" : "s"} available.` : "No authenticated models. Run Pi /login or configure provider credentials.")}</small>
+            </label>
+            {settingsError && <p className="disk-settings-error" role="alert">{settingsError}</p>}
+          </div>
+        </section>
+        <section className="pe-section pe-theme-tracker">
+          <div className="pe-section-head"><h2>SEARCH KNOBS</h2><span className="pe-eyebrow">FIT</span></div>
+          <div className="pe-section-body">
+            <div className="slats">
+              <div className="slat"><span>FIT</span><input type="range" min={1} max={99} value={settings.scoreThreshold} onChange={(event) => setSettings({ ...settings, scoreThreshold: Number(event.target.value) })} /><span>{settings.scoreThreshold}</span></div>
+            </div>
+          </div>
+        </section>
+        <section className="pe-section pe-theme-tracker">
+          <div className="pe-section-head"><h2>ARMED SOURCES</h2><span className="pe-eyebrow">BOARDS</span></div>
+          <div className="pe-section-body">
+            <div className="disk-source-rack">
+              {jobSourceKeys.map((source) => {
+                const armed = enabled.includes(source);
+                return <label className={`disk-source ${armed ? "armed" : ""}`} key={source}>
+                  <input type="checkbox" checked={armed} onChange={(event) => setEnabledSource(source, event.target.checked)} />
+                  <span className="disk-source__led" aria-hidden="true" />
+                  <span>{jobSourceLabel(source)}</span>
+                  <span className="disk-source__age">MAX <input aria-label={`${jobSourceLabel(source)} max age in days`} type="number" min={1} max={9999} step={1} value={sourceMaxAge(settings, source)} onChange={(event) => setSourceMaxAge(source, Number(event.target.value))} /></span>
+                </label>;
+              })}
+              {(settings.customSources ?? []).map((custom) => {
+                const armed = enabled.includes(custom.key);
+                return <label className={`disk-source disk-source--custom ${armed ? "armed" : ""}`} key={custom.key}>
+                  <input type="checkbox" checked={armed} onChange={(event) => setEnabledSource(custom.key, event.target.checked)} />
+                  <span className="disk-source__led" aria-hidden="true" />
+                  <span>{custom.label} <small>({custom.key})</small></span>
+                </label>;
+              })}
+            </div>
+            <div className="disk-custom-source-actions">
+              <button type="button" className="disk-action ghost" onClick={startCustomSource}>Add custom source</button>
+              {customError && <p className="disk-settings-error" role="alert">{customError}</p>}
+            </div>
+            {(settings.customSources ?? []).length > 0 && <div className="disk-custom-source-list">
+              {(settings.customSources ?? []).map((custom) => <div className="disk-custom-source" key={custom.key}>
+                <span><strong>{custom.label}</strong><small>{custom.key} / {custom.parser.format.toUpperCase()}</small></span>
+                <span className="sel-actions"><button type="button" className="disk-action ghost" onClick={() => editCustomSource(custom)}>Edit</button><button type="button" className="disk-action ghost" onClick={() => removeCustomSource(custom.key)}>Remove</button></span>
+              </div>)}
+            </div>}
+            {customDraft && <CustomSourceEditor draft={customDraft} onChange={setCustomDraft} onCancel={() => { setCustomDraft(null); setCustomError(""); }} onSave={saveCustomSource} editing={Boolean(editingCustomKey)} variant="tracker" />}
+          </div>
+        </section>
         <section className="disk-document-settings pe-section pe-theme-tracker">
           <div className="pe-section-head"><h2>DOCUMENT SETTINGS</h2><span className="pe-eyebrow">OUTPUT TARGETS</span></div>
           <div className="pe-section-body">
             <div className="pe-two"><label className="field">CV pages<input type="number" min={1} max={10} value={settings.cvPages} onChange={(event) => setSettings({ ...settings, cvPages: Number(event.target.value) })} /></label><label className="field">Cover-letter pages<input type="number" min={1} max={10} value={settings.coverLetterPages} onChange={(event) => setSettings({ ...settings, coverLetterPages: Number(event.target.value) })} /></label></div>
           </div>
         </section>
-        <div className="sel-actions">
-          <button type="button" className="disk-action" disabled={!settingsDirty || !modelValid || modelsLoading} onClick={() => void saveSettings()}>Write settings</button>
-          <button type="button" className="disk-action ghost" disabled={!settingsDirty} onClick={revertSettings}>Revert</button>
-          <button type="button" className="disk-action ghost" disabled={settingsDirty || !modelValid || modelsLoading} onClick={() => void api("/api/ai/test", { method: "POST" }).then(() => toast("Connection test succeeded.")).catch((caught) => toast(caught instanceof Error ? caught.message : "Connection test failed."))}>Test link</button>
-        </div>
-        <div className="disk-tools">
-          {["lualatex", "xelatex", "pdfinfo", "pdftotext"].map((name) => {
-            const ok = status?.tools[name]?.available;
-            return <span className={`disk-tool ${ok ? "ok" : ""}`} key={name}><i aria-hidden="true" /><span>{name.toUpperCase()}</span><b>{ok ? "AVAILABLE" : "MISSING"}</b></span>;
-          })}
-        </div>
-        <div className="disk-template-status">
-          <div><span>CV templates</span><b>{status?.templates.cv.available ? status.templates.cv.names.join(", ") || "Available" : "Missing"}</b></div>
-          <div><span>Cover-letter template</span><b>{status?.templates.coverLetter.available ? "Available" : "Missing"}</b></div>
-        </div>
+        <section className="pe-section pe-theme-tracker">
+          <div className="pe-section-head"><h2>ACTIONS</h2><span className="pe-eyebrow">WRITE</span></div>
+          <div className="pe-section-body">
+            <div className="sel-actions">
+              <button type="button" className="disk-action" disabled={!settingsDirty || !modelValid || modelsLoading} onClick={() => void saveSettings()}>Write settings</button>
+              <button type="button" className="disk-action ghost" disabled={!settingsDirty} onClick={revertSettings}>Revert</button>
+              <button type="button" className="disk-action ghost" disabled={settingsDirty || !modelValid || modelsLoading} onClick={() => void api("/api/ai/test", { method: "POST" }).then(() => toast("Connection test succeeded.")).catch((caught) => toast(caught instanceof Error ? caught.message : "Connection test failed."))}>Test link</button>
+            </div>
+          </div>
+        </section>
+        <section className="pe-section pe-theme-tracker">
+          <div className="pe-section-head"><h2>STATUS</h2><span className="pe-eyebrow">TOOLS</span></div>
+          <div className="pe-section-body">
+            <div className="disk-tools">
+              {["lualatex", "xelatex", "pdfinfo", "pdftotext"].map((name) => {
+                const ok = status?.tools[name]?.available;
+                return <span className={`disk-tool ${ok ? "ok" : ""}`} key={name}><i aria-hidden="true" /><span>{name.toUpperCase()}</span><b>{ok ? "AVAILABLE" : "MISSING"}</b></span>;
+              })}
+            </div>
+            <div className="disk-template-status">
+              <div><span>CV templates</span><b>{status?.templates.cv.available ? status.templates.cv.names.join(", ") || "Available" : "Missing"}</b></div>
+              <div><span>Cover-letter template</span><b>{status?.templates.coverLetter.available ? "Available" : "Missing"}</b></div>
+            </div>
+          </div>
+        </section>
       </div>
       </div>
     </aside>

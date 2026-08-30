@@ -61,7 +61,7 @@ export function PatternView({
   running: boolean;
   navigate: (href: string) => void;
   onManualImport: (input: string) => Promise<void>;
-} & Omit<Parameters<typeof AgentPane>[0], "jobs" | "navigate" | "onFilter">) {
+} & Omit<Parameters<typeof AgentPane>[0], "navigate" | "onFilter">) {
   const [sortKey, setSortKey] = useState<PatternSortKey | null>(null);
   const [sortDirection, setSortDirection] = useState<PatternSortDirection>("ascending");
   const [manualOpen, setManualOpen] = useState(false);
@@ -128,7 +128,7 @@ export function PatternView({
         </table>}
       </div>
     </section>
-    <AgentPane {...agent} jobs={jobs} navigate={navigate} onFilter={onFilter} now={now} />
+    <AgentPane {...agent} navigate={navigate} onFilter={onFilter} now={now} />
     <ManualAddDialog open={manualOpen} running={running} onClose={() => setManualOpen(false)} onManualImport={onManualImport} />
   </>;
 }
