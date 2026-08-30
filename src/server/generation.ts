@@ -2,11 +2,11 @@ import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import type { StructuredProfile, TrajectoryRecorder } from "../shared.js";
+import { defaultGenerationDirection, type GenerationDirection, type StructuredProfile, type TrajectoryRecorder } from "../shared.js";
 import { ProfileSchema, type Settings } from "./config.js";
 import { compileAndVerify, containedPath, type CommandRunner } from "./documents.js";
-import { createTaskReporter } from "./db.js";
-import { projectPromptContext, projectPromptText, trustedSection, untrustedSection } from "./context.js";
+import { createTaskReporter, getJobDetail, updateJobDirection } from "./db.js";
+import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 import { loadGuidance } from "./guidance.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "./pi.js";
 import { runStructured } from "./structured.js";
@@ -24,7 +24,9 @@ export const GenerationOutputSchema = z.object({
   gaps: z.array(z.string().trim().min(1)).max(20),
 }).strict();
 export type GenerationOutput = z.infer<typeof GenerationOutputSchema>;
-export type GenerationExecutor = (context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; guidance?: string; settings: Settings; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void }) => Promise<unknown>;
+export type GenerationExecutor = (context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; guidance?: string; settings: Settings; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; direction?: GenerationDirection }) => Promise<unknown>;
+export const generationRevisionCap = 3;
+export const revisionCapError = `Revision cap of ${generationRevisionCap} already reached.`;
 
 function availableCvTemplateIds(templates: unknown) {
   if (!templates || typeof templates !== "object" || Array.isArray(templates) || !("cv" in templates)) return [];
@@ -37,11 +39,28 @@ function knownGenerationGaps(rank: unknown) {
   return rank.gaps.filter((gap): gap is string => typeof gap === "string");
 }
 
-export function buildGenerationPrompt(context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown }, guidance: string) {
+function userDirectionText(direction: GenerationDirection) {
+  const lines = [
+    direction.cvLength === "short"
+      ? "CV length is short. Write denser two-page copy. Keep the compiled CV at 2 pages and the cover letter at 1 page."
+      : "CV length is complete. Write a full two-page CV. Keep the cover letter at 1 page.",
+    direction.letterMode === "exploratory"
+      ? "Letter mode is exploratory. Frame the candidate for an adjacent role. Still list every entry from rank.gaps. Never invent employers, metrics, or titles."
+      : "Letter mode is standard. Write to the posted role.",
+  ];
+  const narration = direction.letterNarration.trim();
+  if (narration) lines.push(`Letter narration: ${narration}`);
+  const notes = direction.revisionNotes.trim();
+  if (notes) lines.push(`Revision notes: ${notes}`);
+  return lines.join("\n");
+}
+
+export function buildGenerationPrompt(context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; direction?: GenerationDirection }, guidance: string, direction = context.direction ?? defaultGenerationDirection) {
   const posting = context.job.posting;
-  const jobMetadata = Object.fromEntries(Object.entries(context.job).filter(([key]) => key !== "posting"));
+  const jobMetadata = Object.fromEntries(Object.entries(context.job).filter(([key]) => key !== "posting" && key !== "notes" && key !== "application_notes"));
   return [
     trustedSection("INSTRUCTIONS", `Return JSON only matching {"cvTemplate":"","roleEmphasis":["verified facts relevant to the role"],"cvEdits":["specific truthful edits"],"profileFacts":["exact verbatim excerpts from profile"],"coverLetterSubject":"","coverLetterParagraphs":["2-4 substantive truthful paragraphs carrying the main narrative and evidence"],"coverLetterBullets":["optional verified complementary points not already stated in paragraphs"],"gaps":["exact entries from rank.gaps"]}. Allowed local CV template IDs: ${JSON.stringify(availableCvTemplateIds(context.templates))}. Set cvTemplate to exactly one ID from this list, verbatim; do not invent, alias, or map template IDs. Use only supplied facts, job data, and gaps; never invent metrics, employers, technologies, responsibilities, or company claims. Keep bullets optional and complementary: omit them when no new evidence remains, and never repeat a paragraph's achievement, metric, or claim. Do not use em-dashes.`),
+    trustedSection("USER DIRECTION", userDirectionText(direction)),
     trustedSection("GUIDANCE", guidance),
     trustedSection("CANDIDATE PROFILE", context.profile),
     untrustedSection("JOB METADATA", JSON.stringify(projectPromptContext(jobMetadata))),
@@ -53,7 +72,7 @@ export function buildGenerationPrompt(context: { profile: string; job: Record<st
 
 export const liveGenerationExecutor: GenerationExecutor = async context => {
   const guidance = await loadGuidance(["writingStyle", "cvTemplates", "coverLetterTemplates"]);
-  const prompt = buildGenerationPrompt(context, guidance);
+  const prompt = buildGenerationPrompt(context, guidance, context.direction);
   return runStructured({
     prompt,
     schema: GenerationOutputSchema,
@@ -89,12 +108,17 @@ export const liveGenerationExecutor: GenerationExecutor = async context => {
   });
 };
 
-function assertGrounded(values: string[], source: string, label: string) {
-  const tokenise = (value: string) => (value.match(/[A-Za-z][A-Za-z0-9+#.-]{2,}/g) ?? []).map(token => token.replace(/[.]+$/, "").toLowerCase());
+function tokenise(value: string) {
+  return (value.match(/[A-Za-z][A-Za-z0-9+#.-]{2,}/g) ?? []).map(token => token.replace(/[.]+$/, "").toLowerCase());
+}
+
+function keepGrounded(values: readonly string[], source: string) {
   const tokens = new Set(tokenise(source));
-  for (const value of values) {
-    if (!tokenise(value).some(token => tokens.has(token))) throw new Error(`Generated ${label} contains an unsupported or ungrounded claim.`);
-  }
+  return values.filter(value => tokenise(value).some(token => tokens.has(token)));
+}
+
+function assertGrounded(values: string[], source: string, label: string) {
+  if (keepGrounded(values, source).length !== values.length) throw new Error(`Generated ${label} contains an unsupported or ungrounded claim.`);
 }
 
 function assertNoDocumentMarkers(values: string[]) {
@@ -108,9 +132,9 @@ function validateGenerationBusiness(value: GenerationOutput, profile: string, te
   for (const gap of value.gaps) if (!knownGaps.includes(gap)) throw new Error("Generated output contains an unsupported gap.");
   assertNoDocumentMarkers([...value.profileFacts, ...value.coverLetterParagraphs, ...value.coverLetterBullets, value.coverLetterSubject]);
   const source = `${profile}\n${jobContext}\n${knownGaps.join("\n")}`;
-  assertGrounded([...value.roleEmphasis, ...value.cvEdits, ...value.coverLetterParagraphs, ...value.coverLetterBullets], source, "content");
+  assertGrounded([...value.roleEmphasis, ...value.coverLetterParagraphs, ...value.coverLetterBullets], source, "content");
   if (value.coverLetterSubject && !value.coverLetterSubject.toLowerCase().split(/\s+/).some(token => source.toLowerCase().includes(token))) throw new Error("Generated cover-letter subject contains an unsupported claim.");
-  return value;
+  return { ...value, cvEdits: keepGrounded(value.cvEdits, source) };
 }
 
 export function validateGenerationOutput(value: unknown, profile: string, templateNames: string[], knownGaps: string[], jobContext = ""): GenerationOutput {
@@ -317,11 +341,12 @@ function headerCommands(profile: StructuredProfile | null, email = "", phone = "
   };
 }
 
-export function renderStructuredProfile(profile: StructuredProfile, jobText = "", roleEmphasis: readonly string[] = []) {
+export function renderStructuredProfile(profile: StructuredProfile, jobText = "", roleEmphasis: readonly string[] = [], cvEdits: readonly string[] = []) {
   const experiences = profile.experience.filter(entry => entry.title.trim() || entry.company.trim() || entry.description.trim());
   const skills = selectRelevantSkills(profile.skills, jobText, roleEmphasis).map(entry => latex(entry.name.trim())).join(", ");
   const projects = selectRelevantProjects(profile.projects, jobText, roleEmphasis);
-  const experienceBody = experiences.map(experienceEntry).filter(Boolean).join("\n");
+  const groundedEdits = keepGrounded(cvEdits, `${JSON.stringify(profile)}\n${jobText}`);
+  const experienceBody = [experiences.map(experienceEntry).filter(Boolean).join("\n"), cvBullets(groundedEdits)].filter(Boolean).join("\n");
   return {
     ...headerCommands(profile),
     SUMMARY_SECTION: cvSection("Professional Summary", latex(profile.identity.summary)),
@@ -418,8 +443,10 @@ function render(template: string, replacements: Record<string, string>) {
 export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void }) {
   const job = options.db.prepare("SELECT * FROM jobs WHERE id=?").get(options.jobId) as Record<string, unknown> | undefined;
   if (!job) throw new Error("Job not found.");
-  const allowed = options.allowDrafting ? ["Drafting"] : ["Selected"];
-  if (!allowed.includes(String(job.stage))) throw new Error(options.allowDrafting ? "Only Drafting jobs may regenerate." : "Only Selected jobs may generate.");
+  const direction = getJobDetail(options.db, options.jobId)?.generation_direction ?? { ...defaultGenerationDirection };
+  const allowed = options.allowDrafting ? ["Drafting", "Ready"] : ["Selected"];
+  if (!allowed.includes(String(job.stage))) throw new Error(options.allowDrafting ? "Only Drafting or Ready jobs may regenerate." : "Only Selected jobs may generate.");
+  if (options.allowDrafting && direction.revisionCount >= generationRevisionCap) throw Object.assign(new Error(revisionCapError), { statusCode: 409 });
   const tasks = createTaskReporter(options.trajectory, options.runId);
   const jobDetail = `${String(job.role)} · ${String(job.company)}`;
   tasks.start({ taskId: `generate:${options.jobId}:prepare`, label: "Prepare job", detail: jobDetail });
@@ -439,7 +466,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   tasks.complete(`generate:${options.jobId}:prepare`, jobDetail);
   const rank = JSON.parse(String(job.rank_json));
   tasks.start({ taskId: `generate:${options.jobId}:content`, label: "Generate tailored content", detail: jobDetail });
-  const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, signal: options.signal, runId: options.runId, trajectory: options.trajectory, onUsage: options.onUsage });
+  const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, signal: options.signal, runId: options.runId, trajectory: options.trajectory, onUsage: options.onUsage, direction });
   const output = validateGenerationOutput(raw, options.profile, Object.keys(metadata.cv), Array.isArray(rank.gaps) ? rank.gaps : [], `${String(job.role)} ${String(job.company)} ${String(job.posting)}`);
   const documentVerification = await runDocumentVerifier({
     output,
@@ -461,7 +488,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const role = String(job.role);
   const company = String(job.company);
   const paragraphs = letterParagraphValues(output, structured, role, company);
-  const profileReplacements = structured ? renderStructuredProfile(structured, `${role} ${String(job.posting)}`, output.roleEmphasis) : renderLegacyProfile(output, email, phone);
+  const profileReplacements = structured ? renderStructuredProfile(structured, `${role} ${String(job.posting)}`, output.roleEmphasis, output.cvEdits) : renderLegacyProfile(output, email, phone);
   const location = structured ? [structured.identity.city, structured.identity.country].filter(value => value.trim()).join(", ") : "";
   const replacements = {
     ...profileReplacements,
@@ -484,6 +511,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   tasks.complete(`generate:${options.jobId}:documents`, verification.success ? jobDetail : "Document verification needs review.");
   tasks.start({ taskId: `generate:${options.jobId}:finalize`, label: "Finalize job", detail: jobDetail });
   options.db.prepare("UPDATE applications SET cv_template=?,cv_source=?,cv_pdf=?,cover_letter_source=?,cover_letter_pdf=?,verification_json=?,approved_at=NULL,updated_at=? WHERE job_id=?").run(output.cvTemplate, "cv.tex", "cv.pdf", "cover-letter.tex", "cover-letter.pdf", JSON.stringify(verification), now, options.jobId);
+  if (options.allowDrafting && verification.success) updateJobDirection(options.db, options.jobId, { revisionCount: direction.revisionCount + 1 }, now);
   tasks.complete(`generate:${options.jobId}:finalize`, jobDetail);
   return { jobId: options.jobId, verification };
   } finally {

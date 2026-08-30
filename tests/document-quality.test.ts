@@ -165,3 +165,25 @@ test("generation prompt makes cover-letter bullets optional and complementary", 
   assert.match(prompt, /omit them when no new evidence remains/);
   assert.match(prompt, /never repeat a paragraph's achievement, metric, or claim/);
 });
+
+test("grounded cvEdits land in rendered CV and ungrounded edits do not", () => {
+  const profile = createEmptyProfile();
+  profile.experience = [{
+    id: "role",
+    title: "Backend Engineer",
+    company: "Example",
+    employmentType: "Full-time",
+    location: "Remote",
+    startMonth: "",
+    startYear: "2024",
+    endMonth: "",
+    endYear: "",
+    currentRole: true,
+    description: "Built Java services.",
+  }];
+  profile.awards = [{ id: "award", title: "GroundedAwardTokenXYZ", issuer: "", date: "", description: "" }];
+  const rendered = renderStructuredProfile(profile, "backend Java", ["Java"], ["GroundedAwardTokenXYZ", "InventedConversionMetric999"]);
+  const text = Object.values(rendered).join("\n");
+  assert.match(text, /GroundedAwardTokenXYZ/);
+  assert.doesNotMatch(text, /InventedConversionMetric999/);
+});

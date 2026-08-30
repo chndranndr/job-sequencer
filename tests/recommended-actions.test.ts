@@ -44,7 +44,7 @@ test("guidance loader reads only the six mapped files and rejects arbitrary path
 test("structured generation validates all tailored fields against supplied facts", () => {
   const valid = validateGenerationOutput(generation, profile, ["backend_java_spring"], ["Kubernetes"], "Backend Engineer at Example");
   assert.deepEqual(valid.roleEmphasis, ["TypeScript"]);
-  assert.throws(() => validateGenerationOutput({ ...generation, cvEdits: ["Invented production metric"] }, profile, ["backend_java_spring"], ["Kubernetes"], "Backend Engineer at Example"), /unsupported|grounded/i);
+  assert.deepEqual(validateGenerationOutput({ ...generation, cvEdits: ["Invented production metric"] }, profile, ["backend_java_spring"], ["Kubernetes"], "Backend Engineer at Example").cvEdits, []);
   assert.throws(() => validateGenerationOutput({ ...generation, coverLetterParagraphs: ["I led an unverified global launch."] }, profile, ["backend_java_spring"], ["Kubernetes"], "Backend Engineer at Example"), /unsupported|grounded/i);
 });
 
