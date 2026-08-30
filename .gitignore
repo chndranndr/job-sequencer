@@ -56,6 +56,7 @@ coverage/
 *.tsbuildinfo
 
 # Temporary, logs, and generated documents
+artifacts/
 .tmp-*
 tmp/
 temp/

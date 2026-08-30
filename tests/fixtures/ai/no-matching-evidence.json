@@ -1,0 +1,11 @@
+{
+  "id": "no-matching-evidence",
+  "profile": "Backend engineer with Java.",
+  "job": {
+    "company": "Example",
+    "role": "Quantum Chemist",
+    "posting": "PhD in computational chemistry required.",
+    "score": 20
+  },
+  "expect": { "maxScore": 35 }
+}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Job, JobStage, Run } from "../shared.js";
 import { type OrderFocus, trackerHref } from "./hash.js";
-import { rowHex } from "./notes.js";
+import { rowHex, scoreToSignal } from "./notes.js";
 import { FollowUpView } from "./follow-up.js";
 
 const slots = [
@@ -32,6 +32,16 @@ export type OrderMetadata = {
   followUp: string;
   outcome: string;
 };
+
+export type OrderRowSummary = {
+  stage: JobStage;
+  fit: number;
+  signal: string;
+};
+
+export function orderRowSummary(job: Job): OrderRowSummary {
+  return { stage: job.stage, fit: job.score, signal: scoreToSignal(job) };
+}
 
 function orderDate(value?: string | null) {
   return value ? value.slice(0, 10) : "—";
@@ -126,7 +136,6 @@ export function OrderView({ jobs, orderFocus, onGenerate, navigate, run, onRun, 
     {orderFocus === "follow" && <FollowUpView jobs={jobs} run={run} onRun={onRun} onReload={onReload} toast={toast} />}
     {selected.length > 0 && <div className="reco">
       <h2>Jump ke P-DRF? Generate dokumen untuk pattern P-SEL.</h2>
-      <div className="conf"><i style={{ width: "82%" }} /></div>
       <p>{selected.map((job) => job.company).join(", ")}. Verifikasi tetap harus lulus. Approval tetap milik kamu.</p>
       <div className="choices">
         <button onClick={() => onGenerate(selected.map((job) => job.id))}>Accept · generate</button>
@@ -137,19 +146,16 @@ export function OrderView({ jobs, orderFocus, onGenerate, navigate, run, onRun, 
 }
 
 function OrderRow({ job, index, navigate }: { job: Job; index: number; navigate: (href: string) => void }) {
-  const metadata = orderMetadata(job);
+  const summary = orderRowSummary(job);
   return <tr
     className={job.stage === "Drafting" && job.verification?.success === false ? "fail" : ""}
     onClick={() => navigate(trackerHref("sample", job.id))}
   >
     <td className="hex">{rowHex(index)}</td>
     <td><strong>{job.company}</strong><div className="order-role">{job.role}</div><dl className="order-meta">
-      <div><dt>STAGE</dt><dd>{metadata.stage}</dd></div>
-      <div><dt>DOCS</dt><dd>{metadata.documents}</dd></div>
-      <div><dt>APPROVAL</dt><dd>{metadata.approval}</dd></div>
-      <div><dt>SUBMITTED</dt><dd>{metadata.submitted}</dd></div>
-      <div><dt>FOLLOW-UP</dt><dd>{metadata.followUp}</dd></div>
-      <div><dt>OUTCOME</dt><dd>{metadata.outcome}</dd></div>
+      <div><dt>STAGE</dt><dd>{summary.stage}</dd></div>
+      <div><dt>FIT</dt><dd>{summary.fit}</dd></div>
+      <div><dt>SIGNAL</dt><dd>{summary.signal}</dd></div>
     </dl></td>
     <td className={fxTone(job)}>{rowFx(job)}</td>
   </tr>;

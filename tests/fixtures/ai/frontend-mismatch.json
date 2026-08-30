@@ -1,0 +1,12 @@
+{
+  "id": "frontend-mismatch",
+  "profile": "Senior backend engineer with Java and APIs.",
+  "job": {
+    "company": "UI Co",
+    "role": "Frontend React Engineer",
+    "posting": "Own React UI and CSS systems.",
+    "score": 35,
+    "reason": "Frontend mismatch"
+  },
+  "expect": { "maxScore": 55 }
+}

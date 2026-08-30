@@ -59,6 +59,7 @@ export function eventSummary(event: TrajectoryEvent) {
   if (typeof payload?.toolName === "string") return summaryText(payload.toolName);
   if (typeof payload?.error === "string") return summaryText(payload.error);
   if (typeof payload?.status === "string") return summaryText(payload.status);
+  if (event.type.startsWith("verifier_")) return summaryText(event.type.replaceAll("_", " "));
   return event.type.replaceAll("_", " ");
 }
 
@@ -83,6 +84,124 @@ export function traceTaskSummary(events: readonly TrajectoryEvent[], workflow: R
     active: rows.filter((row) => row.status === "active").length,
     failed: rows.filter((row) => row.status === "failed").length,
     total: rows.length,
+  };
+}
+
+export type TraceOperations = {
+  attempt: number | string;
+  retryReason: string | null;
+  errorCode: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  estimatedCost: number | null;
+  verifierStatus: string;
+  needsReview: boolean;
+  sessionReuse: string;
+  queuePosition: string | null;
+  cancellationReason: string | null;
+};
+
+function finiteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function usageFromPayload(payload: Record<string, unknown> | null) {
+  const usage = record(payload?.usage);
+  if (!usage) return null;
+  const inputTokens = finiteNumber(usage.inputTokens) ?? finiteNumber(usage.input);
+  const outputTokens = finiteNumber(usage.outputTokens) ?? finiteNumber(usage.output);
+  const totalTokens = finiteNumber(usage.totalTokens) ?? finiteNumber(usage.total) ?? (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
+  const cost = record(usage.cost);
+  const estimatedCost = finiteNumber(usage.estimatedCost) ?? finiteNumber(cost?.total);
+  if (inputTokens === null && outputTokens === null && totalTokens === null && estimatedCost === null) return null;
+  return { inputTokens, outputTokens, totalTokens, estimatedCost };
+}
+
+function aggregateEventUsage(events: readonly TrajectoryEvent[]) {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let estimatedCost = 0;
+  let hasInput = false;
+  let hasOutput = false;
+  let hasTotal = false;
+  let hasCost = false;
+  const add = (usage: NonNullable<ReturnType<typeof usageFromPayload>>) => {
+    if (usage.inputTokens !== null) { inputTokens += usage.inputTokens; hasInput = true; }
+    if (usage.outputTokens !== null) { outputTokens += usage.outputTokens; hasOutput = true; }
+    if (usage.totalTokens !== null) { totalTokens += usage.totalTokens; hasTotal = true; }
+    if (usage.estimatedCost !== null) { estimatedCost += usage.estimatedCost; hasCost = true; }
+  };
+  for (const event of events) {
+    if (event.type !== "assistant_message" && event.type !== "assistant_thinking") continue;
+    const usage = usageFromPayload(record(event.payload));
+    if (usage) add(usage);
+  }
+  return {
+    inputTokens: hasInput ? inputTokens : null,
+    outputTokens: hasOutput ? outputTokens : null,
+    totalTokens: hasTotal ? totalTokens : null,
+    estimatedCost: hasCost ? estimatedCost : null,
+  };
+}
+
+function terminalErrorCode(events: readonly TrajectoryEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (!["run_failed", "run_timed_out", "run_cancelled"].includes(event.type)) continue;
+    const code = record(event.payload)?.errorCode;
+    if (typeof code === "string" && code) return code;
+  }
+  return null;
+}
+
+function inferErrorCode(run: Run) {
+  if (run.status === "cancelled") return "cancelled";
+  if (run.status === "timed_out") return "timeout";
+  const error = run.error ?? "";
+  if (/timed out/i.test(error)) return "timeout";
+  if (/cancel/i.test(error)) return "cancelled";
+  if (run.status === "failed") return "provider";
+  return null;
+}
+
+function deriveVerifierStatus(run: Run, verifierEvents: readonly TrajectoryEvent[]) {
+  if (verifierEvents.some((event) => event.type === "verifier_needs_review")) return "needs_review";
+  if (verifierEvents.some((event) => event.type === "verifier_completed")) return "passed";
+  if (verifierEvents.some((event) => event.type === "verifier_failed")) return "warning";
+  if (verifierEvents.some((event) => event.type === "verifier_skipped")) return "skipped";
+  if ((run.status === "failed" || run.status === "cancelled" || run.status === "timed_out") && (run.workflow === "scrape" || run.workflow === "generate")) return "skipped";
+  return "—";
+}
+
+export function formatEstimatedCost(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "—";
+  if (value === 0) return "$0.00";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
+}
+
+export function deriveTraceOperations(run: Run, events: readonly TrajectoryEvent[]): TraceOperations {
+  const invalid = events.filter((event) => event.type === "structured_output_invalid");
+  const lastRetry = invalid.at(-1);
+  const verifierEvents = events.filter((event) => event.type.startsWith("verifier_"));
+  const needsReview = verifierEvents.some((event) => event.type === "verifier_needs_review");
+  const sessionStarts = events.filter((event) => event.type === "session_start").length;
+  const eventUsage = aggregateEventUsage(events);
+  return {
+    attempt: run.attempt_count ?? (invalid.length > 0 ? invalid.length + 1 : 1),
+    retryReason: typeof record(lastRetry?.payload)?.error === "string" ? String(record(lastRetry?.payload)?.error) : null,
+    errorCode: run.error_code ?? terminalErrorCode(events) ?? inferErrorCode(run),
+    inputTokens: run.input_tokens ?? eventUsage.inputTokens,
+    outputTokens: run.output_tokens ?? eventUsage.outputTokens,
+    totalTokens: run.total_tokens ?? eventUsage.totalTokens,
+    estimatedCost: run.estimated_cost ?? eventUsage.estimatedCost,
+    verifierStatus: deriveVerifierStatus(run, verifierEvents),
+    needsReview,
+    sessionReuse: sessionStarts > 1 ? "rebuilt" : sessionStarts === 1 ? "reused" : "—",
+    queuePosition: run.status === "queued" ? "queued" : null,
+    cancellationReason: run.status === "cancelled" ? (run.error ?? "cancelled") : null,
   };
 }
 
@@ -259,6 +378,7 @@ function TraceDetail({ id, navigate, now }: { id: string; navigate: (href: strin
 
   const taskRows = deriveRunTaskRows(events, run.workflow, run.status);
   const taskSummary = traceTaskSummary(events, run.workflow, run.status);
+  const operations = deriveTraceOperations(run, events);
   const start = Date.parse(run.started_at);
   const end = Date.parse(run.finished_at ?? events.at(-1)?.endedAt ?? events.at(-1)?.timestamp ?? new Date(now).toISOString());
   const range = Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : 0;
@@ -277,6 +397,18 @@ function TraceDetail({ id, navigate, now }: { id: string; navigate: (href: strin
       <TraceMeta label="FINISHED">{dateTime(run.finished_at)}</TraceMeta>
       <TraceMeta label="ELAPSED">{formatTraceDuration(runElapsedMs(run, now))}</TraceMeta>
       <TraceMeta label="ERROR">{safeError(run.error)}</TraceMeta>
+    </section>
+    <section className="trace-meta" aria-label="Run operations">
+      <TraceMeta label="ATTEMPT">{operations.attempt}</TraceMeta>
+      <TraceMeta label="ERROR CODE">{operations.errorCode ?? "—"}</TraceMeta>
+      <TraceMeta label="TOKENS">{operations.totalTokens ?? operations.inputTokens ?? "—"}</TraceMeta>
+      <TraceMeta label="EST. COST">{formatEstimatedCost(operations.estimatedCost)}</TraceMeta>
+      <TraceMeta label="VERIFIER">{operations.verifierStatus}</TraceMeta>
+      <TraceMeta label="SESSION">{operations.sessionReuse}</TraceMeta>
+      {operations.needsReview && <TraceMeta label="REVIEW">needs review</TraceMeta>}
+      {operations.retryReason && <TraceMeta label="RETRY">{operations.retryReason}</TraceMeta>}
+      {operations.queuePosition && <TraceMeta label="QUEUE">{operations.queuePosition}</TraceMeta>}
+      {operations.cancellationReason && <TraceMeta label="CANCEL">{operations.cancellationReason}</TraceMeta>}
     </section>
     <section className="trace-section" aria-label="Task overview">
       <div className="trace-section-head"><h2>Task overview</h2><span>{taskSummary.completed}/{taskSummary.total} complete</span></div>

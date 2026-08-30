@@ -126,20 +126,36 @@ class TrajectoryFakeSession implements PiSessionLike {
 }
 
 test("runBoundedPi persists prompts, aggregated assistant/thinking, tools, and terminal events", async () => {
+  const previousMode = process.env.TELEMETRY_MODE;
+  process.env.TELEMETRY_MODE = "redacted";
   const db = openDatabase(":memory:");
   const runId = insertRun(db, "trajectory-pi");
   const recorder = createTrajectoryRecorder(db);
   const session = new TrajectoryFakeSession();
   try {
-    await runBoundedPi({ runId, trajectory: recorder, prompt: "Exact user prompt", timeoutMs: 1_000, createSession: async () => session });
+    await runBoundedPi({
+      runId,
+      trajectory: recorder,
+      prompt: "Exact user prompt",
+      guidance: "Use only supplied facts.",
+      settings: { provider: "fixture", model: "model" },
+      model: "fixture-model",
+      timeoutMs: 1_000,
+      createSession: async () => session,
+    });
     assert.equal(session.promptText, "Exact user prompt");
     assert.equal(session.disposed, true);
     const events = listRunTrajectoryEvents(db, runId);
     const types = events.map((event) => event.type);
-    for (const expected of ["system_prompt", "tool_catalog", "user_prompt", "agent_start", "turn_start", "assistant_message", "assistant_thinking", "tool_execution_start", "tool_execution_update", "tool_execution_end", "run_completed", "agent_settled", "session_disposed"]) assert.ok(types.includes(expected), expected);
+    for (const expected of ["system_prompt", "tool_catalog", "run_context", "user_prompt", "agent_start", "turn_start", "assistant_message", "assistant_thinking", "tool_execution_start", "tool_execution_update", "tool_execution_end", "run_completed", "agent_settled", "session_disposed"]) assert.ok(types.includes(expected), expected);
     assert.equal((events.find((event) => event.type === "user_prompt")?.payload as { text: string }).text, "Exact user prompt");
     assert.equal((events.find((event) => event.type === "assistant_message")?.payload as { text: string }).text, "Answer");
     assert.equal((events.find((event) => event.type === "assistant_thinking")?.payload as { text: string }).text, "Plan");
     assert.equal((events.find((event) => event.type === "tool_execution_end")?.payload as { isError: boolean }).isError, false);
-  } finally { db.close(); }
+    assert.match(String((events.find((event) => event.type === "run_context")?.payload as { promptHash?: string }).promptHash), /^[0-9a-f]{64}$/);
+  } finally {
+    if (previousMode === undefined) delete process.env.TELEMETRY_MODE;
+    else process.env.TELEMETRY_MODE = previousMode;
+    db.close();
+  }
 });

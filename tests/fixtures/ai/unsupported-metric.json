@@ -1,0 +1,9 @@
+{
+  "id": "unsupported-metric",
+  "profile": "Backend engineer with Java.",
+  "generation": {
+    "coverLetterParagraphs": ["Improved throughput by 99%."],
+    "profileFacts": ["Backend engineer with Java."]
+  },
+  "expect": { "issue": "unsupported_metric" }
+}

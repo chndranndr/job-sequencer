@@ -10,7 +10,7 @@ const schema = `PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, source TEXT NOT NULL, url TEXT NOT NULL UNIQUE, company TEXT NOT NULL, role TEXT NOT NULL, location TEXT NOT NULL DEFAULT '', posting TEXT NOT NULL, score INTEGER NOT NULL CHECK(score BETWEEN 0 AND 100), rank_json TEXT NOT NULL, stage TEXT NOT NULL CHECK(stage IN ('Recommended','Discarded','Selected','Drafting','Ready','Applied','Interview','Offer','Rejected','Archived')), notes TEXT NOT NULL DEFAULT '', archived_from_stage TEXT, first_seen_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(source,source_id));
 CREATE INDEX IF NOT EXISTS jobs_stage_idx ON jobs(stage); CREATE INDEX IF NOT EXISTS jobs_score_idx ON jobs(score);
 CREATE TABLE IF NOT EXISTS applications (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, cv_template TEXT, cv_source TEXT, cv_pdf TEXT, cover_letter_source TEXT, cover_letter_pdf TEXT, verification_json TEXT, approved_at TEXT, submitted_at TEXT, submission_channel TEXT, interview_notes TEXT NOT NULL DEFAULT '', interview_chat_json TEXT NOT NULL DEFAULT '[]', interview_updated_at TEXT, follow_up_draft TEXT NOT NULL DEFAULT '', follow_up_due_at TEXT, follow_up_sent_at TEXT, follow_up_context_json TEXT, outcome TEXT, notes TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, workflow TEXT NOT NULL CHECK(workflow IN ('scrape','generate','interview','follow_up','manual_import','test')), job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL, status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','cancelled','timed_out')), provider TEXT NOT NULL, model TEXT NOT NULL, summary_json TEXT, error TEXT, started_at TEXT NOT NULL, finished_at TEXT);
+CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, workflow TEXT NOT NULL CHECK(workflow IN ('scrape','generate','interview','follow_up','manual_import','profile_import','test')), job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','cancelled','timed_out')), provider TEXT NOT NULL, model TEXT NOT NULL, summary_json TEXT, error TEXT, started_at TEXT NOT NULL, finished_at TEXT, idempotency_key TEXT);
 CREATE TABLE IF NOT EXISTS run_trajectory_events (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, kind TEXT NOT NULL, event_type TEXT NOT NULL, timestamp TEXT NOT NULL, started_at TEXT, ended_at TEXT, duration_ms REAL, payload_json TEXT, PRIMARY KEY(run_id, sequence));
 CREATE INDEX IF NOT EXISTS run_trajectory_events_run_idx ON run_trajectory_events(run_id, sequence);
 CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);`;
@@ -22,15 +22,18 @@ function ensureColumn(db: DatabaseSync, table: string, column: string, definitio
 
 function migrateRunsWorkflow(db: DatabaseSync) {
   const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'").get() as { sql?: string } | undefined;
-  if (!row?.sql || /manual_import/i.test(row.sql)) return;
+  if (!row?.sql || (/manual_import/i.test(row.sql) && /profile_import/i.test(row.sql) && /'queued'/i.test(row.sql))) return;
+  const columns = new Set((db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>).map((value) => value.name));
+  const runColumns = ["id", "workflow", "status", "job_id", "provider", "model", "summary_json", "error", "error_code", "attempt_count", "input_tokens", "output_tokens", "total_tokens", "estimated_cost", "prompt_hash", "guidance_hash", "settings_hash", "started_at", "finished_at", "idempotency_key"];
+  const selectedColumns = runColumns.map((column) => columns.has(column) ? column : `NULL AS ${column}`).join(",");
   db.exec("PRAGMA foreign_keys=OFF");
   try {
     db.exec(`
       BEGIN IMMEDIATE;
-      CREATE TABLE runs_manual_import (id TEXT PRIMARY KEY, workflow TEXT NOT NULL CHECK(workflow IN ('scrape','generate','interview','follow_up','manual_import','test')), job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL, status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','cancelled','timed_out')), provider TEXT NOT NULL, model TEXT NOT NULL, summary_json TEXT, error TEXT, started_at TEXT NOT NULL, finished_at TEXT);
-      INSERT INTO runs_manual_import(id,workflow,job_id,status,provider,model,summary_json,error,started_at,finished_at) SELECT id,workflow,job_id,status,provider,model,summary_json,error,started_at,finished_at FROM runs;
+      CREATE TABLE runs_phase4 (id TEXT PRIMARY KEY, workflow TEXT NOT NULL CHECK(workflow IN ('scrape','generate','interview','follow_up','manual_import','profile_import','test')), job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','cancelled','timed_out')), provider TEXT NOT NULL, model TEXT NOT NULL, summary_json TEXT, error TEXT, error_code TEXT, attempt_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, estimated_cost REAL, prompt_hash TEXT, guidance_hash TEXT, settings_hash TEXT, started_at TEXT NOT NULL, finished_at TEXT, idempotency_key TEXT);
+      INSERT INTO runs_phase4(${runColumns.join(",")}) SELECT ${selectedColumns} FROM runs;
       DROP TABLE runs;
-      ALTER TABLE runs_manual_import RENAME TO runs;
+      ALTER TABLE runs_phase4 RENAME TO runs;
       COMMIT;
     `);
   } catch (error) {
@@ -66,12 +69,99 @@ export function openDatabase(path: string): DatabaseSync {
     migrateRunsWorkflow(db);
     db.prepare("INSERT INTO migrations(version,applied_at) VALUES(4,?)").run(new Date().toISOString());
   }
+  if (!(db.prepare("SELECT 1 FROM migrations WHERE version=5").get())) {
+    migrateRunsWorkflow(db);
+    db.prepare("INSERT INTO migrations(version,applied_at) VALUES(5,?)").run(new Date().toISOString());
+  }
+  if (!(db.prepare("SELECT 1 FROM migrations WHERE version=6").get())) {
+    migrateRunsWorkflow(db);
+    db.prepare("INSERT INTO migrations(version,applied_at) VALUES(6,?)").run(new Date().toISOString());
+  }
+  ensureColumn(db, "runs", "error_code", "TEXT");
+  ensureColumn(db, "runs", "attempt_count", "INTEGER");
+  ensureColumn(db, "runs", "input_tokens", "INTEGER");
+  ensureColumn(db, "runs", "output_tokens", "INTEGER");
+  ensureColumn(db, "runs", "total_tokens", "INTEGER");
+  ensureColumn(db, "runs", "estimated_cost", "REAL");
+  ensureColumn(db, "runs", "prompt_hash", "TEXT");
+  ensureColumn(db, "runs", "guidance_hash", "TEXT");
+  ensureColumn(db, "runs", "settings_hash", "TEXT");
+  ensureColumn(db, "runs", "idempotency_key", "TEXT");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency_key_idx ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL");
   cleanupStaleRuns(db);
   return db;
 }
 
 export function cleanupStaleRuns(db: DatabaseSync, now = new Date().toISOString()) {
-  return db.prepare("UPDATE runs SET status='failed', error='Server restarted during run.', finished_at=? WHERE status='running'").run(now).changes;
+  const result = db.prepare("UPDATE runs SET status='failed', error=COALESCE(error,'Server restarted during run.'), finished_at=? WHERE status='running'").run(now);
+  try {
+    db.prepare("UPDATE runs SET error_code='server_restart' WHERE status='failed' AND error='Server restarted during run.' AND finished_at=? AND error_code IS NULL").run(now);
+  } catch {}
+  return result.changes;
+}
+
+export function reconcileQueuedRuns(db: DatabaseSync, now = new Date().toISOString()) {
+  const result = db.prepare("UPDATE runs SET status='failed', error=COALESCE(error,'Server restarted before run started.'), error_code=COALESCE(error_code,'server_restart'), finished_at=? WHERE status='queued'").run(now);
+  return result.changes;
+}
+
+export type RunUsage = {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  estimatedCost: number | null;
+};
+
+export type NewRun = {
+  id: string;
+  workflow: Run["workflow"];
+  jobId?: string | null;
+  status?: "queued" | "running";
+  provider: string;
+  model: string;
+  startedAt: string;
+  idempotencyKey?: string | null;
+};
+
+export function insertRun(db: DatabaseSync, value: NewRun) {
+  db.prepare("INSERT INTO runs(id,workflow,status,job_id,provider,model,started_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?)").run(
+    value.id,
+    value.workflow,
+    value.status ?? "queued",
+    value.jobId ?? null,
+    value.provider,
+    value.model,
+    value.startedAt,
+    value.idempotencyKey ?? null,
+  );
+}
+
+export function createRun(db: DatabaseSync, value: NewRun) {
+  insertRun(db, value);
+  return value.id;
+}
+
+export function markRunRunning(db: DatabaseSync, id: string) {
+  return db.prepare("UPDATE runs SET status='running' WHERE id=? AND status='queued'").run(id).changes > 0;
+}
+
+export function updateRunErrorCode(db: DatabaseSync, id: string, errorCode: string | null) {
+  return db.prepare("UPDATE runs SET error_code=COALESCE(error_code,?) WHERE id=?").run(errorCode, id).changes > 0;
+}
+
+export function updateRunUsage(db: DatabaseSync, id: string, usage: RunUsage) {
+  return db.prepare("UPDATE runs SET input_tokens=COALESCE(?,input_tokens),output_tokens=COALESCE(?,output_tokens),total_tokens=COALESCE(?,total_tokens),estimated_cost=COALESCE(?,estimated_cost) WHERE id=?").run(
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.totalTokens,
+    usage.estimatedCost,
+    id,
+  ).changes > 0;
+}
+
+export function finishRun(db: DatabaseSync, id: string, status: Exclude<RunStatus, "queued" | "running">, summary: unknown, error: string | null, errorCode: string | null, finishedAt = new Date().toISOString()) {
+  const summaryJson = summary === undefined || summary === null ? null : JSON.stringify(summary);
+  return db.prepare("UPDATE runs SET status=?,summary_json=?,error=?,error_code=COALESCE(?,error_code),finished_at=? WHERE id=? AND status IN ('queued','running')").run(status, summaryJson, error, errorCode, finishedAt, id).changes > 0;
 }
 
 export function normalizeUrl(value: string) {

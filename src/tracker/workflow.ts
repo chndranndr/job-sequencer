@@ -3,12 +3,12 @@ import type { OrderFocus, TrackerRoute } from "./hash.js";
 
 export type WorkflowChannelId = "scrape" | "rank" | "select" | "docs" | "apply" | "phrase" | "follow";
 
+export type ChannelLedState = "g" | "o" | "dim";
+
 export type WorkflowChannel = {
   id: WorkflowChannelId;
   num: string;
   name: string;
-  led: "g" | "o" | "b";
-  armed?: boolean;
   hint: string;
   tab: string;
   view: TrackerRoute["view"];
@@ -24,7 +24,6 @@ export const WORKFLOW_CHANNELS: WorkflowChannel[] = [
     id: "scrape",
     num: "01",
     name: "SCRAPE",
-    led: "g",
     hint: "Cari lowongan baru · sama dengan tombol Play",
     tab: "PATTERN",
     view: "pattern",
@@ -35,7 +34,6 @@ export const WORKFLOW_CHANNELS: WorkflowChannel[] = [
     id: "rank",
     num: "02",
     name: "RANK",
-    led: "g",
     hint: "Lihat kandidat yang direkomendasikan Pi",
     tab: "PATTERN",
     view: "pattern",
@@ -45,8 +43,6 @@ export const WORKFLOW_CHANNELS: WorkflowChannel[] = [
     id: "select",
     num: "03",
     name: "SELECT",
-    led: "o",
-    armed: true,
     hint: "Job yang kamu pilih · klik baris untuk SAMPLE",
     tab: "PATTERN",
     view: "pattern",
@@ -56,7 +52,6 @@ export const WORKFLOW_CHANNELS: WorkflowChannel[] = [
     id: "docs",
     num: "04",
     name: "DOCS",
-    led: "b",
     hint: "Generate CV + surat · posisi B00–B01 di ORDER",
     tab: "ORDER",
     view: "order",
@@ -66,8 +61,6 @@ export const WORKFLOW_CHANNELS: WorkflowChannel[] = [
     id: "apply",
     num: "05",
     name: "APPLY",
-    led: "o",
-    armed: true,
     hint: "Siap submit manual · posisi B02 di ORDER",
     tab: "ORDER",
     view: "order",
@@ -77,7 +70,6 @@ export const WORKFLOW_CHANNELS: WorkflowChannel[] = [
     id: "phrase",
     num: "06",
     name: "PHRASE",
-    led: "b",
     hint: "Latihan interview · tab PHRASE",
     tab: "PHRASE",
     view: "phrase",
@@ -86,8 +78,6 @@ export const WORKFLOW_CHANNELS: WorkflowChannel[] = [
     id: "follow",
     num: "07",
     name: "FOLLOW",
-    led: "o",
-    armed: true,
     hint: "Pilih Applied / Interview · follow-up editor · posisi B03–B04 di ORDER",
     tab: "ORDER",
     view: "order",
@@ -108,10 +98,16 @@ export function channelJobCount(channel: WorkflowChannelId, jobs: Job[]) {
     case "apply":
       return jobs.filter((job) => job.stage === "Ready").length;
     case "phrase":
-      return jobs.filter((job) => job.stage === "Interview").length;
+      return jobs.filter((job) => job.stage === "Applied" || job.stage === "Interview").length;
     case "follow":
       return jobs.filter((job) => job.stage === "Applied" || job.stage === "Interview").length;
   }
+}
+
+export function channelLedState(active: boolean, count: number): ChannelLedState {
+  if (active) return "g";
+  if (count > 0) return "o";
+  return "dim";
 }
 
 export function isChannelActive(

@@ -3,7 +3,9 @@ import test from "node:test";
 import type { Run, TrajectoryEvent } from "../src/shared.js";
 import { parseTrackerHash, trackerHref } from "../src/tracker/hash.js";
 import {
+  deriveTraceOperations,
   eventSummary,
+  formatEstimatedCost,
   formatTraceDuration,
   isRunSyncMessage,
   runSyncMessage,
@@ -65,4 +67,77 @@ test("TRACE duration formatting handles terminal and live runs", () => {
   assert.equal(formatTraceDuration(65_000), "1m 5s");
   assert.equal(formatTraceDuration(null), "—");
   assert.equal(formatTraceDuration(Date.parse(run.finished_at!) - Date.parse(run.started_at)), "2.5s");
+});
+
+test("TRACE operations derive retry, usage, verifier, and review markers", () => {
+  const run = {
+    id: "run-ops",
+    workflow: "scrape",
+    status: "succeeded",
+    provider: "fixture",
+    model: "model",
+    summary: null,
+    error_code: null,
+    attempt_count: 2,
+    input_tokens: 10,
+    output_tokens: 20,
+    total_tokens: 30,
+    estimated_cost: 0.4,
+    started_at: "2026-08-24T00:00:00.000Z",
+    finished_at: "2026-08-24T00:00:01.000Z",
+  } as Run;
+  const events = [
+    event(1, "structured_output_invalid", { error: "schema mismatch" }, "error"),
+    event(2, "verifier_needs_review", { verifier: "rank", status: "needs_review" }),
+    event(3, "session_start", null),
+  ];
+  const ops = deriveTraceOperations(run, events);
+  assert.equal(ops.attempt, 2);
+  assert.equal(ops.retryReason, "schema mismatch");
+  assert.equal(ops.totalTokens, 30);
+  assert.equal(ops.verifierStatus, "needs_review");
+  assert.equal(ops.needsReview, true);
+  assert.equal(ops.sessionReuse, "reused");
+});
+
+test("TRACE operations fall back to trajectory and inferred values when run telemetry is missing", () => {
+  const run = {
+    id: "run-fallback",
+    workflow: "scrape",
+    status: "failed",
+    provider: "openai-codex",
+    model: "gpt-3.5-turbo",
+    summary: null,
+    error: "Scrape failed. Check provider settings and try again.",
+    started_at: "2026-08-24T00:00:00.000Z",
+    finished_at: "2026-08-24T00:00:03.500Z",
+  } as Run;
+  const events = [
+    event(1, "session_start", null),
+    event(2, "assistant_message", { usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20, estimatedCost: 0.004 } }, "assistant"),
+    event(3, "run_failed", { status: "failed", error: run.error, errorCode: "provider" }, "error"),
+  ];
+  const ops = deriveTraceOperations(run, events);
+  assert.equal(ops.errorCode, "provider");
+  assert.equal(ops.totalTokens, 20);
+  assert.equal(ops.estimatedCost, 0.004);
+  assert.equal(ops.verifierStatus, "skipped");
+  assert.equal(formatEstimatedCost(ops.estimatedCost), "$0.0040");
+});
+
+test("TRACE operations infer provider failures when only the safe run error is persisted", () => {
+  const run = {
+    id: "run-infer",
+    workflow: "scrape",
+    status: "failed",
+    provider: "openai-codex",
+    model: "gpt-3.5-turbo",
+    summary: null,
+    error: "Scrape failed. Check provider settings and try again.",
+    started_at: "2026-08-24T00:00:00.000Z",
+    finished_at: "2026-08-24T00:00:03.500Z",
+  } as Run;
+  const ops = deriveTraceOperations(run, [event(1, "session_start", null)]);
+  assert.equal(ops.errorCode, "provider");
+  assert.equal(ops.verifierStatus, "skipped");
 });

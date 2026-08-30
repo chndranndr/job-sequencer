@@ -1,17 +1,20 @@
-import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { PiRunCancelledError, PiRunTimeoutError } from "./pi.js";
+import { classifyPiError, PiRunCancelledError, PiRunTimeoutError, type PiRunUsage } from "./pi.js";
 import { createTaskReporter, persistScrape } from "./db.js";
-import { hydrateScrapeResult, sanitizeFallbackQueries, validateScrapeResult, type ScrapeResult } from "./scrape.js";
+import { hydrateScrapeResult, sanitizeFallbackQueries, ScrapeResultSchema, validateScrapeResult, type ScrapeResult } from "./scrape.js";
+import { runRankVerifier } from "./verifier.js";
 import type { Criteria, Settings } from "./config.js";
 import { createLiveRestrictedScrapeSession, runBoundedPi, type PiSessionLike } from "./pi.js";
 import { createScrapeTools } from "./scrape.js";
+import { projectPromptContext, projectPromptText } from "./context.js";
 import { loadGuidance } from "./guidance.js";
 import { generateJob, liveGenerationExecutor, type GenerationExecutor } from "./generation.js";
 import type { CommandRunner } from "./documents.js";
-import { defaultSourceMaxAgeDays, isJobSource, jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
+import { defaultSourceMaxAgeDays, isJobSource, jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryRecorder } from "../shared.js";
+import { runStructured } from "./structured.js";
+import { RunCoordinator } from "./coordinator.js";
 
-export interface ScrapeContext { profile:string; criteria:Criteria; settings:Settings; signal:AbortSignal; runId?:string; trajectory?:TrajectoryRecorder }
+export interface ScrapeContext { profile:string; criteria:Criteria; settings:Settings; signal:AbortSignal; runId?:string; trajectory?:TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void }
 export type ScrapeExecution = { result: unknown; provenance: Map<string, string>; errors?: string[]; warnings?: string[] };
 export type ScrapeExecutor = (context:ScrapeContext)=>Promise<ScrapeExecution>;
 export type SourceScrapeExecutor = (context:ScrapeContext, source: JobSource, customSource?: CustomJobSource)=>Promise<ScrapeExecution>;
@@ -76,6 +79,7 @@ type SourcePiRunner = (options: {
   signal?: AbortSignal;
   createSession: () => Promise<PiSessionLike>;
   onEvent?: (event: unknown) => void;
+  onUsage?: (usage: PiRunUsage) => void;
   runId?: string;
   trajectory?: TrajectoryRecorder;
 }) => Promise<unknown>;
@@ -121,6 +125,7 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
     catch (error) { tasks.failActive("Search tools could not be prepared."); throw error; }
     try {
       const provenance = new Map<string, string>();
+      const detailDescriptions = new Map<string, string>();
       const warnings: string[] = [];
       const errors: string[] = [];
       let preflightJson = "";
@@ -145,62 +150,81 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
           : `\nNo usable Japan-board preflight jobs were returned. You may use searchJobs for your own bounded search if calls remain, but do not invent jobs.`
           : ``;
       const detailPostingInstruction = "For every accepted job, call fetchJobDetails and copy its complete fetched description/text into posting verbatim, preserving all paragraphs and line breaks. Never use a date-only, metadata-only, or shortened summary in posting.";
-      const base = `Search ${label} for jobs matching these criteria, fetch every returned job before using it, then score against the profile. ${detailPostingInstruction} Use source key "${source}" and return only JSON matching {"jobs":[{"sourceId":"","source":"${source}","url":"","company":"","role":"","location":"","posting":"","score":0,"reason":"","strengths":[],"gaps":[]}]}. Maximum jobs: ${context.criteria.maxJobsPerRun}. ${locationRule} Criteria: ${JSON.stringify(context.criteria)} Profile: ${context.profile}\nUse these bounded query and evaluation guidelines; the configured strict threshold overrides any legacy label:\n${guidance}${preflightInstruction}`;
+      const base = [
+        `Search ${label} for jobs matching these criteria, fetch every returned job before using it, then score against the profile. ${detailPostingInstruction} Use source key "${source}" and return only JSON matching {"jobs":[{"sourceId":"","source":"${source}","url":"","company":"","role":"","location":"","posting":"","score":0,"reason":"","strengths":[],"gaps":[]}]}. Maximum jobs: ${context.criteria.maxJobsPerRun}. ${locationRule}`,
+        "TRUSTED INSTRUCTIONS",
+        "---",
+        `Use these bounded query and evaluation guidelines; the configured strict threshold overrides any legacy label:\n${projectPromptText(guidance)}`,
+        "---",
+        "TRUSTED CANDIDATE PROFILE",
+        "---",
+        projectPromptText(context.profile),
+        "---",
+        "TRUSTED SEARCH CRITERIA",
+        "---",
+        JSON.stringify(projectPromptContext(context.criteria)),
+        "---",
+        "UNTRUSTED TOOL DATA",
+        "---",
+        projectPromptText(preflightInstruction || "No preflight tool data was returned."),
+        "---",
+      ].join("\n");
       tasks.complete(prepareTaskId, label);
-      let previous = "";
-      let lastError: unknown;
-
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const tools = sharedTools ?? makeTools(toolOptions);
-        const fetchTaskIds = new Map<string, string>();
-        let text = "";
-        const validationTaskId = `scrape:${source}:validate`;
-        const prompt = attempt === 0
-          ? base
-          : `The prior output failed validation. Return corrected JSON only with source "${source}". ${detailPostingInstruction}${preflightInstruction} Prior output: ${previous}`;
-        await runPi({
-          prompt,
-          timeoutMs: 120_000,
-          signal: context.signal,
-          createSession: () => makeSession(context.settings, tools, source),
-          runId: context.runId,
-          trajectory: context.trajectory,
-          onEvent: event => {
-            const value = event as { type?: string; toolCallId?: string; toolName?: string; args?: unknown; isError?: boolean; assistantMessageEvent?: { type?: string; delta?: string } };
-            if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
-            if (value.type === "tool_execution_start" && value.toolName === "fetchJobDetails") {
-              const callId = value.toolCallId || `fetch-${fetchTaskIds.size + 1}`;
-              const resultId = value.args && typeof value.args === "object" && !Array.isArray(value.args) && typeof (value.args as { resultId?: unknown }).resultId === "string" ? (value.args as { resultId: string }).resultId : "";
-              const taskId = `scrape:${source}:fetch-details`;
-              fetchTaskIds.set(callId, taskId);
-              tasks.start({ taskId, label: "Fetch job details", detail: resultId ? `${label} · ${resultId}` : label });
-            }
-            if (value.type === "tool_execution_end" && value.toolName === "fetchJobDetails") {
-              const callId = value.toolCallId || [...fetchTaskIds.keys()].at(-1) || "";
-              const taskId = fetchTaskIds.get(callId);
-              if (!taskId) return;
-              if (value.isError) tasks.fail(taskId, `${label} detail fetch failed.`);
-              else tasks.complete(taskId);
-              fetchTaskIds.delete(callId);
-            }
-          },
-        });
-        previous = text.slice(0, 200_000);
-        for (const entry of tools.provenance) provenance.set(...entry);
-        for (const warning of tools.warnings) if (!warnings.includes(warning)) warnings.push(warning);
-        tasks.start({ taskId: validationTaskId, label: "Validate and score results", detail: label });
-        try {
-          const result = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
+      const validationTaskId = `scrape:${source}:validate`;
+      tasks.start({ taskId: validationTaskId, label: "Validate and score results", detail: label });
+      const structured = await runStructured({
+        prompt: base,
+        schema: ScrapeResultSchema,
+        signal: context.signal,
+        runId: context.runId,
+        trajectory: context.trajectory,
+        execute: async attemptPrompt => {
+          const tools = sharedTools ?? makeTools(toolOptions);
+          let text = "";
+          const fetchTaskIds = new Map<string, string>();
+          try {
+            await runPi({
+              prompt: attemptPrompt,
+              timeoutMs: 120_000,
+              signal: context.signal,
+              createSession: () => makeSession(context.settings, tools, source),
+              runId: context.runId,
+              trajectory: context.trajectory,
+              onUsage: context.onUsage,
+              onEvent: event => {
+                const value = event as { type?: string; toolCallId?: string; toolName?: string; args?: unknown; isError?: boolean; assistantMessageEvent?: { type?: string; delta?: string } };
+                if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
+                if (value.type === "tool_execution_start" && value.toolName === "fetchJobDetails") {
+                  const callId = value.toolCallId || `fetch-${fetchTaskIds.size + 1}`;
+                  const resultId = value.args && typeof value.args === "object" && !Array.isArray(value.args) && typeof (value.args as { resultId?: unknown }).resultId === "string" ? (value.args as { resultId: string }).resultId : "";
+                  const taskId = `scrape:${source}:fetch-details`;
+                  fetchTaskIds.set(callId, taskId);
+                  tasks.start({ taskId, label: "Fetch job details", detail: resultId ? `${label} · ${resultId}` : label });
+                }
+                if (value.type === "tool_execution_end" && value.toolName === "fetchJobDetails") {
+                  const callId = value.toolCallId || [...fetchTaskIds.keys()].at(-1) || "";
+                  const taskId = fetchTaskIds.get(callId);
+                  if (!taskId) return;
+                  if (value.isError) tasks.fail(taskId, `${label} detail fetch failed.`);
+                  else tasks.complete(taskId);
+                  fetchTaskIds.delete(callId);
+                }
+              },
+            });
+          } finally {
+            for (const entry of tools.provenance) provenance.set(...entry);
+            for (const entry of tools.detailDescriptions) detailDescriptions.set(...entry);
+            for (const warning of tools.warnings) if (!warnings.includes(warning)) warnings.push(warning);
+          }
+          return text;
+        },
+        validateBusiness: result => {
           const validated = validateScrapeResult(result, provenance, context.criteria.maxJobsPerRun, source);
           if (preflightHasJobs && !validated.jobs.length) throw new Error("Model output was empty while preflight search returned jobs.");
-          tasks.complete(validationTaskId, `${validated.jobs.length} result(s) from ${label}`);
-          return { result: hydrateScrapeResult(validated, tools.detailDescriptions), provenance, errors, warnings };
-        } catch (error) {
-          tasks.fail(validationTaskId, attempt === 0 ? "Validation failed; retrying." : "Validation failed.");
-          lastError = error;
-        }
-      }
-      throw lastError;
+        },
+      });
+      tasks.complete(validationTaskId, `${structured.jobs.length} result(s) from ${label}`);
+      return { result: hydrateScrapeResult(structured, detailDescriptions), provenance, errors, warnings };
     } catch (error) {
       tasks.failActive(error instanceof PiRunCancelledError || context.signal.aborted ? "Run cancelled." : "Task failed.");
       throw error;
@@ -251,47 +275,43 @@ export function createMultiSourceScrapeExecutor(sourceExecutor: SourceScrapeExec
 export const liveScrapeExecutor:ScrapeExecutor=createMultiSourceScrapeExecutor();
 const safeMessage=(error:unknown)=> error instanceof PiRunTimeoutError?"Scrape timed out.":error instanceof PiRunCancelledError||((error as Error)?.name==="AbortError")?"Scrape cancelled.":"Scrape failed. Check provider settings and try again.";
 
-function recordRunEvent(trajectory: TrajectoryRecorder | undefined, runId: string, event: TrajectoryEventInput) {
-  try { trajectory?.(runId, event); } catch { /* telemetry is deliberately non-fatal */ }
-}
-
 export class RunManager {
-  private active: { id: string; controller: AbortController } | undefined;
-  constructor(private db: DatabaseSync, private execute: ScrapeExecutor, private load: () => Promise<Omit<ScrapeContext, "signal">>, private trajectory?: TrajectoryRecorder) {}
-
-  async start() {
-    if (this.active) throw new Error("Another AI run is already active.");
-    const id = randomUUID();
-    const controller = new AbortController();
-    const startedAt = new Date().toISOString();
-    this.active = { id, controller };
-    try {
-      const context = await this.load();
-      this.db.prepare("INSERT INTO runs(id,workflow,status,provider,model,started_at) VALUES(?,'scrape','running',?,?,?)").run(id, context.settings.provider, context.settings.model, startedAt);
-      recordRunEvent(this.trajectory, id, { kind: "lifecycle", type: "run_started", timestamp: startedAt, startedAt, payload: { workflow: "scrape" } });
-      void this.work(id, controller, context);
-      return id;
-    } catch (error) {
-      this.active = undefined;
-      throw error;
-    }
+  private readonly coordinator: RunCoordinator;
+  constructor(private db: DatabaseSync, private execute: ScrapeExecutor, private load: () => Promise<Omit<ScrapeContext, "signal">>, private trajectory?: TrajectoryRecorder, coordinator?: RunCoordinator) {
+    this.coordinator = coordinator ?? new RunCoordinator({ db, trajectory });
   }
 
-  cancel(id: string) { if (this.active?.id !== id) return false; this.active.controller.abort(); return true; }
-  isActive() { return Boolean(this.active); }
+  async start(idempotencyKey?: string) {
+    const context = await this.load();
+    return this.coordinator.enqueue({
+      workflow: "scrape",
+      provider: context.settings.provider,
+      model: context.settings.model,
+      idempotencyKey,
+      execute: ({ runId, signal, onUsage }) => this.work(runId, signal, context, onUsage),
+      onError: error => ({
+        summary: error instanceof AllSourcesFailedError ? { jobsFound: 0, recommended: 0, discarded: 0, duplicatesSkipped: 0, errors: error.errors, warnings: error.warnings } : null,
+        error: safeMessage(error),
+        errorCode: classifyPiError(error),
+      }),
+    });
+  }
+
+  cancel(id: string) { return this.coordinator.cancel(id); }
+  isActive() { return this.coordinator.isWorkflowActive("scrape"); }
   get(id: string) {
     const row = this.db.prepare("SELECT * FROM runs WHERE id=?").get(id) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return { ...row, summary: row.summary_json ? JSON.parse(String(row.summary_json)) : null, summary_json: undefined };
   }
 
-  private async work(id: string, controller: AbortController, context: Omit<ScrapeContext, "signal">) {
+  private async work(id: string, signal: AbortSignal, context: Omit<ScrapeContext, "signal">, onUsage: (usage: PiRunUsage) => void) {
     const tasks = createTaskReporter(this.trajectory, id);
     tasks.start({ taskId: "scrape:prepare", label: "Prepare scrape context" });
     tasks.complete("scrape:prepare");
     try {
-      const output = await this.execute({ ...context, signal: controller.signal, runId: id, trajectory: this.trajectory });
-      if (controller.signal.aborted) throw new PiRunCancelledError();
+      const output = await this.execute({ ...context, signal, runId: id, trajectory: this.trajectory, onUsage });
+      if (signal.aborted) throw new PiRunCancelledError();
       const enabled = configuredSources(context.settings).map((source) => source.key);
       tasks.start({ taskId: "scrape:validate", label: "Validate and score results" });
       let result: ScrapeResult;
@@ -302,6 +322,8 @@ export class RunManager {
         tasks.fail("scrape:validate", "Result validation failed.");
         throw error;
       }
+      const rankVerification = await runRankVerifier({ result, trajectory: this.trajectory, runId: id });
+      if (rankVerification.needsReview.length) output.warnings = [...(output.warnings ?? []), `Rank verifier flagged ${rankVerification.needsReview.length} job(s) for review.`];
       tasks.start({ taskId: "scrape:persist", label: "Persist jobs and finalize" });
       let counts: { inserted: number; updated: number };
       try {
@@ -311,74 +333,73 @@ export class RunManager {
         tasks.fail("scrape:persist", "Jobs could not be persisted.");
         throw error;
       }
-      if (controller.signal.aborted) throw new PiRunCancelledError();
+      if (signal.aborted) throw new PiRunCancelledError();
       const summary = summarize(result, context.settings.scoreThreshold, counts.updated, output.errors ?? [], output.warnings ?? []);
-      this.finish(id, "succeeded", summary, null);
+      return summary;
     } catch (error) {
-      const status = error instanceof PiRunTimeoutError ? "timed_out" : controller.signal.aborted || error instanceof PiRunCancelledError ? "cancelled" : "failed";
-      tasks.failActive(status === "cancelled" ? "Run cancelled." : status === "timed_out" ? "Run timed out." : "Task failed.");
-      const summary = error instanceof AllSourcesFailedError ? { jobsFound: 0, recommended: 0, discarded: 0, duplicatesSkipped: 0, errors: error.errors, warnings: error.warnings } : null;
-      this.finish(id, status, summary, safeMessage(error));
-    } finally {
-      if (this.active?.id === id) this.active = undefined;
+      const status = error instanceof PiRunTimeoutError ? "timed out" : signal.aborted || error instanceof PiRunCancelledError ? "cancelled" : "failed";
+      tasks.failActive(status === "cancelled" ? "Run cancelled." : status === "timed out" ? "Run timed out." : "Task failed.");
+      throw error;
     }
-  }
-
-  private finish(id: string, status: string, summary: unknown, error: string | null) {
-    const finishedAt = new Date().toISOString();
-    recordRunEvent(this.trajectory, id, { kind: status === "failed" || status === "timed_out" ? "error" : "lifecycle", type: status === "succeeded" ? "run_completed" : `run_${status}`, timestamp: finishedAt, endedAt: finishedAt, payload: { status, error } });
-    this.db.prepare("UPDATE runs SET status=?,summary_json=?,error=?,finished_at=? WHERE id=?").run(status, summary ? JSON.stringify(summary) : null, error, finishedAt, id);
   }
 }
 function summarize(result:ScrapeResult,threshold:number,duplicates:number,errors:string[],warnings:string[]){ const recommended=result.jobs.filter(j=>j.score>threshold).length; return {jobsFound:result.jobs.length,recommended,discarded:result.jobs.length-recommended,duplicatesSkipped:duplicates,errors,warnings}; }
 
-export class GenerationRunManager {
-  private active: { id: string; controller: AbortController } | undefined;
-  constructor(private options: { db: DatabaseSync; dataDir: string; projectRoot?: string; execute?: GenerationExecutor; runner?: CommandRunner; load: () => Promise<{ profile: string; settings: Settings }>; otherActive?: () => boolean; trajectory?: TrajectoryRecorder }) {}
-  isActive() { return Boolean(this.active); }
+class GenerationRunFailedError extends Error {
+  constructor(public readonly summary: { results: Array<{ jobId: string; status: string; error?: string }> }) {
+    super("Document generation failed.");
+    this.name = "GenerationRunFailedError";
+  }
+}
 
-  async start(jobIds: string[], allowDrafting = false) {
-    if (this.active || this.options.otherActive?.()) throw Object.assign(new Error("Another AI run is already active."), { statusCode: 409 });
-    const id = randomUUID();
-    const controller = new AbortController();
+export class GenerationRunManager {
+  private readonly coordinator: RunCoordinator;
+  constructor(private options: { db: DatabaseSync; dataDir: string; projectRoot?: string; execute?: GenerationExecutor; runner?: CommandRunner; load: () => Promise<{ profile: string; settings: Settings }>; trajectory?: TrajectoryRecorder; coordinator?: RunCoordinator }) {
+    this.coordinator = options.coordinator ?? new RunCoordinator({ db: options.db, trajectory: options.trajectory });
+  }
+  isActive() { return this.coordinator.isWorkflowActive("generate"); }
+
+  async start(jobIds: string[], allowDrafting = false, idempotencyKey?: string) {
     const context = await this.options.load();
-    const startedAt = new Date().toISOString();
-    this.options.db.prepare("INSERT INTO runs(id,workflow,status,provider,model,started_at) VALUES(?,'generate','running',?,?,?)").run(id, context.settings.provider, context.settings.model, startedAt);
-    recordRunEvent(this.options.trajectory, id, { kind: "lifecycle", type: "run_started", timestamp: startedAt, startedAt, payload: { workflow: "generate", jobCount: jobIds.length } });
-    this.active = { id, controller };
-    void this.work(id, controller, jobIds, context, allowDrafting);
-    return id;
+    return this.coordinator.enqueue({
+      workflow: "generate",
+      jobId: jobIds.length === 1 ? jobIds[0] : null,
+      jobIds,
+      provider: context.settings.provider,
+      model: context.settings.model,
+      idempotencyKey,
+      execute: ({ runId, signal, onUsage }) => this.work(runId, signal, jobIds, context, allowDrafting, onUsage),
+      onError: (error, { signal }) => ({
+        summary: error instanceof GenerationRunFailedError ? error.summary : null,
+        error: signal.aborted || error instanceof PiRunCancelledError ? "Generation cancelled." : "Document generation failed.",
+        errorCode: classifyPiError(error),
+      }),
+    });
   }
 
-  cancel(id: string) { if (this.active?.id !== id) return false; this.active.controller.abort(); return true; }
+  cancel(id: string) { return this.coordinator.cancel(id); }
 
-  private async work(id: string, controller: AbortController, jobIds: string[], context: { profile: string; settings: Settings }, allowDrafting: boolean) {
+  private async work(id: string, signal: AbortSignal, jobIds: string[], context: { profile: string; settings: Settings }, allowDrafting: boolean, onUsage: (usage: PiRunUsage) => void) {
     const results: Array<{ jobId: string; status: string; error?: string }> = [];
     try {
       for (const jobId of jobIds) {
-        if (controller.signal.aborted) throw new PiRunCancelledError();
+        if (signal.aborted) throw new PiRunCancelledError();
         try {
-          await generateJob({ db: this.options.db, dataDir: this.options.dataDir, projectRoot: this.options.projectRoot, jobId, settings: context.settings, profile: context.profile, execute: this.options.execute ?? liveGenerationExecutor, signal: controller.signal, runner: this.options.runner, allowDrafting, runId: id, trajectory: this.options.trajectory });
-          if (controller.signal.aborted) throw new PiRunCancelledError();
+          await generateJob({ db: this.options.db, dataDir: this.options.dataDir, projectRoot: this.options.projectRoot, jobId, settings: context.settings, profile: context.profile, execute: this.options.execute ?? liveGenerationExecutor, signal, runner: this.options.runner, allowDrafting, runId: id, trajectory: this.options.trajectory, onUsage });
+          if (signal.aborted) throw new PiRunCancelledError();
           results.push({ jobId, status: "succeeded" });
         } catch (error) {
-          if (controller.signal.aborted || error instanceof PiRunCancelledError) throw error;
+          if (signal.aborted || error instanceof PiRunCancelledError) throw error;
           results.push({ jobId, status: "failed", error: "Document generation failed." });
         }
       }
       const failed = results.filter((value) => value.status === "failed").length;
-      this.finish(id, failed === results.length ? "failed" : "succeeded", { results }, failed === results.length ? "Document generation failed." : null);
+      if (failed === results.length) throw new GenerationRunFailedError({ results });
+      return { results };
     } catch (error) {
-      const status = controller.signal.aborted || error instanceof PiRunCancelledError ? "cancelled" : "failed";
-      this.finish(id, status, { results }, status === "cancelled" ? "Generation cancelled." : "Document generation failed.");
-    } finally {
-      if (this.active?.id === id) this.active = undefined;
+      if (error instanceof GenerationRunFailedError) throw error;
+      if (signal.aborted || error instanceof PiRunCancelledError) throw error;
+      throw new GenerationRunFailedError({ results });
     }
-  }
-
-  private finish(id: string, status: string, summary: unknown, error: string | null) {
-    const finishedAt = new Date().toISOString();
-    recordRunEvent(this.options.trajectory, id, { kind: status === "failed" ? "error" : "lifecycle", type: status === "succeeded" ? "run_completed" : `run_${status}`, timestamp: finishedAt, endedAt: finishedAt, payload: { status, error } });
-    this.options.db.prepare("UPDATE runs SET status=?,summary_json=?,error=?,finished_at=? WHERE id=?").run(status, JSON.stringify(summary), error, finishedAt, id);
   }
 }

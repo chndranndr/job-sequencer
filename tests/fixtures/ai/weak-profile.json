@@ -1,0 +1,11 @@
+{
+  "id": "weak-profile",
+  "profile": "",
+  "job": {
+    "company": "Example",
+    "role": "Engineer",
+    "posting": "General engineering role.",
+    "score": 40
+  },
+  "expect": { "maxScore": 60 }
+}

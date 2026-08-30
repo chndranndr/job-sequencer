@@ -8,6 +8,7 @@ import { openDatabase, markFollowUpSent, resetInterview, saveFollowUpDraft, save
 import { buildServer } from "../src/server/app.js";
 import { containedPath } from "../src/server/documents.js";
 import type { InterviewExecutor } from "../src/server/interview.js";
+import type { PiSessionLike } from "../src/server/pi.js";
 
 function insert(db: ReturnType<typeof openDatabase>, stage: "Applied" | "Interview" = "Applied") {
   const id = randomUUID();
@@ -18,10 +19,16 @@ function insert(db: ReturnType<typeof openDatabase>, stage: "Applied" | "Intervi
 async function waitForRun(app: Awaited<ReturnType<typeof buildServer>>, id: string) {
   for (let attempt = 0; attempt < 100; attempt++) {
     const run = (await app.inject({ url: `/api/runs/${id}` })).json() as { status: string };
-    if (run.status !== "running") return run;
+    if (run.status !== "running" && run.status !== "queued") return run;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error("run did not finish");
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
 }
 
 test("interview practice persists notes/messages without changing stage and reset keeps notes", () => {
@@ -135,6 +142,116 @@ test("interview stream endpoint streams live interviewer text and closes on done
 
     const job = (await app.inject({ url: `/api/jobs/${id}` })).json();
     assert.deepEqual(job.interview_messages.map(({ role, content }: { role: string; content: string }) => content), ["Please begin.", "Hello from the other side of the table."]);
+  } finally {
+    await app.close();
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("pooled live interview keeps native sessions and SSE deltas across turns", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-interview-pooled-stream-"));
+  const db = openDatabase(":memory:");
+  const id = insert(db, "Applied");
+  const sessions: Array<{ promptTexts: string[]; disposed: boolean }> = [];
+  const app = await buildServer({
+    dataDir: dir,
+    db,
+    interviewSessionFactory: async ({ systemPrompt }) => {
+      const state = { promptTexts: [] as string[], disposed: false };
+      const listeners = new Set<(event: unknown) => void>();
+      const session: PiSessionLike = {
+        systemPrompt,
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => { listeners.delete(listener); };
+        },
+        async prompt(text) {
+          state.promptTexts.push(text);
+          const message = { role: "assistant", timestamp: state.promptTexts.length, content: [] };
+          for (const listener of listeners) listener({
+            type: "message_update",
+            message,
+            assistantMessageEvent: { type: "text_delta", delta: "Pooled response" },
+          });
+        },
+        async abort() {},
+        dispose() { state.disposed = true; },
+      };
+      sessions.push(state);
+      return session;
+    },
+  });
+  try {
+    const first = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "First answer.", focus: "opening" } });
+    assert.equal(first.statusCode, 202);
+    const firstRunId = first.json().runId;
+    const firstStream = await app.inject({ url: `/api/jobs/${id}/interview/stream?runId=${encodeURIComponent(firstRunId)}` });
+    assert.equal(firstStream.statusCode, 200);
+    assert.ok(firstStream.body.includes(JSON.stringify({ text: "Pooled response" })));
+    assert.match(firstStream.body, /event: done/);
+    assert.equal((await waitForRun(app, firstRunId)).status, "succeeded");
+
+    const second = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "Second answer.", focus: "tradeoffs" } });
+    assert.equal(second.statusCode, 202);
+    assert.equal((await waitForRun(app, second.json().runId)).status, "succeeded");
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0]?.promptTexts.length, 2);
+    assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().interview_messages.length, 4);
+
+    const reset = await app.inject({ method: "DELETE", url: `/api/jobs/${id}/interview` });
+    assert.equal(reset.statusCode, 200);
+    const third = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "After reset.", focus: "restart" } });
+    assert.equal(third.statusCode, 202);
+    assert.equal((await waitForRun(app, third.json().runId)).status, "succeeded");
+    assert.equal(sessions.length, 2);
+    assert.equal(sessions[0]?.disposed, true);
+    assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().interview_messages.length, 2);
+  } finally {
+    await app.close();
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+    assert.equal(sessions[0]?.disposed, true);
+  }
+});
+
+test("concurrent interview submissions serialize message writes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-interview-concurrent-"));
+  const db = openDatabase(":memory:");
+  const id = insert(db, "Applied");
+  const firstStarted = deferred();
+  const releaseFirst = deferred();
+  let calls = 0;
+  const app = await buildServer({
+    dataDir: dir,
+    db,
+    interviewExecutor: async ({ message }) => {
+      calls += 1;
+      if (calls === 1) {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+      }
+      return `answer-${message}`;
+    },
+  });
+  try {
+    const first = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "first turn" } });
+    assert.equal(first.statusCode, 202);
+    await firstStarted.promise;
+    const second = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "second turn" } });
+    assert.equal(second.statusCode, 202);
+    assert.equal((await app.inject({ url: `/api/runs/${second.json().runId}` })).json().status, "queued");
+
+    releaseFirst.resolve();
+    assert.equal((await waitForRun(app, first.json().runId)).status, "succeeded");
+    assert.equal((await waitForRun(app, second.json().runId)).status, "succeeded");
+    const messages = (await app.inject({ url: `/api/jobs/${id}` })).json().interview_messages;
+    assert.deepEqual(messages.map(({ role, content }: { role: string; content: string }) => `${role}:${content}`), [
+      "user:first turn",
+      "assistant:answer-first turn",
+      "user:second turn",
+      "assistant:answer-second turn",
+    ]);
   } finally {
     await app.close();
     db.close();

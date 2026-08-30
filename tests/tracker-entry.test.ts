@@ -2,6 +2,45 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 
+test("Tracker UI cleanup removes fake controls and keeps Workflow Rack as the flow nav", () => {
+  const app = readFileSync(new URL("../src/tracker/App.tsx", import.meta.url), "utf8");
+  const agent = readFileSync(new URL("../src/tracker/agent.tsx", import.meta.url), "utf8");
+  const order = readFileSync(new URL("../src/tracker/order.tsx", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../src/tracker/workflow.ts", import.meta.url), "utf8");
+  const rack = readFileSync(new URL("../src/tracker/workflow-rack.tsx", import.meta.url), "utf8");
+  const studio = readFileSync(new URL("../src/tracker/studio.css", import.meta.url), "utf8");
+
+  assert.doesNotMatch(app, /pat-chain/);
+  assert.doesNotMatch(app, /aria-label="Arm"/);
+  assert.doesNotMatch(app, /className="ico rec"/);
+  assert.doesNotMatch(app, /aria-label="Stop"/);
+  assert.doesNotMatch(app, /className="ico stop"/);
+  assert.match(app, /CMD <b>Ctrl\+K<\/b>/);
+  assert.match(app, /view !== "sample" \|\| \(route\.view === "sample" && Boolean\(route\.jobId\)\)/);
+  assert.match(app, /ActiveRunStrip/);
+  assert.match(app, /tapeOpen, setTapeOpen\] = useState\(false\)/);
+
+  assert.doesNotMatch(agent, /Generate documents for armed SELECT/);
+  assert.doesNotMatch(agent, /className="conf"/);
+  assert.match(agent, /showReasoning/);
+  assert.match(agent, /Start scrape\?/);
+
+  assert.doesNotMatch(order, /className="conf"/);
+  assert.match(order, /Accept · generate/);
+
+  assert.match(workflow, /job\.stage === "Applied" \|\| job\.stage === "Interview"/);
+  assert.match(workflow, /function channelLedState/);
+  assert.match(rack, /channelLedState/);
+  assert.doesNotMatch(rack, /channel\.armed|channel\.led/);
+  assert.match(rack, /Tab atas = editor/);
+  assert.doesNotMatch(rack, /pat-chain/);
+
+  assert.doesNotMatch(studio, /\.pat-chain/);
+  assert.doesNotMatch(studio, /\.conf\b/);
+  assert.doesNotMatch(studio, /\.ico\.rec\b/);
+  assert.doesNotMatch(studio, /\.ch\.armed\b/);
+});
+
 test("Tracker is the only frontend entry and tracker.html is its compatibility alias", () => {
   const html = readFileSync(new URL("../tracker.html", import.meta.url), "utf8");
   const index = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -30,8 +69,55 @@ test("Tracker browser smoke covers every route and responsive error contract", (
   assert.match(smoke, /scrollWidth/);
   assert.match(smoke, /Resize agent panel/);
   assert.match(smoke, /Collapse agent panel/);
+  assert.match(smoke, /Collapse workflow rack/);
   assert.match(smoke, /Resize fine-tune sidebar/);
   assert.match(smoke, /Collapse fine-tune sidebar/);
+  assert.match(smoke, /\.pat-chain/);
+  assert.match(smoke, /getByRole\("button", \{ name: "Arm", exact: true \}\)/);
+  assert.match(smoke, /getByRole\("button", \{ name: "Stop", exact: true \}\)/);
+  assert.match(smoke, /getByRole\("button", \{ name: "Play scrape" \}\)/);
+  assert.match(smoke, /Start scrape\?/);
+  assert.match(smoke, /modes a.*SAMPLE/);
+  assert.match(smoke, /\.reco.*Generate|toContainText\("Generate"\)/);
+  assert.match(smoke, /Accept · generate/);
+});
+
+test("Tracker PATTERN manual add uses the shared manual import flow", () => {
+  const pattern = readFileSync(new URL("../src/tracker/pattern.tsx", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../src/tracker/App.tsx", import.meta.url), "utf8");
+
+  assert.match(pattern, /ADD JOB/);
+  assert.match(pattern, /onManualImport: \(input: string\) => Promise<void>/);
+  assert.match(pattern, /Add job manually/);
+  assert.match(pattern, /role="dialog"/);
+  assert.match(pattern, /aria-modal="true"/);
+  assert.match(pattern, /aria-label="Job URL or pasted posting"/);
+  assert.match(pattern, /required/);
+  assert.match(pattern, /noValidate/);
+  assert.match(pattern, /event\.key === "Escape"/);
+  assert.match(pattern, /setSubmitting\(true\)/);
+  assert.match(pattern, /sample-dialog-error/);
+
+  assert.match(app, /async function startManualImport\(input: string\)/);
+  assert.match(app, /await api<\{ runId: string \}>\("\/api\/jobs\/manual"/);
+  assert.match(app, /workflow: "manual_import"/);
+  assert.match(app, /onManualImport=\{startManualImport\}/);
+  assert.match(app, /if \(text\.startsWith\("\/import"\)\) \{[\s\S]*?await startManualImport\(input\)/);
+  assert.equal((app.match(/\/api\/jobs\/manual/g) ?? []).length, 1);
+});
+
+test("Tracker browser smoke covers the manual add flow with isolated fixtures", () => {
+  const smoke = readFileSync(new URL("../scripts/browser-smoke-tracker.ts", import.meta.url), "utf8");
+
+  assert.match(smoke, /writeSettings\(dataDir/);
+  assert.match(smoke, /writeStructuredProfile\(dataDir/);
+  assert.match(smoke, /manualImporter: async/);
+  assert.match(smoke, /getByRole\("button", \{ name: "ADD JOB" \}\)/);
+  assert.match(smoke, /getByRole\("dialog", \{ name: "Add job manually" \}\)/);
+  assert.match(smoke, /getByLabel\("Job URL or pasted posting"\)/);
+  assert.match(smoke, /Enter a posting URL or paste job text/);
+  assert.match(smoke, /Tracker Manual/);
+  assert.match(smoke, /rm\(dataDir, \{ recursive: true, force: true \}\)/);
 });
 
 test("tracker DISK loads profile-editor CSS so field labels stack above inputs", () => {
@@ -119,4 +205,57 @@ test("Tracker AGENT panel stays collapsible and resizable", () => {
   assert.match(agent, /hidden=\{agentCollapsed\}/);
   assert.match(studio, /\.workspace\.pattern \{ grid-template-columns: 196px minmax\(0, 1fr\) auto; \}/);
   assert.match(studio, /\.agent\.is-collapsed/);
+});
+
+test("Tracker collapse toggles use symbols and ORDER rows keep a slim meta summary", () => {
+  const rack = readFileSync(new URL("../src/tracker/workflow-rack.tsx", import.meta.url), "utf8");
+  const agent = readFileSync(new URL("../src/tracker/agent.tsx", import.meta.url), "utf8");
+  const disk = readFileSync(new URL("../src/tracker/disk.tsx", import.meta.url), "utf8");
+  const sample = readFileSync(new URL("../src/tracker/sample.tsx", import.meta.url), "utf8");
+  const order = readFileSync(new URL("../src/tracker/order.tsx", import.meta.url), "utf8");
+  const studio = readFileSync(new URL("../src/tracker/studio.css", import.meta.url), "utf8");
+
+  for (const source of [rack, agent, disk, sample]) {
+    assert.doesNotMatch(source, /\{[^}]*\? "OPEN" : "CLOSE"\}/);
+    assert.doesNotMatch(source, />OPEN<|>CLOSE</);
+  }
+  assert.match(rack, /type PanelRailState = \{ collapsed: boolean; width: number \}/);
+  assert.match(rack, /const COLLAPSED_RACK_WIDTH = 48;/);
+  assert.match(rack, /rail\.collapsed \? "›" : "‹"/);
+  assert.match(agent, /agentCollapsed \? "‹" : "›"/);
+  assert.match(disk, /tuneCollapsed \? "‹" : "›"/);
+  assert.match(sample, /inspectorCollapsed \? "‹" : "›"/);
+  assert.match(studio, /\.workspace\.pattern:has\(\.workflow-rack\.is-collapsed\) \{ grid-template-columns: 48px minmax\(0, 1fr\) auto; \}/);
+  assert.match(studio, /\.workspace\.order:has\(\.workflow-rack\.is-collapsed\) \{ grid-template-columns: 48px minmax\(0, 1fr\); \}/);
+  assert.match(studio, /\.workspace\.phrase:has\(\.workflow-rack\.is-collapsed\) \{ grid-template-columns: 48px 220px minmax\(0, 1fr\); \}/);
+
+  assert.match(order, /type OrderRowSummary = \{/);
+  assert.match(order, /<dt>STAGE<\/dt>/);
+  assert.match(order, /<dt>FIT<\/dt>/);
+  assert.match(order, /<dt>SIGNAL<\/dt>/);
+  assert.doesNotMatch(order, /<dt>DOCS<\/dt>/);
+  assert.doesNotMatch(order, /<dt>APPROVAL<\/dt>/);
+  assert.doesNotMatch(order, /<dt>SUBMITTED<\/dt>/);
+  assert.doesNotMatch(order, /<dt>FOLLOW-UP<\/dt>/);
+  assert.doesNotMatch(order, /<dt>OUTCOME<\/dt>/);
+  assert.match(order, /export function orderMetadata/);
+});
+
+test("DISK bank A hosts resume import and LOAD bank is gone", () => {
+  const disk = readFileSync(new URL("../src/tracker/disk.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(disk, /id: "load"/);
+  assert.doesNotMatch(disk, /label: "LOAD"/);
+  assert.doesNotMatch(disk, /bank === "load"/);
+  assert.match(disk, /useState<DiskBankId>\("a"\)/);
+  const bankA = disk.slice(disk.indexOf('{bank === "a"'));
+  const importAt = bankA.indexOf("ResumeImportPanel");
+  const fieldsAt = bankA.indexOf("ProfileFields");
+  assert.ok(importAt >= 0, "bank A should render ResumeImportPanel");
+  assert.ok(fieldsAt > importAt, "ResumeImportPanel should sit before ProfileFields");
+  assert.match(disk, /<h2>PROVIDER<\/h2>/);
+  assert.match(disk, /<h2>SEARCH KNOBS<\/h2>/);
+  assert.match(disk, /<h2>ARMED SOURCES<\/h2>/);
+  assert.match(disk, /<h2>DOCUMENT SETTINGS<\/h2>/);
+  assert.match(disk, /<h2>ACTIONS<\/h2>/);
+  assert.match(disk, /<h2>STATUS<\/h2>/);
 });
