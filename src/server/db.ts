@@ -3,13 +3,13 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { advancedStages, jobStages, type JobStage } from "./stages.js";
-import { assertStageTransition, type FollowUpContext, type InterviewMessage, type Job, type Rank, type Run, type RunStatus, type TaskEventPayload, type TrajectoryEvent, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
+import { assertStageTransition, defaultGenerationDirection, type FollowUpContext, type GenerationDirection, type InterviewMessage, type Job, type Rank, type Run, type RunStatus, type TaskEventPayload, type TrajectoryEvent, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
 import type { ScrapeResult } from "./scrape.js";
 
 const schema = `PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, source TEXT NOT NULL, url TEXT NOT NULL UNIQUE, company TEXT NOT NULL, role TEXT NOT NULL, location TEXT NOT NULL DEFAULT '', posting TEXT NOT NULL, score INTEGER NOT NULL CHECK(score BETWEEN 0 AND 100), rank_json TEXT NOT NULL, stage TEXT NOT NULL CHECK(stage IN ('Recommended','Discarded','Selected','Drafting','Ready','Applied','Interview','Offer','Rejected','Archived')), notes TEXT NOT NULL DEFAULT '', archived_from_stage TEXT, first_seen_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(source,source_id));
 CREATE INDEX IF NOT EXISTS jobs_stage_idx ON jobs(stage); CREATE INDEX IF NOT EXISTS jobs_score_idx ON jobs(score);
-CREATE TABLE IF NOT EXISTS applications (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, cv_template TEXT, cv_source TEXT, cv_pdf TEXT, cover_letter_source TEXT, cover_letter_pdf TEXT, verification_json TEXT, approved_at TEXT, submitted_at TEXT, submission_channel TEXT, interview_notes TEXT NOT NULL DEFAULT '', interview_chat_json TEXT NOT NULL DEFAULT '[]', interview_updated_at TEXT, follow_up_draft TEXT NOT NULL DEFAULT '', follow_up_due_at TEXT, follow_up_sent_at TEXT, follow_up_context_json TEXT, outcome TEXT, notes TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS applications (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, cv_template TEXT, cv_source TEXT, cv_pdf TEXT, cover_letter_source TEXT, cover_letter_pdf TEXT, verification_json TEXT, approved_at TEXT, submitted_at TEXT, submission_channel TEXT, interview_notes TEXT NOT NULL DEFAULT '', interview_chat_json TEXT NOT NULL DEFAULT '[]', interview_updated_at TEXT, follow_up_draft TEXT NOT NULL DEFAULT '', follow_up_due_at TEXT, follow_up_sent_at TEXT, follow_up_context_json TEXT, generation_direction_json TEXT, outcome TEXT, notes TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, workflow TEXT NOT NULL CHECK(workflow IN ('scrape','generate','interview','follow_up','manual_import','profile_import','test')), job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','cancelled','timed_out')), provider TEXT NOT NULL, model TEXT NOT NULL, summary_json TEXT, error TEXT, started_at TEXT NOT NULL, finished_at TEXT, idempotency_key TEXT);
 CREATE TABLE IF NOT EXISTS run_trajectory_events (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, kind TEXT NOT NULL, event_type TEXT NOT NULL, timestamp TEXT NOT NULL, started_at TEXT, ended_at TEXT, duration_ms REAL, payload_json TEXT, PRIMARY KEY(run_id, sequence));
 CREATE INDEX IF NOT EXISTS run_trajectory_events_run_idx ON run_trajectory_events(run_id, sequence);
@@ -57,6 +57,7 @@ export function openDatabase(path: string): DatabaseSync {
   ensureColumn(db, "jobs", "archived_from_stage", "TEXT");
   ensureColumn(db, "applications", "interview_updated_at", "TEXT");
   ensureColumn(db, "applications", "follow_up_context_json", "TEXT");
+  ensureColumn(db, "applications", "generation_direction_json", "TEXT");
   ensureColumn(db, "run_trajectory_events", "timestamp", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "run_trajectory_events", "started_at", "TEXT");
   ensureColumn(db, "run_trajectory_events", "ended_at", "TEXT");
@@ -235,18 +236,32 @@ function jsonValue<T>(value: unknown, fallback: T): T {
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 
+function parseGenerationDirection(raw: unknown): GenerationDirection {
+  const parsed = jsonValue<unknown>(raw, null);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...defaultGenerationDirection };
+  const value = parsed as Record<string, unknown>;
+  return {
+    cvLength: value.cvLength === "short" || value.cvLength === "complete" ? value.cvLength : defaultGenerationDirection.cvLength,
+    letterMode: value.letterMode === "standard" || value.letterMode === "exploratory" ? value.letterMode : defaultGenerationDirection.letterMode,
+    letterNarration: typeof value.letterNarration === "string" ? value.letterNarration.slice(0, 500) : defaultGenerationDirection.letterNarration,
+    revisionNotes: typeof value.revisionNotes === "string" ? value.revisionNotes.slice(0, 2000) : defaultGenerationDirection.revisionNotes,
+    revisionCount: typeof value.revisionCount === "number" && Number.isInteger(value.revisionCount) && value.revisionCount >= 0 && value.revisionCount <= 3 ? value.revisionCount : defaultGenerationDirection.revisionCount,
+  };
+}
+
 function mapJob(row: Record<string, unknown>): Job {
-  const { rank_json: _rankJson, verification_json: _verificationJson, interview_chat_json: _chatJson, follow_up_context_json: _followUpContextJson, ...value } = row;
+  const { rank_json: _rankJson, verification_json: _verificationJson, interview_chat_json: _chatJson, follow_up_context_json: _followUpContextJson, generation_direction_json: _generationDirectionJson, ...value } = row;
   return {
     ...value,
     rank: jsonValue<Rank>(row.rank_json, { reason: "", strengths: [], gaps: [] }),
     verification: jsonValue(row.verification_json, null),
     interview_messages: jsonValue<InterviewMessage[]>(row.interview_chat_json, []),
     follow_up_context: jsonValue<FollowUpContext | null>(row.follow_up_context_json, null),
+    generation_direction: parseGenerationDirection(row.generation_direction_json),
   } as unknown as Job;
 }
 
-const jobSelect = `SELECT j.*, a.cv_template, a.cv_source, a.cv_pdf, a.cover_letter_source, a.cover_letter_pdf, a.verification_json, a.approved_at, a.submitted_at, a.submission_channel, a.interview_notes, a.interview_chat_json, a.interview_updated_at, a.follow_up_draft, a.follow_up_due_at, a.follow_up_sent_at, a.follow_up_context_json, a.outcome, a.notes AS application_notes FROM jobs j LEFT JOIN applications a ON a.job_id=j.id`;
+const jobSelect = `SELECT j.*, a.cv_template, a.cv_source, a.cv_pdf, a.cover_letter_source, a.cover_letter_pdf, a.verification_json, a.approved_at, a.submitted_at, a.submission_channel, a.interview_notes, a.interview_chat_json, a.interview_updated_at, a.follow_up_draft, a.follow_up_due_at, a.follow_up_sent_at, a.follow_up_context_json, a.generation_direction_json, a.outcome, a.notes AS application_notes FROM jobs j LEFT JOIN applications a ON a.job_id=j.id`;
 
 export function listJobs(db: DatabaseSync, stages?: JobStage[]) {
   const selected = stages?.length ? stages : ["Recommended", "Selected", "Drafting", "Ready", "Applied", "Interview", "Offer"] as JobStage[];
@@ -302,6 +317,18 @@ export function updateJob(db: DatabaseSync, id: string, value: { notes?: string;
     db.prepare("INSERT OR IGNORE INTO applications(job_id,updated_at) VALUES(?,?)").run(id, now);
     db.prepare("UPDATE applications SET notes=?,updated_at=? WHERE job_id=?").run(value.applicationNotes, now, id);
   }
+  return getJobDetail(db, id);
+}
+
+export function updateJobDirection(db: DatabaseSync, id: string, patch: Partial<GenerationDirection>, now = new Date().toISOString()) {
+  const current = ensureJob(db, id);
+  if (current.stage !== "Selected" && current.stage !== "Drafting" && current.stage !== "Ready") {
+    throw Object.assign(new Error("Direction can only be updated for Selected, Drafting, or Ready jobs."), { statusCode: 409 });
+  }
+  const existing = db.prepare("SELECT generation_direction_json FROM applications WHERE job_id=?").get(id) as { generation_direction_json?: string } | undefined;
+  const next = { ...parseGenerationDirection(existing?.generation_direction_json), ...patch };
+  db.prepare("INSERT OR IGNORE INTO applications(job_id,updated_at) VALUES(?,?)").run(id, now);
+  db.prepare("UPDATE applications SET generation_direction_json=?,updated_at=? WHERE job_id=?").run(JSON.stringify(next), now, id);
   return getJobDetail(db, id);
 }
 

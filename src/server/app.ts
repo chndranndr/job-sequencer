@@ -28,6 +28,7 @@ import {
   toggleSelection,
   updateFollowUpDraft,
   updateJob,
+  updateJobDirection,
 } from "./db.js";
 import {
   CriteriaSchema,
@@ -393,6 +394,18 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   app.patch("/api/jobs/:id", async (req) => {
     const body = z.object({ notes: z.string().max(20_000).optional(), applicationNotes: z.string().max(20_000).optional() }).strict().parse(req.body);
     const row = updateJob(db, requestId(req), body);
+    if (!row) throw notFound("Job not found.");
+    return row;
+  });
+  app.put("/api/jobs/:id/direction", async (req) => {
+    const body = z.object({
+      cvLength: z.enum(["short", "complete"]).optional(),
+      letterMode: z.enum(["standard", "exploratory"]).optional(),
+      letterNarration: z.string().max(500).optional(),
+      revisionNotes: z.string().max(2000).optional(),
+      revisionCount: z.number().int().min(0).max(3).optional(),
+    }).strict().parse(req.body ?? {});
+    const row = updateJobDirection(db, requestId(req), body);
     if (!row) throw notFound("Job not found.");
     return row;
   });

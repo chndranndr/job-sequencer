@@ -216,6 +216,22 @@ export type DocumentVerification = {
   checkedAt: string;
 };
 
+export type GenerationDirection = {
+  cvLength: "short" | "complete";
+  letterMode: "standard" | "exploratory";
+  letterNarration: string;
+  revisionNotes: string;
+  revisionCount: number;
+};
+
+export const defaultGenerationDirection: GenerationDirection = {
+  cvLength: "complete",
+  letterMode: "standard",
+  letterNarration: "",
+  revisionNotes: "",
+  revisionCount: 0,
+};
+
 export type Job = {
   id: string;
   source_id: string;
@@ -249,6 +265,7 @@ export type Job = {
   follow_up_due_at?: string | null;
   follow_up_sent_at?: string | null;
   follow_up_context?: FollowUpContext | null;
+  generation_direction?: GenerationDirection;
   outcome?: string | null;
 };
 
