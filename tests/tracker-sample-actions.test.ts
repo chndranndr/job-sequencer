@@ -1,16 +1,57 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canApproveSampleDocuments, canStartSampleRun, sampleStageActions, verificationChecks } from "../src/tracker/sample.js";
+import {
+  canApproveSampleDocuments,
+  canReviseSample,
+  canStartSampleRun,
+  remainingRevises,
+  SAMPLE_DIRECTION_LABELS,
+  SAMPLE_READY_REVISE_COPY,
+  SAMPLE_REVISION_CAP,
+  sampleDirectionControls,
+  sampleReadyReviseRequest,
+  sampleStageActions,
+  verificationChecks,
+} from "../src/tracker/sample.js";
 
 test("SAMPLE exposes the manual stage actions without skipping gates", () => {
   assert.deepEqual(sampleStageActions("Recommended"), ["select", "archive"]);
   assert.deepEqual(sampleStageActions("Discarded"), ["restore-recommended", "archive"]);
   assert.deepEqual(sampleStageActions("Selected"), ["unselect", "generate", "archive"]);
-  assert.deepEqual(sampleStageActions("Drafting"), ["regenerate", "approve", "archive"]);
-  assert.deepEqual(sampleStageActions("Ready"), ["apply", "archive"]);
+  assert.deepEqual(sampleStageActions("Drafting"), ["revise", "approve", "archive"]);
+  assert.deepEqual(sampleStageActions("Ready"), ["revise", "apply", "archive"]);
   assert.deepEqual(sampleStageActions("Applied"), ["phrase", "outcome", "archive"]);
   assert.deepEqual(sampleStageActions("Interview"), ["phrase", "outcome", "archive"]);
   assert.deepEqual(sampleStageActions("Archived"), ["restore"]);
+});
+
+test("Selected SAMPLE shows direction controls before generate", () => {
+  assert.ok(sampleStageActions("Selected").includes("generate"));
+  assert.deepEqual(sampleDirectionControls("Selected"), ["cvLength", "letterMode", "letterNarration"]);
+  assert.equal(SAMPLE_DIRECTION_LABELS.cvLength, "CV length");
+  assert.equal(SAMPLE_DIRECTION_LABELS.letterMode, "Letter stance");
+  assert.equal(SAMPLE_DIRECTION_LABELS.letterNarration, "Narration");
+});
+
+test("Drafting SAMPLE exposes Revise with a correction box", () => {
+  assert.ok(sampleStageActions("Drafting").includes("revise"));
+  assert.deepEqual(sampleDirectionControls("Drafting"), ["cvLength", "letterMode", "letterNarration", "revisionNotes"]);
+  assert.equal(SAMPLE_DIRECTION_LABELS.revisionNotes, "Correction");
+  assert.equal(SAMPLE_DIRECTION_LABELS.remainingRevises, "Remaining revises");
+  assert.equal(remainingRevises(0), SAMPLE_REVISION_CAP);
+});
+
+test("Revise disables when remaining revises is 0", () => {
+  assert.equal(remainingRevises(3), 0);
+  assert.equal(canReviseSample(3, false, false), false);
+  assert.equal(canReviseSample(2, false, false), true);
+  assert.equal(canReviseSample(2, true, false), false);
+});
+
+test("Ready SAMPLE revise POSTs regenerate and confirm copy names Drafting", () => {
+  assert.ok(sampleStageActions("Ready").includes("revise"));
+  assert.match(SAMPLE_READY_REVISE_COPY, /Drafting/);
+  assert.deepEqual(sampleReadyReviseRequest(), { method: "POST", path: "/api/jobs/:id/regenerate" });
 });
 
 test("SAMPLE run starts stop at the global or local in-flight gate", () => {
