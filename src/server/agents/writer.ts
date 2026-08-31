@@ -2,6 +2,7 @@ import type { GenerationDirection, StructuredProfile, TrajectoryRecorder } from 
 import type { Settings } from "../config.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "../pi.js";
 import type { StructuredRunOptions } from "../structured.js";
+import { validateClaims } from "./claim-validator.js";
 import { validateCVDocument } from "./evidence.js";
 import { buildWriterPrompt } from "./prompts/writer.js";
 import { runAgentStructured } from "./runtime.js";
@@ -61,6 +62,10 @@ export async function runWriter(input: RunWriterInput): Promise<CVDocument> {
     signal: input.signal,
     trajectory: input.trajectory,
     runId: input.runId,
-    validateBusiness: value => validateCVDocument(value, input.profile, input.context.evidenceBank),
+    validateBusiness: value => validateClaims({
+      document: validateCVDocument(value, input.profile, input.context.evidenceBank),
+      profile: input.profile,
+      bank: input.context.evidenceBank,
+    }),
   });
 }

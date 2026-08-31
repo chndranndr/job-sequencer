@@ -10,6 +10,7 @@ import { projectPromptContext, trustedSection, untrustedSection } from "./contex
 import { loadGuidance } from "./guidance.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "./pi.js";
 import { buildAgentCandidateContext } from "./agents/context.js";
+import { validateClaims } from "./agents/claim-validator.js";
 import { splitDescriptionIntoBullets, validateApplicationStrategy, validateCVDocument } from "./agents/evidence.js";
 import { renderCVDocument } from "./agents/render-cv-document.js";
 import { runStrategist, type StrategistFn } from "./agents/strategist.js";
@@ -653,7 +654,11 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       settings: options.settings,
       onUsage: options.onUsage,
     });
-    const validatedDocument = validateCVDocument(document, structured, context.evidenceBank);
+    const validatedDocument = validateClaims({
+      document: validateCVDocument(document, structured, context.evidenceBank),
+      profile: structured,
+      bank: context.evidenceBank,
+    });
     const cvTemplate = selectCvTemplate(metadata, tokenise(`${role} ${posting}`));
     output = generationOutputFromDocument(validatedDocument, parsedStrategy, cvTemplate, context.evidenceBank);
     const documentVerification = await runDocumentVerifier({
