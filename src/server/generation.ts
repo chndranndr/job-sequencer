@@ -9,6 +9,7 @@ import { createTaskReporter, getJobDetail, updateJobDirection } from "./db.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 import { loadGuidance } from "./guidance.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "./pi.js";
+import { splitDescriptionIntoBullets } from "./agents/evidence.js";
 import { runStructured } from "./structured.js";
 import { loadTemplateMetadata } from "./templates.js";
 import { runDocumentVerifier } from "./verifier.js";
@@ -210,34 +211,6 @@ function dateRange(entry: { startMonth: string; startYear: string; endMonth: str
   return [start, end].filter(Boolean).join(" - ");
 }
 function cvSection(title: string, body: string, minimumReservation = 3) { return body.trim() ? `\\needspace{${minimumReservation}\\baselineskip}\n\\section{${latex(title)}}\n${body}` : ""; }
-
-const descriptionAbbreviations = new Set(["approx", "co", "corp", "dept", "dr", "e.g", "etc", "fig", "i.e", "inc", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "ltd", "misc", "mr", "mrs", "ms", "no", "nos", "prof", "ref", "rev", "sr", "jr", "st", "vs"]);
-
-function isDescriptionAbbreviation(value: string, index: number) {
-  if (value[index] !== ".") return false;
-  const match = /(?:^|[\s([{"'])([A-Za-z](?:[A-Za-z.]*)?)\.$/.exec(value.slice(0, index + 1));
-  if (!match) return false;
-  const token = match[1]!.toLowerCase();
-  return token.length === 1 || (token.includes(".") && !token.includes("..")) || descriptionAbbreviations.has(token);
-}
-
-function splitDescriptionIntoBullets(value: string) {
-  return value.split(/\r\n?|\n/).flatMap(line => {
-    const segments: string[] = [];
-    let start = 0;
-    for (let index = 0; index < line.length; index += 1) {
-      const character = line[index];
-      if (!character || !".!?".includes(character) || !/^\s+[A-Z0-9]/.test(line.slice(index + 1)) || isDescriptionAbbreviation(line, index)) continue;
-      const segment = line.slice(start, index + 1).trim();
-      if (!segment) continue;
-      segments.push(segment);
-      start = index + 1;
-    }
-    const remainder = line.slice(start).trim();
-    if (remainder) segments.push(remainder);
-    return segments;
-  });
-}
 
 function cvBullets(items: string[]) {
   return items.length ? `\\begin{itemize}[leftmargin=*,labelindent=0pt,labelsep=0.4em,itemindent=0pt,itemsep=0pt,topsep=1pt,parsep=0pt,partopsep=0pt]\n${items.map(item => `\\item ${latex(item)}`).join("\n")}\n\\end{itemize}` : "";

@@ -201,6 +201,16 @@ export type StructuredProfile = {
   languages: LanguageEntry[];
 };
 
+export type {
+  AgentCandidateContext,
+  ApplicationStrategy,
+  CVDocument,
+  EvidenceBank,
+  EvidenceItem,
+  EvidenceRef,
+  StrategyRequirement,
+} from "./server/agents/types.js";
+
 export type LegacyProfile = { available: boolean; content: string | null };
 
 export type Rank = { reason: string; strengths: string[]; gaps: string[] };
