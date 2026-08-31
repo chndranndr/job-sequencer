@@ -126,3 +126,28 @@ export const ApplicationStrategySchema = z.object({
     note: z.string().trim().min(1),
   }).strict()),
 }).strict();
+
+export type FactualIssueKind = "semantic_overclaim" | "scope_inflation" | "role_inflation";
+export type FactualIssueSeverity = "critical" | "high" | "medium" | "low";
+
+export type FactualIssue = {
+  kind: FactualIssueKind;
+  severity: FactualIssueSeverity;
+  claim: string;
+  evidenceRefs: EvidenceRef[];
+  note: string;
+};
+
+export type FactualAudit = {
+  issues: FactualIssue[];
+};
+
+export const FactualAuditSchema = z.object({
+  issues: z.array(z.object({
+    kind: z.enum(["semantic_overclaim", "scope_inflation", "role_inflation"]),
+    severity: z.enum(["critical", "high", "medium", "low"]),
+    claim: z.string().trim().min(1),
+    evidenceRefs,
+    note: z.string().trim().min(1),
+  }).strict()),
+}).strict();
