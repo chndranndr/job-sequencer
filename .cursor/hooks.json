@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "node --import=tsx .cursor/hooks/restart-dev-server.ts"
+      }
+    ],
+    "stop": [
+      {
+        "command": "node --import=tsx .cursor/hooks/restart-dev-server.ts --flush"
+      }
+    ]
+  }
+}

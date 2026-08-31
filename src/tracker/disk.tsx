@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import type { Criteria, CustomJobSource, Settings, StructuredProfile } from "../shared.js";
+import type { Criteria, CustomJobSource, Run, Settings, StructuredProfile, TrajectoryEvent } from "../shared.js";
 import { defaultSourceMaxAgeDays, jobSourceKeys, jobSourceLabel } from "../shared.js";
 import {
   CriteriaFields,
+  IdentityConflictDialog,
   ProfileFields,
   ProfileSaveBar,
   RepeatableSections,
@@ -12,7 +13,7 @@ import {
   cloneProfile,
   type RepeatableSectionId,
 } from "../profile-editor.js";
-import { api, getAvailableModels, getCriteria, getProfile, getSettings, importProfile, type PiModelOption } from "../api.js";
+import { api, getAvailableModels, getCriteria, getProfile, getSettings, importProfile, type PiModelOption, type ProfileImportSummary } from "../api.js";
 import { isNarrowLayout, NARROW_LAYOUT_MQ } from "./narrow.js";
 import {
   CustomSourceEditor,
@@ -28,6 +29,11 @@ import {
   useUnsavedNavigationGuard,
 } from "../settings-editor.js";
 
+function isProfileImportSummary(value: unknown): value is ProfileImportSummary {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return Boolean(record.profile && record.extracted && record.source && record.identity);
+}
 type DocumentStatus = {
   tools: Record<string, { available: boolean }>;
   templates: {
@@ -111,7 +117,19 @@ function DiskProviderPreview({ value, error, onLoad }: { value: string; error: s
   </section>;
 }
 
-export function DiskView({ toast, onSettings }: { toast: (message: string) => void; onSettings: (settings: Settings) => void }) {
+export function DiskView({
+  toast,
+  onSettings,
+  run = null,
+  events = [],
+  onRun,
+}: {
+  toast: (message: string) => void;
+  onSettings: (settings: Settings) => void;
+  run?: Run | null;
+  events?: TrajectoryEvent[];
+  onRun?: (run: Pick<Run, "id" | "workflow" | "status">) => void;
+}) {
   const [bank, setBank] = useState<DiskBankId>("a");
   const [extra, setExtra] = useState<RepeatableSectionId>("skills");
   const [profile, setProfile] = useState<StructuredProfile | null>(null);
@@ -136,11 +154,13 @@ export function DiskView({ toast, onSettings }: { toast: (message: string) => vo
   const [editingCustomKey, setEditingCustomKey] = useState<string | null>(null);
   const [customError, setCustomError] = useState("");
   const [importing, setImporting] = useState(false);
+  const [identityPrompt, setIdentityPrompt] = useState<ProfileImportSummary | null>(null);
   const [error, setError] = useState("");
   const [tuneWidth, setTuneWidth] = useState(280);
   const [tuneCollapsed, setTuneCollapsed] = useState(isNarrowLayout);
   const [resizingTune, setResizingTune] = useState(false);
   const tuneResizeStart = useRef<{ clientX: number; width: number } | null>(null);
+  const processedImportRunId = useRef<string | null>(null);
   useEffect(() => {
     const media = window.matchMedia(NARROW_LAYOUT_MQ);
     const collapseWhenNarrow = () => { if (media.matches) setTuneCollapsed(true); };
@@ -361,19 +381,52 @@ export function DiskView({ toast, onSettings }: { toast: (message: string) => vo
   }
 
   async function parseResume(file: File | null) {
-    if (!file) return;
+    if (!file || !profile) return;
+    if (run?.status === "running") {
+      toast("Another AI run is already active.");
+      return;
+    }
     setImporting(true);
     try {
-      const result = await importProfile(file);
-      setProfile(result.profile);
+      const result = await importProfile(file, profile);
+      onRun?.({ id: result.runId, workflow: "profile_import", status: "running" });
       setBank("a");
-      toast(`${result.source.fileName} loaded. Patch fields, then write to disk.`);
+      toast("Resume import started.");
     } catch (caught) { toast(caught instanceof Error ? caught.message : "Resume/CV could not be parsed."); }
     finally { setImporting(false); }
   }
 
+  function applyImportedProfile(next: StructuredProfile, fileName: string) {
+    setProfile(next);
+    setBank("b");
+    setIdentityPrompt(null);
+    toast(`${fileName} loaded into B·WORK. Patch fields, then write to disk.`);
+  }
+
+  useEffect(() => {
+    if (!run || run.workflow !== "profile_import" || run.status === "running") return;
+    if (processedImportRunId.current === run.id) return;
+    processedImportRunId.current = run.id;
+    if (run.status === "succeeded") {
+      const summary = isProfileImportSummary(run.summary) ? run.summary : null;
+      if (!summary) {
+        toast("Import finished without a profile summary.");
+        return;
+      }
+      if (summary.identity.conflict) {
+        setIdentityPrompt(summary);
+        return;
+      }
+      applyImportedProfile(summary.profile, summary.source.fileName);
+      return;
+    }
+    toast(run.error ?? "Resume import did not finish.");
+  }, [run?.error, run?.id, run?.status, run?.summary, run?.workflow, toast]);
+
   if (error || !profile || !criteria || !settings) return <section className="panel" style={{ gridColumn: "1 / -1" }}><p className="empty">{error || "Loading DISK…"}</p></section>;
 
+  const importBusy = importing || run?.status === "running";
+  const modelLabel = settings.provider && settings.model ? `${settings.provider}/${settings.model}` : settings.model || "";
   return <>
     <section className="panel disk-main">
       <div className="panel-h">DISK · SAMPLE BANK <span>one bank at a time · patch then write</span></div>
@@ -391,12 +444,34 @@ export function DiskView({ toast, onSettings }: { toast: (message: string) => vo
       <div className={`disk-bank-pane pe-disk pe-theme-tracker disk-bank-pane--${bank}`}>
         {bank === "a" && <>
           <ProfileSaveBar dirty={profileDirty} label="Profile bank" onSave={() => void saveProfile()} onDiscard={() => savedProfile && setProfile(cloneProfile(savedProfile))} variant={variant} />
-          <ResumeImportPanel importing={importing} onFile={(file) => void parseResume(file)} variant={variant} />
+          <ResumeImportPanel
+            importing={importBusy}
+            onFile={(file) => void parseResume(file)}
+            variant={variant}
+            run={run}
+            events={events}
+            modelLabel={modelLabel}
+            disabled={run?.status === "running"}
+          />
           <ProfileFields profile={profile} setProfile={setProfile} variant={variant} />
           <div className="disk-review-stack">
             <DiskLegacyPanel available={legacyAvailable} open={legacyOpen} content={legacy} error={legacyError} onOpen={() => void showLegacy()} onImport={importLegacy} onClose={() => setLegacyOpen(false)} />
             <DiskProviderPreview value={providerPreview} error={providerPreviewError} onLoad={() => void showProviderPreview()} />
           </div>
+          <IdentityConflictDialog
+            open={Boolean(identityPrompt)}
+            currentName={identityPrompt?.identity.currentName ?? ""}
+            incomingName={identityPrompt?.identity.incomingName ?? ""}
+            reason={identityPrompt?.identity.reason ?? ""}
+            onCancel={() => {
+              setIdentityPrompt(null);
+              toast("Kept the current profile bank.");
+            }}
+            onReplace={() => {
+              if (!identityPrompt) return;
+              applyImportedProfile(identityPrompt.extracted, identityPrompt.source.fileName);
+            }}
+          />
         </>}
         {bank === "b" && <>
           <ProfileSaveBar dirty={profileDirty} label="Profile bank" onSave={() => void saveProfile()} onDiscard={() => savedProfile && setProfile(cloneProfile(savedProfile))} variant={variant} />
@@ -488,7 +563,7 @@ export function DiskView({ toast, onSettings }: { toast: (message: string) => vo
                 return <label className={`disk-source ${armed ? "armed" : ""}`} key={source}>
                   <input type="checkbox" checked={armed} onChange={(event) => setEnabledSource(source, event.target.checked)} />
                   <span className="disk-source__led" aria-hidden="true" />
-                  <span>{jobSourceLabel(source)}</span>
+                  <span className="disk-source__name">{jobSourceLabel(source)}</span>
                   <span className="disk-source__age">MAX <input aria-label={`${jobSourceLabel(source)} max age in days`} type="number" min={1} max={9999} step={1} value={sourceMaxAge(settings, source)} onChange={(event) => setSourceMaxAge(source, Number(event.target.value))} /></span>
                 </label>;
               })}
@@ -497,7 +572,7 @@ export function DiskView({ toast, onSettings }: { toast: (message: string) => vo
                 return <label className={`disk-source disk-source--custom ${armed ? "armed" : ""}`} key={custom.key}>
                   <input type="checkbox" checked={armed} onChange={(event) => setEnabledSource(custom.key, event.target.checked)} />
                   <span className="disk-source__led" aria-hidden="true" />
-                  <span>{custom.label} <small>({custom.key})</small></span>
+                  <span className="disk-source__name">{custom.label} <small>({custom.key})</small></span>
                 </label>;
               })}
             </div>

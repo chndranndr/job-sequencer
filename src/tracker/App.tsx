@@ -12,6 +12,7 @@ import { PatternView } from "./pattern.js";
 import { PhraseView } from "./phrase.js";
 import { SampleView } from "./sample.js";
 import { createRunSyncChannel, TraceView } from "./trace.js";
+import { coalesceObservedRun } from "./observe-run.js";
 import { shouldRefreshActiveRun } from "./visibility.js";
 import { WorkflowRack } from "./workflow-rack.js";
 import { WORKFLOW_CHANNELS, type WorkflowChannelId } from "./workflow.js";
@@ -100,7 +101,12 @@ export function TrackerApp() {
       if (!shouldRefreshActiveRun(document.visibilityState, document.hasFocus())) return;
       try {
         const result = await getActiveRun();
-        if (!disposed) observeRun(result.run);
+        if (disposed) return;
+        observeRun(await coalesceObservedRun({
+          active: result.run,
+          currentId: currentRunId.current,
+          load: getRun,
+        }));
       } catch { /* API polling is retried on the next tick or focus event */ }
     };
     const stop = () => {
@@ -319,7 +325,7 @@ export function TrackerApp() {
       {route.view === "order" && <OrderView jobs={jobs} orderFocus={orderFocus} onGenerate={(ids) => void generate(ids)} navigate={navigate} run={run} onRun={announce} onReload={() => void reloadJobs()} toast={setToast} />}
       {route.view === "phrase" && <PhraseView jobId={route.jobId} navigate={navigate} onRun={announce} toast={setToast} />}
       {route.view === "sample" && <SampleView jobId={route.jobId} settings={settings} navigate={navigate} toast={setToast} onRun={announce} onReload={() => void reloadJobs()} run={run} />}
-      {route.view === "disk" && <DiskView toast={setToast} onSettings={setSettings} />}
+      {route.view === "disk" && <DiskView toast={setToast} onSettings={setSettings} run={run} events={events} onRun={announce} />}
       {route.view === "trace" && <TraceView runId={route.runId} activeRun={run} navigate={navigate} now={now} />}
     </div>
     {toast && <div className="toast" role="status">{toast}</div>}

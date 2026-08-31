@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createEmptyProfile, defaultGenerationDirection, type ProjectEntry, type SkillEntry } from "../src/shared.js";
-import { buildGenerationPrompt, coverLetterClosing, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks } from "../src/server/generation.js";
+import { buildGenerationPrompt, coverLetterClosing, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
 
 const skill = (name: string): SkillEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name });
 const project = (name: string, role: string, description: string): ProjectEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, role, description, startMonth: "", startYear: "", endMonth: "", endYear: "", url: "" });
@@ -192,6 +192,105 @@ test("stripRevisionNoteLeaks drops invented metric lines and keeps a grounded em
   assert.doesNotMatch(stripped, /QZ-9912/);
 });
 
+test("short CV keeps finance-overlapping experience bullets and drops ceremony lines", () => {
+  const description = [
+    "Owned daily stand-ups and sprint retrospectives when required.",
+    "Designed gold payment and inventory microservices for 10,000 daily transactions.",
+    "Integrated MCP with Copilot Studio for table lineage chat.",
+    "Reduced critical payment query time by 30% on the gold ledger.",
+    "Reviewed peer code and documentation standards before merge.",
+  ].join("\n");
+  const job = "Backend engineer fintech payments Java gold ledger transactions";
+  const short = selectExperienceBullets(description, job, ["payments"], "short");
+  assert.ok(short.some((line) => /gold payment/i.test(line)));
+  assert.ok(short.some((line) => /payment query/i.test(line)));
+  assert.equal(short.some((line) => /stand-ups/i.test(line)), false);
+  assert.equal(short.some((line) => /MCP/i.test(line)), false);
+  assert.ok(short.length <= 4);
+  assert.equal(selectExperienceBullets(description, job, ["payments"], "complete").length, 5);
+});
+
+test("short CV render keeps every employer and only the overlapping bullets", () => {
+  const profile = createEmptyProfile();
+  profile.experience = [
+    {
+      id: "alex",
+      title: "Full Stack Engineer",
+      company: "Alex Solutions",
+      employmentType: "",
+      location: "",
+      startMonth: "2025-08",
+      startYear: "2025",
+      endMonth: "2026-07",
+      endYear: "2026",
+      currentRole: false,
+      description: "Led daily stand-ups.\nIntegrated MCP with Copilot Studio.",
+    },
+    {
+      id: "infosys",
+      title: "Senior Backend Developer",
+      company: "PT Infosys Solusi Terpadu",
+      employmentType: "",
+      location: "",
+      startMonth: "2023-07",
+      startYear: "2023",
+      endMonth: "2025-07",
+      endYear: "2025",
+      currentRole: false,
+      description: "Designed gold payment microservices.\nReduced payment query time by 30%.",
+    },
+  ];
+  const job = "Backend engineer finance payments Java gold transactions";
+  const short = renderStructuredProfile(profile, job, ["payments"], [], "short").EXPERIENCE;
+  assert.match(short, /Alex Solutions/);
+  assert.match(short, /PT Infosys Solusi Terpadu/);
+  assert.match(short, /gold payment/);
+  assert.doesNotMatch(short, /stand-ups/);
+  assert.match(renderStructuredProfile(profile, job, ["payments"], [], "complete").EXPERIENCE, /stand-ups/);
+});
+
+test("short cover-letter bullets prefer posting overlap", () => {
+  const paragraphs = ["I build Java services."];
+  const bullets = [
+    "Facilitated sprint retrospectives across product squads.",
+    "Cut gold-ledger payment query time by 30% for daily transactions.",
+  ];
+  const ranked = letterBullets({ coverLetterBullets: bullets }, paragraphs, "Backend fintech payments gold ledger", ["payments"], "short");
+  assert.match(ranked, /gold-ledger payment/);
+  assert.doesNotMatch(ranked, /sprint retrospectives/);
+});
+
+test("generation prompt for short prefers domain-overlapping evidence", () => {
+  const prompt = buildGenerationPrompt({
+    profile: "Java payments",
+    job: { role: "Backend Engineer", company: "Finance Co", posting: "payments ledger" },
+    rank: { gaps: [] },
+    templates: { cv: { backend_java_spring: {} } },
+    direction: { ...defaultGenerationDirection, cvLength: "short" },
+  }, "");
+  assert.match(prompt, /USER DIRECTION/);
+  assert.match(prompt, /overlap the posting/);
+});
+
+test("profileFacts match decoded JSON string fields including newlines", () => {
+  const profile = JSON.stringify({
+    identity: { summary: "Senior engineer.\nBuilt gold payment services." },
+    experience: [{ description: "Reduced query time by 30%." }],
+  }, null, 2);
+  const accepted = validateGenerationOutput({
+    cvTemplate: "backend_java_spring",
+    profileFacts: ["Senior engineer.\nBuilt gold payment services."],
+    gaps: [],
+  }, profile, ["backend_java_spring"], []);
+  assert.deepEqual(accepted.profileFacts, ["Senior engineer.\nBuilt gold payment services."]);
+
+  assert.throws(() => validateGenerationOutput({
+    cvTemplate: "backend_java_spring",
+    profileFacts: ["Reduced query time by 30%.", "Invented quarterly ARR 847%"],
+    gaps: [],
+  }, profile, ["backend_java_spring"], []), /unsupported profile fact/);
+});
+
 test("grounded cvEdits land in rendered CV and ungrounded edits do not", () => {
   const profile = createEmptyProfile();
   profile.experience = [{
@@ -210,6 +309,48 @@ test("grounded cvEdits land in rendered CV and ungrounded edits do not", () => {
   profile.awards = [{ id: "award", title: "GroundedAwardTokenXYZ", issuer: "", date: "", description: "" }];
   const rendered = renderStructuredProfile(profile, "backend Java", ["Java"], ["GroundedAwardTokenXYZ", "InventedConversionMetric999"]);
   const text = Object.values(rendered).join("\n");
-  assert.match(text, /GroundedAwardTokenXYZ/);
+  assert.match(text, /\\cvitem\{\}\{GroundedAwardTokenXYZ\}/);
+  assert.doesNotMatch(text, /\\item GroundedAwardTokenXYZ/);
   assert.doesNotMatch(text, /InventedConversionMetric999/);
+});
+
+test("cvEdits never attach another employer's bullets or planning instructions to a role", () => {
+  const role = (id: string, company: string, title: string, description: string) => ({
+    id,
+    title,
+    company,
+    employmentType: "",
+    location: "",
+    startMonth: "",
+    startYear: "2017",
+    endMonth: "",
+    endYear: "2018",
+    currentRole: false,
+    description,
+  });
+  const profile = createEmptyProfile();
+  profile.experience = [
+    role("gameloft", "Gameloft", "C++ Programmer", "Shipped Asphalt gameplay systems.\nTuned OpenGL frame time."),
+    role("antam", "Antam", "Backend Engineer", "Built gold payment services.\nCut ledger query time."),
+  ];
+  const rendered = renderStructuredProfile(profile, "C++ game engine", ["C++"], [
+    "Built gold payment services at Antam.",
+    "Prioritize overlapping industry and stack.",
+    "Retain every employer. Drop unrelated bullets.",
+    "Order core skills by posting overlap.",
+  ]).EXPERIENCE;
+  const gameloft = rendered.split("\\cventry").find((block) => /Gameloft/.test(block)) ?? "";
+  assert.match(gameloft, /Asphalt/);
+  assert.doesNotMatch(gameloft, /Antam|gold payment|Prioritize|Retain every|Order core skills/);
+  assert.doesNotMatch(rendered, /Prioritize overlapping|Retain every employer|Order core skills/);
+});
+
+test("instruction-shaped cvEdits fail generation validation so Pi can repair", () => {
+  const profile = JSON.stringify({ identity: { summary: "Java engineer at Example." } });
+  assert.throws(() => validateGenerationOutput({
+    cvTemplate: "backend_java_spring",
+    profileFacts: ["Java engineer at Example."],
+    cvEdits: ["Prioritize overlapping industry and keep every employer."],
+    gaps: [],
+  }, profile, ["backend_java_spring"], []), /internal or generic phrase/);
 });

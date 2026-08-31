@@ -17,9 +17,17 @@ export class ApiError extends Error {
 }
 
 export type PiModelOption = { id: string; name: string };
-export type ProfileImportResult = {
+export type ProfileImportIdentity = {
+  conflict: boolean;
+  currentName: string;
+  incomingName: string;
+  reason: string;
+};
+export type ProfileImportSummary = {
   profile: StructuredProfile;
+  extracted: StructuredProfile;
   source: { fileName: string; format: "pdf" | "doc" | "docx"; textLength: number };
+  identity: ProfileImportIdentity;
 };
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -37,7 +45,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const getProfile = () => api<{ profile: StructuredProfile; canonical: boolean; legacyImportAvailable: boolean }>("/api/profile");
-export const importProfile = (file: File) => { const body = new FormData(); body.append("file", file); return api<ProfileImportResult>("/api/profile/import", { method: "POST", body }); };
+export const importProfile = (file: File, currentProfile?: StructuredProfile | null) => {
+  const body = new FormData();
+  body.append("file", file);
+  if (currentProfile) body.append("currentProfile", JSON.stringify(currentProfile));
+  return api<{ runId: string }>("/api/profile/import", { method: "POST", body });
+};
 export const getCriteria = () => api<Criteria>("/api/criteria");
 export const getSettings = () => api<Settings>("/api/settings");
 export const getAvailableModels = (provider: string) => api<{ provider: string; models: PiModelOption[] }>(`/api/ai/models?provider=${encodeURIComponent(provider)}`);

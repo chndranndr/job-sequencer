@@ -7,9 +7,13 @@ import type {
   LanguageEntry,
   ProfileEntry,
   ProjectEntry,
+  Run,
+  RunStatus,
   SkillEntry,
   StructuredProfile,
+  TrajectoryEvent,
 } from "./shared.js";
+import { deriveRunTaskRows } from "./shared.js";
 import "./profile-editor.css";
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -27,6 +31,18 @@ function variantRoot(variant: ProfileEditorVariant) {
 
 function rowHex(index: number) {
   return (index & 0xff).toString(16).toUpperCase().padStart(2, "0");
+}
+
+function formatDateLabel(month: string, year: string) {
+  if (month) return month;
+  if (year) return year;
+  return "";
+}
+
+function formatDateRange(startMonth: string, startYear: string, endMonth: string, endYear: string, current = false) {
+  const start = formatDateLabel(startMonth, startYear) || "Start not set";
+  const end = current ? "Present" : formatDateLabel(endMonth, endYear) || "End not set";
+  return `${start} — ${end}`;
 }
 
 function EditorField({ label, hint, error, children, className = "" }: { label: string; hint?: string; error?: string; children: ReactNode; className?: string }) {
@@ -120,19 +136,81 @@ export function ProfilePreview({ profile, variant = "desk" }: { profile: Structu
   );
 }
 
-export function ResumeImportPanel({ importing, onFile, variant = "desk" }: { importing: boolean; onFile: (file: File | null) => void; variant?: ProfileEditorVariant }) {
+export function ResumeImportPanel({
+  importing,
+  onFile,
+  variant = "desk",
+  run = null,
+  events = [],
+  modelLabel = "",
+  disabled = false,
+}: {
+  importing: boolean;
+  onFile: (file: File | null) => void;
+  variant?: ProfileEditorVariant;
+  run?: Pick<Run, "workflow" | "status"> | null;
+  events?: readonly TrajectoryEvent[];
+  modelLabel?: string;
+  disabled?: boolean;
+}) {
   const tracker = variant === "tracker";
+  const importRun = run?.workflow === "profile_import";
+  const busy = importing || disabled || run?.status === "running";
+  const taskRows = importRun ? deriveRunTaskRows(events, "profile_import", run.status as RunStatus) : [];
   return (
-    <section className={`pe-section pe-import ${variantRoot(variant)}`} aria-busy={importing}>
+    <section className={`pe-section pe-import ${variantRoot(variant)}`} aria-busy={busy}>
       <div className="pe-section-head"><h2>{tracker ? "SAMPLE IMPORT" : "Import resume / CV"}</h2><span className="pe-eyebrow">{tracker ? "LOAD WAV · PI PARSE" : "PI-ASSISTED"}</span></div>
       <div className="pe-section-body">
       <p className="pe-muted">{tracker ? "Drop a resume sample. Pi maps fields into the bank. Nothing commits until Write to disk." : "Upload PDF, DOC, or DOCX. Pi maps factual fields into an editable draft. Nothing is saved until you click Save profile."}</p>
       <EditorField label="Resume or CV file" hint="PDF, DOC, or DOCX · maximum 12 MB">
-        <input type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={importing} onChange={(event) => { const file = event.currentTarget.files?.[0] ?? null; event.currentTarget.value = ""; onFile(file); }} />
+        <input type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={busy} onChange={(event) => { const file = event.currentTarget.files?.[0] ?? null; event.currentTarget.value = ""; onFile(file); }} />
       </EditorField>
-      {importing && <div className="pe-muted" role="status">Extracting text and mapping the resume into your profile…</div>}
+      {importRun && taskRows.length > 0 && (
+        <div className="pe-import-tasks" role="status" aria-live="polite">
+          {modelLabel && <div className="pe-muted">Model · {modelLabel}</div>}
+          <ul className="pe-import-task-list">
+            {taskRows.map((row) => (
+              <li key={row.taskId} className={`pe-import-task pe-import-task--${row.status}`}>
+                <span>{row.label}</span>
+                {row.detail ? <small>{row.detail}</small> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!importRun && importing && <div className="pe-muted" role="status">Extracting text and mapping the resume into your profile…</div>}
       </div>
     </section>
+  );
+}
+
+export function IdentityConflictDialog({
+  open,
+  currentName,
+  incomingName,
+  reason,
+  onReplace,
+  onCancel,
+}: {
+  open: boolean;
+  currentName: string;
+  incomingName: string;
+  reason: string;
+  onReplace: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <PeDialog
+      open={open}
+      title="Different identity on this CV"
+      onClose={onCancel}
+      actions={<><PeButton kind="ghost" onClick={onCancel}>Cancel</PeButton><PeButton kind="danger" onClick={onReplace}>Replace</PeButton></>}
+    >
+      <p>This resume looks like a different person. Replace the current bank with the CV only, or cancel and keep what you have. The two profiles will not be merged.</p>
+      <p><strong>Current:</strong> {currentName || "(unnamed)"}</p>
+      <p><strong>Incoming:</strong> {incomingName || "(unnamed)"}</p>
+      {reason ? <p className="pe-muted">{reason}</p> : null}
+    </PeDialog>
   );
 }
 
@@ -331,10 +409,11 @@ export function RepeatableSections({ profile, setProfile, variant = "desk", sect
   const show = (section: RepeatableSectionId) => !sections || sections.includes(section);
   return (
     <div className={`pe-repeatables ${variantRoot(variant)}`}>
-      {show("experience") && <Repeatable variant={variant} bank="BANK B" title="Experience" entries={profile.experience} setEntries={(entries) => setProfile({ ...profile, experience: entries })} empty={emptyExperience()} summary={(entry) => <><strong>{entry.title || "Untitled position"} · {entry.company || "Company not set"}</strong><span>{entry.startMonth || entry.startYear || "Start not set"} — {entry.currentRole ? "Present" : entry.endMonth || entry.endYear || "End not set"} · {entry.location || "Location not set"}</span><p>{entry.description || "No factual description yet."}</p></>} editor={(entry, update) => <>
+      {show("experience") && <Repeatable variant={variant} bank="BANK B" title="Experience" entries={profile.experience} setEntries={(entries) => setProfile({ ...profile, experience: entries })} empty={emptyExperience()} summary={(entry) => <><strong>{entry.title || "Untitled position"} · {entry.company || "Company not set"}</strong><span>{formatDateRange(entry.startMonth, entry.startYear, entry.endMonth, entry.endYear, entry.currentRole)} · {entry.location || "Location not set"}</span><p>{entry.description || "No factual description yet."}</p></>} editor={(entry, update) => <>
         <div className="pe-two"><EditorField label="Job title"><input value={entry.title} onChange={(event) => update({ title: event.target.value })} /></EditorField><EditorField label="Company"><input value={entry.company} onChange={(event) => update({ company: event.target.value })} /></EditorField></div>
         <div className="pe-two"><EditorField label="Employment type"><input value={entry.employmentType} onChange={(event) => update({ employmentType: event.target.value })} /></EditorField><EditorField label="Location"><input value={entry.location} onChange={(event) => update({ location: event.target.value })} /></EditorField></div>
-        <div className="pe-two"><EditorField label="Start month"><input type="month" value={entry.startMonth} onChange={(event) => update({ startMonth: event.target.value })} /></EditorField><EditorField label="End month"><input type="month" value={entry.endMonth} disabled={entry.currentRole} onChange={(event) => update({ endMonth: event.target.value, endYear: event.target.value.slice(0, 4) })} /></EditorField></div>
+        <div className="pe-two"><EditorField label="Start month" hint="Month and year when known"><input type="month" value={entry.startMonth} onChange={(event) => update({ startMonth: event.target.value, startYear: event.target.value.slice(0, 4) })} /></EditorField><EditorField label="Start year" hint="Use when month is unknown"><input inputMode="numeric" maxLength={4} value={entry.startYear} onChange={(event) => update({ startYear: event.target.value.replace(/\D/g, "").slice(0, 4) })} /></EditorField></div>
+        <div className="pe-two"><EditorField label="End month" hint="Month and year when known"><input type="month" value={entry.endMonth} disabled={entry.currentRole} onChange={(event) => update({ endMonth: event.target.value, endYear: event.target.value.slice(0, 4) })} /></EditorField><EditorField label="End year" hint="Use when month is unknown"><input inputMode="numeric" maxLength={4} value={entry.endYear} disabled={entry.currentRole} onChange={(event) => update({ endYear: event.target.value.replace(/\D/g, "").slice(0, 4) })} /></EditorField></div>
         <label className="pe-check"><input type="checkbox" checked={entry.currentRole} onChange={(event) => update({ currentRole: event.target.checked, endMonth: event.target.checked ? "" : entry.endMonth, endYear: event.target.checked ? "" : entry.endYear })} /> I currently work here</label>
         <EditorField label="Factual description and achievements"><textarea rows={7} value={entry.description} onChange={(event) => update({ description: event.target.value })} /></EditorField>
       </>} />}
@@ -350,9 +429,10 @@ export function RepeatableSections({ profile, setProfile, variant = "desk", sect
         <EditorField label="URL"><input type="url" value={entry.url} onChange={(event) => update({ url: event.target.value })} /></EditorField>
         <EditorField label="Description"><textarea rows={4} value={entry.description} onChange={(event) => update({ description: event.target.value })} /></EditorField>
       </>} />}
-      {show("projects") && <Repeatable variant={variant} bank="BANK C" title="Projects" entries={profile.projects} setEntries={(entries) => setProfile({ ...profile, projects: entries })} empty={emptyProject()} summary={(entry) => <><strong>{entry.name || "Project not set"}</strong><span>{entry.role || "Role not set"} · {entry.url || "No URL"}</span><p>{entry.description}</p></>} editor={(entry, update) => <>
+      {show("projects") && <Repeatable variant={variant} bank="BANK C" title="Projects" entries={profile.projects} setEntries={(entries) => setProfile({ ...profile, projects: entries })} empty={emptyProject()} summary={(entry) => <><strong>{entry.name || "Project not set"}</strong><span>{entry.role || "Role not set"} · {formatDateRange(entry.startMonth, entry.startYear, entry.endMonth, entry.endYear)} · {entry.url || "No URL"}</span><p>{entry.description}</p></>} editor={(entry, update) => <>
         <div className="pe-two"><EditorField label="Project name"><input value={entry.name} onChange={(event) => update({ name: event.target.value })} /></EditorField><EditorField label="Role"><input value={entry.role} onChange={(event) => update({ role: event.target.value })} /></EditorField></div>
-        <div className="pe-two"><EditorField label="Start month"><input type="month" value={entry.startMonth} onChange={(event) => update({ startMonth: event.target.value })} /></EditorField><EditorField label="End month"><input type="month" value={entry.endMonth} onChange={(event) => update({ endMonth: event.target.value })} /></EditorField></div>
+        <div className="pe-two"><EditorField label="Start month" hint="Month and year when known"><input type="month" value={entry.startMonth} onChange={(event) => update({ startMonth: event.target.value, startYear: event.target.value.slice(0, 4) })} /></EditorField><EditorField label="Start year" hint="Use when month is unknown"><input inputMode="numeric" maxLength={4} value={entry.startYear} onChange={(event) => update({ startYear: event.target.value.replace(/\D/g, "").slice(0, 4) })} /></EditorField></div>
+        <div className="pe-two"><EditorField label="End month" hint="Month and year when known"><input type="month" value={entry.endMonth} onChange={(event) => update({ endMonth: event.target.value, endYear: event.target.value.slice(0, 4) })} /></EditorField><EditorField label="End year" hint="Use when month is unknown"><input inputMode="numeric" maxLength={4} value={entry.endYear} onChange={(event) => update({ endYear: event.target.value.replace(/\D/g, "").slice(0, 4) })} /></EditorField></div>
         <EditorField label="URL"><input type="url" value={entry.url} onChange={(event) => update({ url: event.target.value })} /></EditorField>
         <EditorField label="Description"><textarea rows={5} value={entry.description} onChange={(event) => update({ description: event.target.value })} /></EditorField>
       </>} />}

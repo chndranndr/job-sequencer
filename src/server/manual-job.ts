@@ -9,6 +9,7 @@ import { PiRunCancelledError, PiRunTimeoutError, createRestrictedGenerationSessi
 import { runBunCli } from "./scrape.js";
 import type { Criteria, TrajectoryRecorder } from "../shared.js";
 import { RunCoordinator } from "./coordinator.js";
+import { runStructured, StructuredOutputError } from "./structured.js";
 
 export const MAX_MANUAL_INPUT_LENGTH = 120_000;
 export const MAX_MANUAL_FETCH_BYTES = 1_000_000;
@@ -449,14 +450,6 @@ function explicitUrls(value: string) {
     .filter((candidate, index, values): candidate is string => Boolean(candidate) && values.indexOf(candidate) === index);
 }
 
-function jsonFromModel(value: string) {
-  const cleaned = value.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("no JSON");
-  return JSON.parse(cleaned.slice(start, end + 1)) as unknown;
-}
-
 function manualPrompt(content: string, sourceUrls: readonly string[], profile: string, criteria: Criteria | undefined) {
   const shape = JSON.stringify({ company: "", role: "", location: "", posting: "", sourceUrl: "", score: 0, reason: "", strengths: [], gaps: [] });
   const allowed = sourceUrls.length ? `If a source URL is present, sourceUrl must be one of these exact URLs: ${JSON.stringify(sourceUrls)}.` : "Set sourceUrl to an empty string unless an HTTP(S) URL is explicitly present in the supplied text.";
@@ -468,32 +461,43 @@ export async function parseManualJobText(value: string, settings: Settings, opti
   const profile = options.profile?.trim();
   if (!profile) throw new ManualJobImportError("A reviewed structured profile is required before scoring a manually added job.", 409);
   const sourceUrls = options.sourceUrls ?? explicitUrls(content);
-  let response = "";
   try {
-    await runBoundedPi({
+    return await runStructured({
       prompt: manualPrompt(content, sourceUrls, profile, options.criteria),
-      timeoutMs: 120_000,
+      schema: ManualJobOutputSchema,
       signal: options.signal,
-      createSession: options.createSession ?? (() => createRestrictedGenerationSession(settings, MANUAL_SYSTEM_PROMPT)),
       runId: options.runId,
       trajectory: options.trajectory,
-      onUsage: options.onUsage,
-      onEvent: (event) => {
-        const current = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
-        if (current.type === "message_update" && current.assistantMessageEvent?.type === "text_delta") response += current.assistantMessageEvent.delta ?? "";
+      execute: async (attemptPrompt) => {
+        let response = "";
+        await runBoundedPi({
+          prompt: attemptPrompt,
+          timeoutMs: 120_000,
+          signal: options.signal,
+          createSession: options.createSession ?? (() => createRestrictedGenerationSession(settings, MANUAL_SYSTEM_PROMPT)),
+          runId: options.runId,
+          trajectory: options.trajectory,
+          onUsage: options.onUsage,
+          onEvent: (event) => {
+            const current = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
+            if (current.type === "message_update" && current.assistantMessageEvent?.type === "text_delta") response += current.assistantMessageEvent.delta ?? "";
+          },
+        });
+        return response;
+      },
+      validateBusiness: (parsed) => {
+        const sourceUrl = parsed.sourceUrl ? normalizeUrl(parsed.sourceUrl) : "";
+        if (sourceUrl && !sourceUrls.includes(sourceUrl)) throw new Error("unapproved URL");
+        return { ...parsed, sourceUrl };
       },
     });
   } catch (error) {
     if (error instanceof PiRunCancelledError || error instanceof PiRunTimeoutError) throw error;
+    if (error instanceof ManualJobImportError) throw error;
+    if (error instanceof StructuredOutputError) {
+      throw new ManualJobImportError("Pi returned job data that could not be validated.", 502);
+    }
     throw new ManualJobImportError("Pi could not parse the job posting. Check provider settings and try again.", 502);
-  }
-  try {
-    const parsed = ManualJobOutputSchema.parse(jsonFromModel(response));
-    const sourceUrl = parsed.sourceUrl ? normalizeUrl(parsed.sourceUrl) : "";
-    if (sourceUrl && !sourceUrls.includes(sourceUrl)) throw new Error("unapproved URL");
-    return { ...parsed, sourceUrl };
-  } catch {
-    throw new ManualJobImportError("Pi returned job data that could not be validated.", 502);
   }
 }
 

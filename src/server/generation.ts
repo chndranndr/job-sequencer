@@ -42,8 +42,8 @@ function knownGenerationGaps(rank: unknown) {
 function userDirectionText(direction: GenerationDirection) {
   const lines = [
     direction.cvLength === "short"
-      ? "CV length is short. Write denser two-page copy. Keep the compiled CV at 2 pages and the cover letter at 1 page."
-      : "CV length is complete. Write a full two-page CV. Keep the cover letter at 1 page.",
+      ? "CV length is short. Write denser two-page copy. Prefer experience achievements and cover-letter evidence that overlap the posting's industry, product domain, and stack. Keep every employer. Drop unrelated bullets instead of summarizing them. Never invent facts. Keep the compiled CV at 2 pages and the cover letter at 1 page. cvEdits must be factual achievement lines from the matching employer only, never planning instructions."
+      : "CV length is complete. Write a full two-page CV. Keep the cover letter at 1 page. cvEdits must be factual achievement lines from the matching employer only, never planning instructions.",
     direction.letterMode === "exploratory"
       ? "Letter mode is exploratory. Frame the candidate for an adjacent role. Still list every entry from rank.gaps. Never invent employers, metrics, or titles."
       : "Letter mode is standard. Write to the posted role.",
@@ -99,15 +99,13 @@ export const liveGenerationExecutor: GenerationExecutor = async context => {
     signal: context.signal,
     trajectory: context.trajectory,
     runId: context.runId,
-    validateBusiness: output => {
-      validateGenerationBusiness(
-        output,
-        context.profile,
-        availableCvTemplateIds(context.templates),
-        knownGenerationGaps(context.rank),
-        `${String(context.job.role)} ${String(context.job.company)} ${String(context.job.posting ?? "")}`,
-      );
-    },
+    validateBusiness: output => validateGenerationBusiness(
+      output,
+      context.profile,
+      availableCvTemplateIds(context.templates),
+      knownGenerationGaps(context.rank),
+      `${String(context.job.role)} ${String(context.job.company)} ${String(context.job.posting ?? "")}`,
+    ),
   });
 };
 
@@ -124,15 +122,47 @@ function assertGrounded(values: string[], source: string, label: string) {
   if (keepGrounded(values, source).length !== values.length) throw new Error(`Generated ${label} contains an unsupported or ungrounded claim.`);
 }
 
+export function isInstructionShapedModelCopy(value: string) {
+  const text = value.trim();
+  return /^(prioritize|emphasize|retain|keep every|drop unrelated|order core skills|never invent)\b/i.test(text)
+    || /\b(retain every employer|keep every employer|drop unrelated bullets|order core skills|prioritize overlapping|emphasize overlapping)\b/i.test(text);
+}
+
 function assertNoDocumentMarkers(values: string[]) {
-  const forbidden = /requires human review|selected cv edits|acknowledged gaps|this editable draft|grounding disclaimer|verified profile facts|role emphasis|profile facts|target role|i am passionate about|i believe i would be a great fit|leverage my skills|hit the ground running|drive results|synergies/i;
-  if (values.some(value => forbidden.test(value))) throw new Error("Generated document contains an internal or generic phrase.");
+  const forbidden = /requires human review|selected cv edits|acknowledged gaps|this editable draft|grounding disclaimer|verified profile facts|role emphasis|profile facts|target role|i am passionate about|i believe i would be a great fit|leverage my skills|hit the ground running|drive results|synergies|retain every employer|keep every employer|drop unrelated bullets|order core skills|prioritize overlapping|emphasize overlapping/i;
+  if (values.some(value => forbidden.test(value) || isInstructionShapedModelCopy(value))) throw new Error("Generated document contains an internal or generic phrase.");
+}
+
+function compactFactText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function profileStringFields(profile: string) {
+  const fields: string[] = [profile];
+  try {
+    const walk = (value: unknown) => {
+      if (typeof value === "string") fields.push(value);
+      else if (Array.isArray(value)) for (const item of value) walk(item);
+      else if (value && typeof value === "object") for (const item of Object.values(value)) walk(item);
+    };
+    walk(JSON.parse(profile));
+  } catch { /* markdown or other non-JSON profile text */ }
+  return fields;
+}
+
+export function profileContainsFact(profile: string, fact: string) {
+  const needle = fact.trim();
+  if (!needle) return false;
+  if (profile.includes(needle)) return true;
+  const compactNeedle = compactFactText(needle);
+  return profileStringFields(profile).some((field) => field.includes(needle) || compactFactText(field).includes(compactNeedle));
 }
 
 function validateGenerationBusiness(value: GenerationOutput, profile: string, templateNames: string[], knownGaps: string[], jobContext = ""): GenerationOutput {
   if (!templateNames.includes(value.cvTemplate)) throw new Error("Generated output selected an unknown template.");
-  for (const fact of value.profileFacts) if (!profile.includes(fact)) throw new Error("Generated output contains an unsupported profile fact.");
+  if (value.profileFacts.some((fact) => !profileContainsFact(profile, fact))) throw new Error("Generated output contains an unsupported profile fact.");
   for (const gap of value.gaps) if (!knownGaps.includes(gap)) throw new Error("Generated output contains an unsupported gap.");
+  if ([...value.cvEdits, ...value.roleEmphasis].some(isInstructionShapedModelCopy)) throw new Error("Generated document contains an internal or generic phrase.");
   assertNoDocumentMarkers([...value.profileFacts, ...value.coverLetterParagraphs, ...value.coverLetterBullets, value.coverLetterSubject]);
   const source = `${profile}\n${jobContext}\n${knownGaps.join("\n")}`;
   assertGrounded([...value.roleEmphasis, ...value.coverLetterParagraphs, ...value.coverLetterBullets], source, "content");
@@ -213,15 +243,33 @@ function cvBullets(items: string[]) {
   return items.length ? `\\begin{itemize}[leftmargin=*,labelindent=0pt,labelsep=0.4em,itemindent=0pt,itemsep=0pt,topsep=1pt,parsep=0pt,partopsep=0pt]\n${items.map(item => `\\item ${latex(item)}`).join("\n")}\n\\end{itemize}` : "";
 }
 
-function experienceEntry(entry: StructuredProfile["experience"][number]) {
+const SHORT_EXPERIENCE_BULLET_CAP = 4;
+
+export function selectExperienceBullets(description: string, jobText: string, roleEmphasis: readonly string[], cvLength: GenerationDirection["cvLength"]) {
+  const bullets = splitDescriptionIntoBullets(description).map(item => item.trim()).filter(Boolean);
+  if (cvLength !== "short") return bullets;
+  const ranked = bullets.map((bullet, index) => ({ bullet, index, score: overlapScore(bullet, jobText, roleEmphasis) }));
+  const relevant = ranked.filter(item => item.score > 0).sort((left, right) => right.score - left.score || left.index - right.index);
+  return relevant.slice(0, SHORT_EXPERIENCE_BULLET_CAP).sort((left, right) => left.index - right.index).map(item => item.bullet);
+}
+
+function experienceEntry(entry: StructuredProfile["experience"][number], jobText = "", roleEmphasis: readonly string[] = [], cvLength: GenerationDirection["cvLength"] = "complete", extraBullets: readonly string[] = []) {
   if (!entry.title.trim() && !entry.company.trim() && !entry.description.trim()) return "";
   const title = entry.title.trim() || entry.company.trim();
   const company = entry.company.trim() && entry.title.trim() ? latex(entry.company) : "";
   const date = dateRange(entry);
+  const bullets = selectExperienceBullets(entry.description, jobText, roleEmphasis, cvLength);
+  const seen = new Set(bullets.map((bullet) => bullet.toLowerCase()));
+  for (const extra of extraBullets) {
+    const line = extra.trim();
+    if (!line || isInstructionShapedModelCopy(line) || seen.has(line.toLowerCase())) continue;
+    bullets.push(line);
+    seen.add(line.toLowerCase());
+  }
   return [
     "\\needspace{7\\baselineskip}",
     `\\cventry{${latex(date)}}{${latex(title)}}{${company}}{${latex(entry.location)}}{${latex(entry.employmentType)}}{%`,
-    cvBullets(splitDescriptionIntoBullets(entry.description)),
+    cvBullets(bullets),
     "}",
   ].join("\n");
 }
@@ -370,12 +418,53 @@ function headerCommands(profile: StructuredProfile | null, email = "", phone = "
   };
 }
 
-export function renderStructuredProfile(profile: StructuredProfile, jobText = "", roleEmphasis: readonly string[] = [], cvEdits: readonly string[] = []) {
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function mentionsCompany(text: string, company: string) {
+  const name = company.trim();
+  if (name.length < 4) return false;
+  return new RegExp(escapeRegExp(name), "i").test(text);
+}
+
+function assignCvEdits(experiences: StructuredProfile["experience"], edits: readonly string[]) {
+  const assigned = new Map<string, string[]>();
+  const leftover: string[] = [];
+  const push = (id: string, edit: string) => {
+    const current = assigned.get(id) ?? [];
+    current.push(edit);
+    assigned.set(id, current);
+  };
+  for (const edit of edits) {
+    const mentioned = experiences.filter((entry) => mentionsCompany(edit, entry.company));
+    if (mentioned.length === 1) {
+      push(mentioned[0]!.id, edit);
+      continue;
+    }
+    if (mentioned.length > 1) continue;
+    const scored = experiences.map((entry) => ({
+      entry,
+      score: overlapScore(edit, `${entry.company} ${entry.title} ${entry.description}`, []),
+    }));
+    scored.sort((left, right) => right.score - left.score);
+    const best = scored[0];
+    if (best && best.score > 0) push(best.entry.id, edit);
+    else leftover.push(edit);
+  }
+  return { assigned, leftover };
+}
+
+export function renderStructuredProfile(profile: StructuredProfile, jobText = "", roleEmphasis: readonly string[] = [], cvEdits: readonly string[] = [], cvLength: GenerationDirection["cvLength"] = "complete") {
   const experiences = profile.experience.filter(entry => entry.title.trim() || entry.company.trim() || entry.description.trim());
   const skills = selectRelevantSkills(profile.skills, jobText, roleEmphasis).map(entry => latex(entry.name.trim())).join(", ");
   const projects = selectRelevantProjects(profile.projects, jobText, roleEmphasis);
-  const groundedEdits = keepGrounded(cvEdits, `${JSON.stringify(profile)}\n${jobText}`);
-  const experienceBody = [experiences.map(experienceEntry).filter(Boolean).join("\n"), cvBullets(groundedEdits)].filter(Boolean).join("\n");
+  const groundedEdits = keepGrounded(cvEdits, `${JSON.stringify(profile)}\n${jobText}`).filter((edit) => !isInstructionShapedModelCopy(edit));
+  const { assigned, leftover } = assignCvEdits(experiences, groundedEdits);
+  const experienceBody = [
+    experiences.map(entry => experienceEntry(entry, jobText, roleEmphasis, cvLength, assigned.get(entry.id) ?? [])).filter(Boolean).join("\n"),
+    leftover.map((edit) => `\\cvitem{}{${latex(edit)}}`).join("\n"),
+  ].filter(Boolean).join("\n");
   return {
     ...headerCommands(profile),
     SUMMARY_SECTION: cvSection("Professional Summary", latex(profile.identity.summary)),
@@ -443,10 +532,18 @@ export function filterComplementaryBullets(bullets: readonly string[], paragraph
   return accepted;
 }
 
-export function letterBullets(output: Pick<GenerationOutput, "coverLetterBullets">, paragraphs: readonly string[]) {
-  // ponytail: cap provider bullets at three to keep the validated letter within one page.
-  const bullets = filterComplementaryBullets(output.coverLetterBullets, paragraphs).slice(0, 3);
-  return bullets.length ? `\\begin{itemize}[leftmargin=1.15em,itemsep=2pt,topsep=2pt,parsep=0pt,partopsep=0pt]\n${bullets.map(value => `\\item ${latex(value)}`).join("\n")}\n\\end{itemize}` : "";
+export function letterBullets(output: Pick<GenerationOutput, "coverLetterBullets">, paragraphs: readonly string[], jobText = "", roleEmphasis: readonly string[] = [], cvLength: GenerationDirection["cvLength"] = "complete") {
+  const complementary = filterComplementaryBullets(output.coverLetterBullets, paragraphs);
+  const selected = cvLength === "short" && jobText.trim()
+    ? complementary
+      .map((bullet, index) => ({ bullet, index, score: overlapScore(bullet, jobText, roleEmphasis) }))
+      .filter(item => item.score > 0)
+      .sort((left, right) => right.score - left.score || left.index - right.index)
+      .slice(0, 3)
+      .sort((left, right) => left.index - right.index)
+      .map(item => item.bullet)
+    : complementary.slice(0, 3);
+  return selected.length ? `\\begin{itemize}[leftmargin=1.15em,itemsep=2pt,topsep=2pt,parsep=0pt,partopsep=0pt]\n${selected.map(value => `\\item ${latex(value)}`).join("\n")}\n\\end{itemize}` : "";
 }
 
 async function archiveCurrent(appDir: string, currentDir: string, stamp: string) {
@@ -517,7 +614,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const role = String(job.role);
   const company = String(job.company);
   const paragraphs = letterParagraphValues(output, structured, role, company);
-  const profileReplacements = structured ? renderStructuredProfile(structured, `${role} ${String(job.posting)}`, output.roleEmphasis, output.cvEdits) : renderLegacyProfile(output, email, phone);
+  const profileReplacements = structured ? renderStructuredProfile(structured, `${role} ${String(job.posting)}`, output.roleEmphasis, output.cvEdits, direction.cvLength) : renderLegacyProfile(output, email, phone);
   const location = structured ? [structured.identity.city, structured.identity.country].filter(value => value.trim()).join(", ") : "";
   const replacements = {
     ...profileReplacements,
@@ -528,7 +625,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     SUBJECT: latex(output.coverLetterSubject || `Application for ${role} at ${company}`),
     SALUTATION: `Dear ${latex(company)} hiring team,`,
     PARAGRAPHS: paragraphs.map(latex).join("\\par\n"),
-    BULLETS: letterBullets(output, paragraphs),
+    BULLETS: letterBullets(output, paragraphs, `${role} ${String(job.posting)}`, output.roleEmphasis, direction.cvLength),
     CLOSING: coverLetterClosing(paragraphs, role, company),
   };
   const cv = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, info.file), "utf8"), replacements), direction.revisionNotes, options.profile);

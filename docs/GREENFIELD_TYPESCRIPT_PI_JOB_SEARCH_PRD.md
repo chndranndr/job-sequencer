@@ -387,7 +387,7 @@ For existing jobs:
 - preserve Selected, Drafting, Ready, Applied, Interview, Offer, and Rejected stages;
 - Recommended and Discarded may be recalculated.
 
-If the final AI JSON is invalid, attempt one same-provider repair. If it still fails, persist nothing from that run.
+If the final AI JSON is invalid, attempt one same-provider repair. This applies to scrape, generate, profile import, and manual job parse. Extract a JSON object from mixed model text before schema validation. If the repair is still invalid, persist nothing from that run.
 
 ## 10. Jobs dashboard
 
@@ -531,7 +531,7 @@ Minimal metadata:
    - CV edits;
    - cover-letter content.
 4. Pi returns structured content with no tools.
-5. Backend validates output.
+5. Backend validates output. Invalid JSON or failed business validation is sent back to the same provider once with the validator error. A second failure fails the run and persists nothing.
 6. Backend copies the chosen CV template into the job directory.
 7. Backend applies supported replacements.
 8. Backend writes cover-letter source.
@@ -545,6 +545,7 @@ There is no separate planning approval screen in MVP. The final source and PDFs 
 
 - Pi must use only information in the canonical structured `profile.json` and stored job/fit data.
 - Pi must acknowledge genuine gaps instead of inventing support.
+- Experience bullets on the compiled CV come from that role's profile description. A `cvEdits` line attaches only to the matching employer. Planning instructions in model JSON are invalid output, not CV text.
 - The user reviews final documents before approval.
 - A profile-fact database is not required for MVP.
 
@@ -699,6 +700,8 @@ The dashboard may show due follow-ups. No background email, notification service
 |---|---|---|
 | Scrape + rank | Disabled | `searchJobs`, `fetchJobDetails` |
 | Generate documents | Disabled | None |
+| Profile import | Disabled | None |
+| Manual job parse | Disabled | None |
 | Interview chat | Disabled | None |
 | Follow-up draft | Disabled | None |
 | Test connection | Disabled | None |
@@ -758,6 +761,8 @@ Allow one active Pi run at a time.
 ```
 
 The UI disables other AI buttons while a run is active.
+
+JSON workflows (scrape, generate, profile import, manual job parse) share one repair loop. The backend extracts a JSON object from the model text, validates schema and business rules, and on failure sends the prior output plus the validator error back to the same provider once. Interview chat, follow-up draft, and test connection stay free-form text and do not use that loop.
 
 ### Provider switching
 
@@ -1167,7 +1172,7 @@ Exit:
 | Provider/auth unavailable | Show error; user changes settings or retries |
 | Pi timeout | Abort, dispose, mark timed out |
 | User cancel | Abort, dispose, no retry |
-| Invalid AI JSON | Repair once, then fail without persistence |
+| Invalid AI JSON | Repair once across scrape, generate, profile import, and manual job parse, then fail without persistence |
 | Unknown tool result ID | Reject entire scrape output |
 | Duplicate URL | Update score/posting; preserve advanced stage |
 | Document compile failure | Keep Drafting |

@@ -11,7 +11,15 @@
 .pe-btn-primary { color: #fff; border-color: var(--ink, #ececf4); background: var(--ink, #ececf4); }
 .pe-btn-signal { border-color: var(--signal, var(--phos, #6dff9a)); background: var(--signal, var(--phos, #6dff9a)); color: var(--ink, #07140c); }
 .pe-btn-ghost { border-color: transparent; background: transparent; color: var(--ink-muted, var(--mute, #8b8b9a)); }
+.pe-btn-danger { border-color: var(--danger, var(--fail, #ff4d6d)); background: var(--danger, var(--fail, #ff4d6d)); color: #fff; }
 
+.pe-import-tasks { display: grid; gap: 8px; margin-top: 10px; }
+.pe-import-task-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.pe-import-task { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; padding: 6px 8px; border: 1px solid var(--line, #2c2c3a); font-size: 12px; }
+.pe-import-task small { color: var(--ink-muted, var(--mute, #8b8b9a)); }
+.pe-import-task--active { border-color: var(--signal, var(--phos, #6dff9a)); }
+.pe-import-task--completed { opacity: .85; }
+.pe-import-task--failed { border-color: var(--danger, var(--fail, #ff4d6d)); }
 .pe-save-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding: 8px 10px; border: 1px solid var(--line, #2c2c3a); background: var(--surface-subtle, var(--well, #16161f)); }
 .pe-save-bar > div { display: flex; gap: 6px; flex-wrap: wrap; }
 .pe-dirty { display: inline-block; margin-left: 6px; padding: 2px 5px; font-size: 9px; letter-spacing: .06em; background: var(--signal, var(--phos, #6dff9a)); color: var(--ink, #07140c); }
@@ -35,6 +43,7 @@
 .pe-entry-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line, #2c2c3a); }
 .pe-entry-copy strong, .pe-entry-copy span, .pe-entry-copy p { display: block; }
 .pe-entry-copy span, .pe-entry-copy p { margin-top: 3px; color: var(--ink-muted, var(--mute, #8b8b9a)); font-size: 12px; }
+.pe-entry-copy p { white-space: pre-wrap; }
 .pe-entry-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 4px; }
 .pe-repeatable-filter { max-width: 280px; margin-bottom: 10px; }
 

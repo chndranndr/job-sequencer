@@ -27,14 +27,24 @@ test("valid JSON succeeds on the first structured attempt", async () => {
   assert.equal(prompts.length, 1);
 });
 
-test("JSON code fences are normalized before validation", async () => {
+test("JSON wrapped in model prose is extracted before validation", async () => {
   const result = await runStructured({
     prompt: "Return JSON.",
     schema: OutputSchema,
-    execute: async () => '```json\n{"value":"fenced"}\n```',
+    execute: async () => 'Here is the payload:\n{"value":"extracted"}\nThanks.',
   });
+  assert.deepEqual(result, { value: "extracted" });
+});
 
-  assert.deepEqual(result, { value: "fenced" });
+test("prose wrapping on the first attempt still repairs when the extract is invalid", async () => {
+  const prompts: string[] = [];
+  const result = await runStructured({
+    prompt: "Return a value.",
+    schema: OutputSchema,
+    execute: queuedExecutor(["Sure:\n{\"other\":\"wrong\"}\n", '{"value":"repaired"}'], prompts),
+  });
+  assert.deepEqual(result, { value: "repaired" });
+  assert.equal(prompts.length, 2);
 });
 
 test("malformed JSON triggers a repair attempt with the prior output", async () => {

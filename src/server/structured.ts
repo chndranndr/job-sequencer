@@ -11,7 +11,7 @@ export type StructuredRunOptions<T> = {
   signal?: AbortSignal;
   trajectory?: TrajectoryRecorder;
   runId?: string;
-  validateBusiness?: (value: T) => void;
+  validateBusiness?: (value: T) => T | void;
 };
 
 export class StructuredOutputError extends Error {
@@ -41,6 +41,18 @@ export function stripJsonCodeFence(value: string) {
   const trimmed = value.trim();
   const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
   return (match?.[1] ?? trimmed).trim();
+}
+
+export function parseModelJson(value: string): unknown {
+  const fenced = stripJsonCodeFence(value);
+  try {
+    return JSON.parse(fenced) as unknown;
+  } catch (directError) {
+    const start = fenced.indexOf("{");
+    const end = fenced.lastIndexOf("}");
+    if (start < 0 || end <= start) throw directError instanceof SyntaxError ? directError : new SyntaxError("Model output contained no JSON object.");
+    return JSON.parse(fenced.slice(start, end + 1)) as unknown;
+  }
 }
 
 function parseWithSchema<T>(schema: StructuredSchema<T>, value: unknown) {
@@ -79,9 +91,10 @@ export async function runStructured<T>(options: StructuredRunOptions<T>): Promis
     throwIfAborted(options.signal);
 
     try {
-      const parsed: unknown = JSON.parse(stripJsonCodeFence(raw));
-      const value = parseWithSchema(options.schema, parsed);
-      options.validateBusiness?.(value);
+      const parsed: unknown = parseModelJson(raw);
+      let value = parseWithSchema(options.schema, parsed);
+      const next = options.validateBusiness?.(value);
+      if (next !== undefined) value = next;
       record(options.trajectory, options.runId, {
         kind: "lifecycle",
         type: "structured_output_valid",

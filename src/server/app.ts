@@ -60,10 +60,10 @@ import {
   type InterviewDocumentContext,
   type InterviewExecutor,
 } from "./interview.js";
-import { type FollowUpContext, type InterviewMessage } from "../shared.js";
+import { type FollowUpContext, type InterviewMessage, type StructuredProfile } from "../shared.js";
 import { createRestrictedGenerationSession, getAvailablePiModels, runBoundedPi, type PiModelOption } from "./pi.js";
 import { InterviewSessionPool, type InterviewSessionFactory } from "./interview-sessions.js";
-import { importResumeProfile, MAX_PROFILE_UPLOAD_BYTES, type ProfileImportFile, type ProfileImportResult } from "./profile-import.js";
+import { MAX_PROFILE_UPLOAD_BYTES, ProfileImportRunManager, type ProfileImporter } from "./profile-import.js";
 import { importManualJob, ManualJobRunManager, MAX_MANUAL_INPUT_LENGTH, type ManualJobImporter } from "./manual-job.js";
 import { RunCoordinator } from "./coordinator.js";
 
@@ -78,7 +78,7 @@ export interface ServerOptions {
   commandRunner?: CommandRunner;
   documentStatusRunner?: CommandRunner;
   availableModels?: (provider: string) => Promise<readonly PiModelOption[]>;
-  profileImporter?: (file: ProfileImportFile, settings: Awaited<ReturnType<typeof readSettings>>) => Promise<ProfileImportResult>;
+  profileImporter?: ProfileImporter;
   manualImporter?: ManualJobImporter;
   projectRoot?: string;
 }
@@ -112,7 +112,7 @@ async function readInterviewDocuments(dataDir: string, jobId: string): Promise<I
 
 export async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: MAX_PROFILE_UPLOAD_BYTES + 1_048_576 });
-  await app.register(multipart, { limits: { fileSize: MAX_PROFILE_UPLOAD_BYTES, files: 1, fields: 0, parts: 1 } });
+  await app.register(multipart, { limits: { fileSize: MAX_PROFILE_UPLOAD_BYTES, files: 1, fields: 1, parts: 2 } });
   const dataDir = options.dataDir ?? join(process.cwd(), "data");
   const db = options.db ?? (await import("./db.js")).openDatabase(join(dataDir, "jobs.sqlite3"));
   const ownsDb = !options.db;
@@ -147,6 +147,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   let interview!: TaskRunManager;
   let followUp!: TaskRunManager;
   let manual!: ManualJobRunManager;
+  let profileImport!: ProfileImportRunManager;
   // Live interviewer text per run, consumed by the SSE stream endpoint. At most
   // one interview run is active at a time; finished entries are pruned on the next start.
   const interviewStreams = new Map<string, { jobId: string; text: string; done: boolean }>();
@@ -161,6 +162,13 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       catch { throw Object.assign(new Error("Review and save a structured profile before adding a job."), { statusCode: 409 }); }
       return { profile, criteria: await readCriteria(dataDir), settings };
     },
+    coordinator,
+  });
+  profileImport = new ProfileImportRunManager({
+    db,
+    importer: options.profileImporter,
+    trajectory,
+    load: async () => ({ settings: await readSettings(dataDir) }),
     coordinator,
   });
   generation = new GenerationRunManager({
@@ -291,12 +299,27 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const profile = typeof value === "string" ? await writeLegacyCompatibilityProfile(dataDir, value) : await writeStructuredProfile(dataDir, ProfileSchema.parse(value));
     return { profile, canonical: true, legacyImportAvailable: Boolean(await readLegacyProfile(dataDir)) };
   });
-  app.post("/api/profile/import", async (req) => {
-    const file = await req.file();
-    if (!file || file.fieldname !== "file") throw Object.assign(new Error("Upload one PDF, DOC, or DOCX file in the file field."), { statusCode: 400 });
-    const settings = await readSettings(dataDir);
-    const importer = options.profileImporter ?? importResumeProfile;
-    return importer({ filename: file.filename, mimetype: file.mimetype, buffer: await file.toBuffer() }, settings);
+  app.post("/api/profile/import", async (req, reply) => {
+    let upload: { filename: string; mimetype: string; buffer: Buffer } | undefined;
+    let currentProfileRaw: string | undefined;
+    for await (const part of req.parts()) {
+      if (part.type === "file") {
+        if (part.fieldname !== "file") throw Object.assign(new Error("Upload one PDF, DOC, or DOCX file in the file field."), { statusCode: 400 });
+        if (upload) throw Object.assign(new Error("Upload exactly one resume/CV file."), { statusCode: 400 });
+        upload = { filename: part.filename, mimetype: part.mimetype, buffer: await part.toBuffer() };
+        continue;
+      }
+      if (part.fieldname === "currentProfile") {
+        currentProfileRaw = typeof part.value === "string" ? part.value : String(part.value);
+      }
+    }
+    if (!upload) throw Object.assign(new Error("Upload one PDF, DOC, or DOCX file in the file field."), { statusCode: 400 });
+    let currentProfile: StructuredProfile | null = null;
+    if (currentProfileRaw?.trim()) {
+      try { currentProfile = ProfileSchema.parse(JSON.parse(currentProfileRaw)) as StructuredProfile; }
+      catch { throw Object.assign(new Error("currentProfile must be valid structured profile JSON."), { statusCode: 400 }); }
+    }
+    return reply.code(202).send({ runId: await profileImport.start(upload, currentProfile, requestIdempotencyKey(req)) });
   });
   app.get("/api/profile/export", async (req) => {
     const purpose = z.enum(["preview", "scrape", "generation", "interview", "follow_up"]).parse((req.query as { purpose?: string }).purpose ?? "preview");

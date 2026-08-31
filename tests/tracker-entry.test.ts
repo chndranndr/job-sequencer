@@ -182,6 +182,19 @@ test("DISK fine-tune sidebar stays collapsible and resizable", () => {
   assert.match(studio, /\.disk-tune-panel\.is-collapsed/);
 });
 
+test("DISK ARMED SOURCES keeps MAX age out of the name column", () => {
+  const disk = readFileSync(new URL("../src/tracker/disk.tsx", import.meta.url), "utf8");
+  const studio = readFileSync(new URL("../src/tracker/studio.css", import.meta.url), "utf8");
+
+  assert.match(disk, /className="disk-source__name"/);
+  assert.match(studio, /\.disk-source \{[\s\S]*?position:\s*relative;/);
+  assert.match(studio, /\.disk-source \{[\s\S]*?grid-template-columns:\s*8px minmax\(0, 1fr\) auto;/);
+  assert.match(studio, /\.disk-source__name \{[\s\S]*?min-width:\s*0;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.match(studio, /\.studio \.disk-tune \.pe-two \{ grid-template-columns: 1fr; \}/);
+  assert.doesNotMatch(studio, /\.disk-source__age \{ grid-column: 3;/);
+  assert.match(studio, /\.disk-source__age \{ grid-column: 2;/);
+});
+
 test("Tracker AGENT panel stays collapsible and resizable", () => {
   const agent = readFileSync(new URL("../src/tracker/agent.tsx", import.meta.url), "utf8");
   const studio = readFileSync(new URL("../src/tracker/studio.css", import.meta.url), "utf8");
@@ -243,10 +256,22 @@ test("Tracker collapse toggles use symbols and ORDER rows keep a slim meta summa
 
 test("DISK bank A hosts resume import and LOAD bank is gone", () => {
   const disk = readFileSync(new URL("../src/tracker/disk.tsx", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../src/tracker/App.tsx", import.meta.url), "utf8");
+  const editor = readFileSync(new URL("../src/profile-editor.tsx", import.meta.url), "utf8");
+  const trace = readFileSync(new URL("../src/tracker/trace.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(disk, /id: "load"/);
+  assert.match(disk, /ResumeImportPanel/);
+  assert.match(disk, /workflow: "profile_import"/);
+  assert.match(disk, /IdentityConflictDialog/);
+  assert.match(disk, /processedImportRunId/);
+  assert.match(app, /DiskView toast=\{setToast\} onSettings=\{setSettings\} run=\{run\} events=\{events\} onRun=\{announce\}/);
+  assert.match(editor, /deriveRunTaskRows\(events, "profile_import"/);
+  assert.match(trace, /workflow === "profile_import"\) return "PROFILE IMPORT"/);
   assert.doesNotMatch(disk, /label: "LOAD"/);
   assert.doesNotMatch(disk, /bank === "load"/);
   assert.match(disk, /useState<DiskBankId>\("a"\)/);
+  assert.match(app, /coalesceObservedRun/);
+  assert.match(disk, /setBank\("b"\)/);
   const bankA = disk.slice(disk.indexOf('{bank === "a"'));
   const importAt = bankA.indexOf("ResumeImportPanel");
   const fieldsAt = bankA.indexOf("ProfileFields");

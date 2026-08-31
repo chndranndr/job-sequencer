@@ -32,12 +32,48 @@ test("available model endpoint returns provider-authenticated Pi model options",
   finally { await app.close(); db.close(); }
 });
 
-test("profile import accepts a resume upload and returns a parsed profile preview", async()=>{
-  const db=openDatabase(":memory:"); const parsed=createEmptyProfile(); parsed.identity.firstName="Candidate"; let receivedName=""; let receivedType=""; let receivedText="";
-  const app=await buildServer({db,profileImporter:async file=>{receivedName=file.filename;receivedType=file.mimetype;receivedText=file.buffer.toString("utf8");return{profile:parsed,source:{fileName:file.filename,format:"pdf",textLength:receivedText.length}};}});
-  const boundary="----pjs-test-boundary"; const payload=Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="resume.pdf"\r\nContent-Type: application/pdf\r\n\r\nResume text from upload\r\n--${boundary}--\r\n`);
-  try { const response=await app.inject({method:"POST",url:"/api/profile/import",headers:{"content-type":`multipart/form-data; boundary=${boundary}`},payload}); assert.equal(response.statusCode,200); assert.deepEqual(response.json(),{profile:parsed,source:{fileName:"resume.pdf",format:"pdf",textLength:receivedText.length}}); assert.equal(receivedName,"resume.pdf"); assert.equal(receivedType,"application/pdf"); assert.equal(receivedText,"Resume text from upload"); }
-  finally { await app.close(); db.close(); }
+test("profile import enqueues a run and returns the draft in the run summary", async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"pjs-import-")); const db=openDatabase(":memory:");
+  const parsed=createEmptyProfile(); parsed.identity.firstName="Candidate";
+  let receivedName=""; let receivedType=""; let receivedText=""; let receivedCurrent="";
+  const app=await buildServer({
+    dataDir:dir,
+    db,
+    profileImporter:async (file, _settings, options)=>{
+      receivedName=file.filename;
+      receivedType=file.mimetype;
+      receivedText=file.buffer.toString("utf8");
+      receivedCurrent=options?.currentProfile?.identity.firstName ?? "";
+      return {
+        profile:parsed,
+        extracted:parsed,
+        source:{fileName:file.filename,format:"pdf",textLength:receivedText.length},
+        identity:{conflict:false,currentName:"",incomingName:"Candidate",reason:""},
+      };
+    },
+  });
+  const boundary="----pjs-test-boundary";
+  const currentProfile=JSON.stringify({...createEmptyProfile(),identity:{...createEmptyProfile().identity,firstName:"Draft"}});
+  const payload=Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="resume.pdf"\r\nContent-Type: application/pdf\r\n\r\nResume text from upload\r\n`+
+    `--${boundary}\r\nContent-Disposition: form-data; name="currentProfile"\r\n\r\n${currentProfile}\r\n`+
+    `--${boundary}--\r\n`
+  );
+  try {
+    assert.equal((await app.inject({method:"PUT",url:"/api/settings",payload:{provider:"fixture",model:"test",source:"freehire",enabledSources:["freehire"],scoreThreshold:60,maxResults:50,cvPages:2,coverLetterPages:1}})).statusCode,200);
+    const response=await app.inject({method:"POST",url:"/api/profile/import",headers:{"content-type":`multipart/form-data; boundary=${boundary}`},payload});
+    assert.equal(response.statusCode,202);
+    assert.equal(typeof response.json().runId,"string");
+    const done=await wait(app,response.json().runId);
+    assert.equal(done.status,"succeeded");
+    assert.equal(done.workflow,"profile_import");
+    assert.deepEqual(done.summary.profile,parsed);
+    assert.equal(done.summary.identity.conflict,false);
+    assert.equal(receivedName,"resume.pdf");
+    assert.equal(receivedType,"application/pdf");
+    assert.equal(receivedText,"Resume text from upload");
+    assert.equal(receivedCurrent,"Draft");
+  } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
 });
 
 test("cancelled runs persist no jobs and expose safe errors",async()=>{

@@ -231,7 +231,9 @@ export function createRunSyncChannel(onMessage: (message: RunSyncMessage) => voi
 }
 
 function workflowLabel(workflow: RunWorkflow) {
-  return workflow === "follow_up" ? "FOLLOW-UP" : workflow.toUpperCase();
+  if (workflow === "follow_up") return "FOLLOW-UP";
+  if (workflow === "profile_import") return "PROFILE IMPORT";
+  return workflow.toUpperCase();
 }
 
 function eventTime(value: string) {

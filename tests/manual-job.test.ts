@@ -81,6 +81,24 @@ test("manual Pi parsing is strict, profile-grounded, scored, and preserves the f
   }), /could not be validated/i);
 });
 
+test("manual Pi parsing repairs invalid JSON on a second attempt", async () => {
+  const prompts: string[] = [];
+  let calls = 0;
+  const result = await parseManualJobText("Example Co\nBackend Engineer\nBuild reliable APIs.", settings, {
+    profile: profileContext,
+    criteria: criteriaContext,
+    sourceUrls: ["https://jobs.example.test/backend"],
+    createSession: async () => {
+      calls += 1;
+      if (calls === 1) return new FakeSession("Sure, here is the job.\nnot json", (prompt) => prompts.push(prompt));
+      return new FakeSession(parsedJob({ sourceUrl: "https://jobs.example.test/backend" }), (prompt) => prompts.push(prompt));
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.company, "Example Co");
+  assert.match(prompts[1] ?? "", /prior output failed validation/i);
+});
+
 test("manual import does not fetch pasted text and uses a synthetic URL", async () => {
   let fetchCalls = 0;
   const result = await importManualJob("https://jobs.example.test/backend\nExample Co\nBackend Engineer\nBuild APIs.", settings, {

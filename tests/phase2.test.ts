@@ -71,7 +71,7 @@ test("structured profile generation renders a usable CV and cover letter", async
   const experience = structured.experience.find(entry => entry.title || entry.company || entry.description);
   const skill = structured.skills.find(entry => entry.name);
   if (!experience || !skill) throw new Error("Canonical profile fixture needs experience and skills.");
-  const profileFact = structured.identity.summary || experience.description || skill.name;
+  const profileFact = skill.name;
   const runner: CommandRunner = async (executable, args, _timeout, cwd) => {
     if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "pdf");
     if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "pdf");
