@@ -11,9 +11,11 @@ import { defaultSettings } from "../src/server/config.js";
 import { generateJob, buildGenerationPrompt, validateGenerationOutput } from "../src/server/generation.js";
 import { loadTemplateMetadata, selectCvTemplate, TemplateMetadataSchema } from "../src/server/templates.js";
 import { createFauxRestrictedGenerationSession } from "../src/server/pi.js";
-import { defaultGenerationDirection, type StructuredProfile } from "../src/shared.js";
-import type { ApplicationStrategy } from "../src/server/agents/types.js";
+import { defaultGenerationDirection, createEmptyProfile } from "../src/shared.js";
+import type { ApplicationStrategy, CVDocument } from "../src/server/agents/types.js";
+import { splitDescriptionIntoBullets } from "../src/server/agents/evidence.js";
 import type { RunStrategistInput } from "../src/server/agents/strategist.js";
+import type { RunWriterInput } from "../src/server/agents/writer.js";
 
 function insertJob(db: any, stage = "Selected", suffix = "1") {
   const id = randomUUID();
@@ -44,6 +46,40 @@ async function stubStrategist(input: RunStrategistInput): Promise<ApplicationStr
     deEmphasize: [],
     genuineGaps: ["Kubernetes"],
     rankDisagreements: [],
+  };
+}
+
+async function stubWriter(input: RunWriterInput): Promise<CVDocument> {
+  const fallback = input.context.evidenceBank.items[0]?.ref;
+  if (!fallback) throw new Error("stub writer needs at least one evidence item");
+  const refsFor = (entityId: string, kind: string) =>
+    input.context.evidenceBank.items.filter(item => item.source.entityId === entityId && item.kind === kind).map(item => item.ref);
+  const summaryRefs = refsFor("identity", "identity");
+  return {
+    summary: { text: input.strategy.positioning, evidenceRefs: summaryRefs.length ? summaryRefs : [fallback] },
+    experiences: input.profile.experience
+      .filter(entry => entry.title.trim() || entry.company.trim() || entry.description.trim())
+      .map(entry => {
+        const evidence = refsFor(entry.id, "experience");
+        const lines = splitDescriptionIntoBullets(entry.description).map(item => item.trim()).filter(Boolean);
+        const bullets = lines.length ? lines : ["Delivered production work."];
+        return {
+          experienceId: entry.id,
+          bullets: bullets.map((text, index) => ({
+            text,
+            evidenceRefs: evidence[index] ? [evidence[index]!] : evidence[0] ? [evidence[0]] : [fallback],
+            transformation: "rewrite" as const,
+          })),
+        };
+      }),
+    skillIds: input.profile.skills.filter(entry => entry.name.trim()).map(entry => entry.id),
+    projects: input.profile.projects
+      .filter(entry => entry.name.trim() || entry.role.trim() || entry.description.trim())
+      .map(entry => ({ projectId: entry.id })),
+    coverLetter: {
+      subject: `Application for ${input.strategy.targetRole}`,
+      paragraphs: [{ text: input.strategy.narrativeGuidance[0] ?? input.strategy.positioning, evidenceRefs: [fallback] }],
+    },
   };
 }
 const fakeRunner: CommandRunner = async (executable, args, _timeout, cwd) => {
@@ -83,12 +119,37 @@ test("structured profile generation renders a usable CV and cover letter", async
   const dir = await mkdtemp(join(tmpdir(), "pjs-structured-generation-"));
   const db = openDatabase(":memory:");
   const jobId = insertJob(db);
-  const profileText = await readFile(join(process.cwd(), "data/profile.json"), "utf8");
-  const structured = JSON.parse(profileText) as StructuredProfile;
-  const experience = structured.experience.find(entry => entry.title || entry.company || entry.description);
-  const skill = structured.skills.find(entry => entry.name);
-  if (!experience || !skill) throw new Error("Canonical profile fixture needs experience and skills.");
-  const profileFact = skill.name;
+  const structured = createEmptyProfile();
+  Object.assign(structured.identity, {
+    firstName: "Ada",
+    lastName: "Lovelace",
+    headline: "Backend Engineer",
+    email: "ada@example.test",
+    phone: "+1 555 0100",
+    city: "London",
+    country: "United Kingdom",
+    summary: "Backend engineer focused on Java platforms.",
+  });
+  structured.experience = [{
+    id: "exp-aetherwave",
+    title: "Backend Engineer",
+    company: "Aetherwave Robotics Ltd",
+    employmentType: "Full-time",
+    location: "Remote",
+    startMonth: "",
+    startYear: "2024",
+    endMonth: "",
+    endYear: "",
+    currentRole: true,
+    description: "Built Java services.",
+  }];
+  structured.skills = [{ id: "skill-java", name: "Java" }];
+  structured.projects = [{ id: "proj-api", name: "Backend API Platform", role: "Backend Engineer", description: "Built Java Spring Boot services.", startMonth: "", startYear: "", endMonth: "", endYear: "", url: "" }];
+  structured.education = [{ id: "edu-1", institution: "Canonical University", degree: "Bachelor of Science", fieldOfStudy: "Computer Science", startMonth: "", startYear: "2012", endMonth: "", endYear: "2016", gpa: "" }];
+  structured.certifications = [{ id: "cert-1", name: "AWS Certified", issuer: "Amazon", issueDate: "", expiryDate: "", url: "", description: "" }];
+  structured.languages = [{ id: "lang-en", name: "English", proficiency: "Native" }];
+  const profileText = JSON.stringify(structured);
+  const experience = structured.experience[0]!;
   const runner: CommandRunner = async (executable, args, _timeout, cwd) => {
     if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "pdf");
     if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "pdf");
@@ -103,20 +164,15 @@ test("structured profile generation renders a usable CV and cover letter", async
       jobId,
       settings: defaultSettings,
       profile: profileText,
-      execute: async () => ({
-        cvTemplate: "backend_java_spring",
-        profileFacts: [profileFact],
-        roleEmphasis: [skill.name],
-        cvEdits: [skill.name],
-        coverLetterParagraphs: [`Engineer at Example needs ${skill.name}.`, experience.description, `I would bring ${skill.name} to this role.`],
-        coverLetterBullets: [experience.description],
-        gaps: [],
-      }),
+      execute: async () => {
+        throw new Error("structured generate must not call execute");
+      },
       runner,
       signal: new AbortController().signal,
       now: "2026-08-14T12:00:00.000Z",
       runId: "phase2-structured",
       strategist: stubStrategist,
+      writer: stubWriter,
     });
     const currentDir = join(dir, "applications", jobId, "current");
     const strategyText = await readFile(join(dir, "applications", jobId, "revisions", "phase2-structured", "strategy.json"), "utf8");
@@ -137,6 +193,7 @@ test("structured profile generation renders a usable CV and cover letter", async
     assert.match(cv, literal(`\\name{${structured.identity.firstName}}{${structured.identity.lastName}}`));
     assert.match(cv, literal(experience.title.replace(/&/g, "\\&")));
     assert.match(cv, literal(experience.company));
+    assert.match(cv, /\\cventry\{2024 - Present\}\{Backend Engineer\}\{Aetherwave Robotics Ltd\}/);
     assert.match(letter, /Subject:/);
     assert.match(letter, /Dear Example hiring team/);
     assert.match(letter, /Kind regards/);
@@ -155,8 +212,7 @@ test("generate is Selected-only, sequential, keeps Drafting, archives, approves,
   const first = insertJob(db, "Selected", "1");
   const second = insertJob(db, "Selected", "2");
   const recommended = insertJob(db, "Recommended", "3");
-  const order: string[] = [];
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async context => { order.push(String(context.job.id)); return { cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }; }, strategist: stubStrategist });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const rejected = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [recommended] } });
@@ -164,8 +220,9 @@ test("generate is Selected-only, sequential, keeps Drafting, archives, approves,
     assert.equal((db.prepare("SELECT stage FROM jobs WHERE id=?").get(recommended) as any).stage, "Recommended");
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [first, second] } });
     assert.equal(start.statusCode, 202);
-    assert.equal((await wait(app, start.json().runId)).status, "succeeded");
-    assert.deepEqual(order, [first, second]);
+    const done = await wait(app, start.json().runId);
+    assert.equal(done.status, "succeeded");
+    assert.deepEqual(done.summary.results.map((result: { jobId: string }) => result.jobId), [first, second]);
     for (const id of [first, second]) assert.equal((db.prepare("SELECT stage FROM jobs WHERE id=?").get(id) as any).stage, "Drafting");
     const detail = (await app.inject({ url: `/api/jobs/${first}` })).json();
     assert.equal(detail.verification.success, true);
@@ -205,7 +262,7 @@ test("busy generation queues the next job", async () => {
   const second = insertJob(db, "Selected", "busy-2");
   let release: () => void = () => {};
   const blocked = new Promise<void>(resolve => { release = () => resolve(); });
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => { await blocked; return { cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }; }, strategist: stubStrategist });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: async input => { await blocked; return stubWriter(input); } });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [first] } });
@@ -222,7 +279,7 @@ test("compile failure remains Drafting and cannot approve", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-faildoc-"));
   const db = openDatabase(":memory:");
   const id = insertJob(db);
-  const app = await buildServer({ dataDir: dir, db, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: [] }), commandRunner: async () => ({ code: 1, stdout: "", stderr: "secret compiler detail" }), strategist: stubStrategist });
+  const app = await buildServer({ dataDir: dir, db, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: [] }), commandRunner: async () => ({ code: 1, stdout: "", stderr: "secret compiler detail" }), strategist: stubStrategist, writer: stubWriter });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const run = (await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } })).json();
@@ -252,7 +309,7 @@ test("Ready regenerate returns 202 then Drafting with approved_at null", async (
   const dir = await mkdtemp(join(tmpdir(), "pjs-ready-regen-"));
   const db = openDatabase(":memory:");
   const id = insertJob(db, "Selected", "ready-regen");
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } });
@@ -276,7 +333,7 @@ test("third regenerate after two successful revises is 409 naming the cap", asyn
   const dir = await mkdtemp(join(tmpdir(), "pjs-rev-cap-"));
   const db = openDatabase(":memory:");
   const id = insertJob(db, "Selected", "cap");
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } });

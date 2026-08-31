@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createEmptyProfile, defaultGenerationDirection, type ProjectEntry, type SkillEntry } from "../src/shared.js";
+import { renderCVDocument } from "../src/server/agents/render-cv-document.js";
+import { evidenceRef, type CVDocument } from "../src/server/agents/types.js";
 import { buildGenerationPrompt, coverLetterClosing, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
 
 const skill = (name: string): SkillEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name });
@@ -66,6 +68,39 @@ test("structured CV rendering emits dynamic moderncv headers and cventry fragmen
   assert.equal(withoutOptionalHeader.ADDRESS_COMMAND, "");
   assert.equal(withoutOptionalHeader.PHONE_COMMAND, "");
   assert.equal(withoutOptionalHeader.EMAIL_COMMAND, "");
+});
+
+test("CVDocument render uses profile company names and education institutions", () => {
+  const profile = createEmptyProfile();
+  Object.assign(profile.identity, {
+    firstName: "Ada",
+    lastName: "Lovelace",
+    headline: "Backend Engineer",
+    email: "ada@example.test",
+    phone: "+1 555 0100",
+  });
+  profile.experience = [{ id: "role", title: "Backend Engineer", company: "Aetherwave Robotics Ltd", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2024", endMonth: "", endYear: "", currentRole: true, description: "Built Java services." }];
+  profile.education = [{ id: "education", institution: "Canonical University", degree: "Bachelor of Science", fieldOfStudy: "Computer Science", startMonth: "2012-09", startYear: "2012", endMonth: "2016-06", endYear: "2016", gpa: "" }];
+  profile.skills = [{ id: "skill-java", name: "Java" }];
+  const document: CVDocument = {
+    summary: { text: "Java platform engineer.", evidenceRefs: [evidenceRef("identity:summary")] },
+    experiences: [{
+      experienceId: "role",
+      bullets: [{ text: "Shipped Java services for capture workflows.", evidenceRefs: [evidenceRef("experience:role:bullet:0")], transformation: "rewrite" }],
+    }],
+    skillIds: ["skill-java"],
+    projects: [],
+    coverLetter: {
+      subject: "Backend Engineer",
+      paragraphs: [{ text: "I build Java platforms.", evidenceRefs: [evidenceRef("experience:role:bullet:0")] }],
+    },
+  };
+  const rendered = renderCVDocument(profile, document);
+  assert.match(rendered.EXPERIENCE, /\\cventry\{2024 - Present\}\{Backend Engineer\}\{Aetherwave Robotics Ltd\}/);
+  assert.match(rendered.EDUCATION_SECTION, /Canonical University/);
+  assert.match(rendered.SUMMARY_SECTION, /Java platform engineer/);
+  assert.doesNotMatch(rendered.SUMMARY_SECTION, /Aetherwave Robotics Ltd/);
+  assert.equal("company" in document.experiences[0]!, false);
 });
 
 test("education CV rendering uses month ranges and optional GPA", () => {

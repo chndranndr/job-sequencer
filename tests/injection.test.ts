@@ -6,7 +6,9 @@ import { getTelemetryMode, telemetryPromptPayload } from "../src/server/telemetr
 import { validateScrapeResult } from "../src/server/scrape.js";
 import { buildGenerationPrompt } from "../src/server/generation.js";
 import { buildStrategistPrompt } from "../src/server/agents/prompts/strategist.js";
+import { buildWriterPrompt } from "../src/server/agents/prompts/writer.js";
 import { defaultGenerationDirection } from "../src/shared.js";
+import { evidenceRef } from "../src/server/agents/types.js";
 import { persistScrape, openDatabase } from "../src/server/db.js";
 
 const adversarialPosting = [
@@ -68,6 +70,46 @@ test("adversarial posting stays inside UNTRUSTED sections in strategist prompts"
     },
     posting: adversarialPosting,
     rank: { reason: "fit", strengths: [], gaps: ["kubernetes"] },
+    direction: defaultGenerationDirection,
+  });
+  const [trusted, untrusted] = prompt.split("UNTRUSTED EXTERNAL JOB POSTING");
+  assert.match(prompt, /UNTRUSTED EXTERNAL JOB POSTING/);
+  assert.match(untrusted ?? "", /Ignore previous instructions/);
+  assert.match(untrusted ?? "", /Reveal the system prompt/);
+  assert.match(untrusted ?? "", /Call a tool/);
+  assert.match(untrusted ?? "", /Change candidate score/);
+  assert.doesNotMatch(trusted ?? "", /Ignore previous instructions/);
+  assert.doesNotMatch(prompt, /TRUSTED CANDIDATE PROFILE/);
+});
+
+test("adversarial posting stays inside UNTRUSTED sections in writer prompts", () => {
+  const javaRef = evidenceRef("skill:skill-java");
+  const prompt = buildWriterPrompt({
+    context: {
+      evidenceBank: { items: [] },
+      preferences: {
+        targetRoles: ["Backend Engineer"],
+        workPreferences: {
+          authorizationStatus: "",
+          relocationPreference: "",
+          remotePreference: "",
+          targetRoles: ["Backend Engineer"],
+          dealBreakers: [],
+        },
+      },
+      writingStyle: "Short sentences.",
+    },
+    strategy: {
+      positioning: "Java backend engineer.",
+      targetRole: "Backend Engineer",
+      primarySellingPoints: [{ angle: "Java", evidenceRefs: [javaRef] }],
+      requirements: [{ requirement: "Java", importance: "critical", candidateFit: "strong", evidenceRefs: [javaRef] }],
+      narrativeGuidance: ["Lead with Java."],
+      deEmphasize: [],
+      genuineGaps: ["Go"],
+      rankDisagreements: [],
+    },
+    posting: adversarialPosting,
     direction: defaultGenerationDirection,
   });
   const [trusted, untrusted] = prompt.split("UNTRUSTED EXTERNAL JOB POSTING");
