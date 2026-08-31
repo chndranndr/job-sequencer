@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import type { DocumentVerification, Job, JobStage, Run, Settings } from "../shared.js";
-import { jobSourceLabel } from "../shared.js";
+import type { DocumentVerification, GenerationDirection, Job, JobStage, Run, Settings } from "../shared.js";
+import { defaultGenerationDirection, jobSourceLabel } from "../shared.js";
 import { api, getJob } from "../api.js";
 import { trackerHref } from "./hash.js";
 import { isNarrowLayout, NARROW_LAYOUT_MQ } from "./narrow.js";
@@ -13,7 +13,7 @@ export type SampleAction =
   | "restore-recommended"
   | "restore"
   | "generate"
-  | "regenerate"
+  | "revise"
   | "approve"
   | "apply"
   | "phrase"
@@ -32,8 +32,8 @@ export function sampleStageActions(stage: JobStage): SampleAction[] {
     case "Recommended": return ["select", "archive"];
     case "Discarded": return ["restore-recommended", "archive"];
     case "Selected": return ["unselect", "generate", "archive"];
-    case "Drafting": return ["regenerate", "approve", "archive"];
-    case "Ready": return ["apply", "archive"];
+    case "Drafting": return ["revise", "approve", "archive"];
+    case "Ready": return ["revise", "apply", "archive"];
     case "Applied":
     case "Interview": return ["phrase", "outcome", "archive"];
     case "Offer":
@@ -42,8 +42,43 @@ export function sampleStageActions(stage: JobStage): SampleAction[] {
   }
 }
 
+export const SAMPLE_REVISION_CAP = 3;
+
+export const SAMPLE_DIRECTION_LABELS = {
+  cvLength: "CV length",
+  letterMode: "Letter stance",
+  letterNarration: "Narration",
+  revisionNotes: "Correction",
+  remainingRevises: "Remaining revises",
+} as const;
+
+export const SAMPLE_READY_REVISE_COPY = "This starts another generate from the stored direction. The job returns to Drafting and loses its approval.";
+
+export type SampleDirectionField = "cvLength" | "letterMode" | "letterNarration" | "revisionNotes";
+
+export function sampleDirectionControls(stage: JobStage): SampleDirectionField[] {
+  switch (stage) {
+    case "Selected": return ["cvLength", "letterMode", "letterNarration"];
+    case "Drafting":
+    case "Ready": return ["cvLength", "letterMode", "letterNarration", "revisionNotes"];
+    default: return [];
+  }
+}
+
+export function remainingRevises(revisionCount: number) {
+  return Math.max(0, SAMPLE_REVISION_CAP - revisionCount);
+}
+
 export function canStartSampleRun(globalRunActive: boolean, localStartPending: boolean) {
   return !globalRunActive && !localStartPending;
+}
+
+export function canReviseSample(revisionCount: number, globalRunActive: boolean, localStartPending: boolean) {
+  return remainingRevises(revisionCount) > 0 && canStartSampleRun(globalRunActive, localStartPending);
+}
+
+export function sampleReadyReviseRequest() {
+  return { method: "POST" as const, path: "/api/jobs/:id/regenerate" as const };
 }
 
 export function canApproveSampleDocuments(verification: DocumentVerification | null | undefined) {
@@ -97,11 +132,15 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
   const [error, setError] = useState("");
   const [notes, setNotes] = useState("");
   const [applicationNotes, setApplicationNotes] = useState("");
-  const [confirm, setConfirm] = useState<"archive" | "restore-recommended" | "restore" | "approval" | null>(null);
+  const [confirm, setConfirm] = useState<"archive" | "restore-recommended" | "restore" | "approval" | "revise" | null>(null);
   const [applyOpen, setApplyOpen] = useState(false);
   const [outcomeOpen, setOutcomeOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [runStarting, setRunStarting] = useState<"generate" | "regenerate" | null>(null);
+  const [runStarting, setRunStarting] = useState<"generate" | "revise" | null>(null);
+  const [cvLength, setCvLength] = useState<GenerationDirection["cvLength"]>(defaultGenerationDirection.cvLength);
+  const [letterMode, setLetterMode] = useState<GenerationDirection["letterMode"]>(defaultGenerationDirection.letterMode);
+  const [letterNarration, setLetterNarration] = useState(defaultGenerationDirection.letterNarration);
+  const [revisionNotes, setRevisionNotes] = useState(defaultGenerationDirection.revisionNotes);
   const [inspectorWidth, setInspectorWidth] = useState(280);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(isNarrowLayout);
   const [resizingInspector, setResizingInspector] = useState(false);
@@ -118,6 +157,11 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
     setJob(value);
     setNotes(value.notes ?? "");
     setApplicationNotes(value.application_notes ?? "");
+    const direction = value.generation_direction ?? defaultGenerationDirection;
+    setCvLength(direction.cvLength);
+    setLetterMode(direction.letterMode);
+    setLetterNarration(direction.letterNarration);
+    setRevisionNotes(direction.revisionNotes);
   }, []);
   const load = useCallback(async () => {
     if (!jobId) return;
@@ -209,20 +253,40 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
     }
   }
 
-  async function startGeneration(kind: "generate" | "regenerate") {
-    if (!canStartSampleRun(run?.status === "running", Boolean(runStarting))) {
+  async function persistDirection(patch: Partial<Pick<GenerationDirection, "cvLength" | "letterMode" | "letterNarration" | "revisionNotes">>) {
+    if (!jobId) return false;
+    try {
+      setJob(await api<Job>(`/api/jobs/${jobId}/direction`, { method: "PUT", body: JSON.stringify(patch) }));
+      return true;
+    } catch (caught) {
+      toast(caught instanceof Error ? caught.message : "Direction was not saved.");
+      return false;
+    }
+  }
+
+  async function startGeneration(kind: "generate" | "revise") {
+    const revisionCount = job?.generation_direction?.revisionCount ?? 0;
+    if (kind === "revise" && !canReviseSample(revisionCount, run?.status === "running", Boolean(runStarting))) {
+      toast(remainingRevises(revisionCount) === 0 ? "Revision cap of 3 already reached." : "Another run is already active.");
+      return;
+    }
+    if (kind === "generate" && !canStartSampleRun(run?.status === "running", Boolean(runStarting))) {
       toast("Another run is already active.");
       return;
     }
     if (!jobId) return;
     setRunStarting(kind);
     try {
+      const saved = await persistDirection(kind === "generate"
+        ? { cvLength, letterMode, letterNarration }
+        : { cvLength, letterMode, letterNarration, revisionNotes });
+      if (!saved) return;
       const result = await api<{ runId: string }>(kind === "generate" ? "/api/generate" : `/api/jobs/${jobId}/regenerate`, {
         method: "POST",
         ...(kind === "generate" ? { body: JSON.stringify({ jobIds: [jobId] }) } : {}),
       });
       onRun({ id: result.runId, workflow: "generate", status: "running" });
-      toast(kind === "generate" ? "Generation started." : "Regeneration started.");
+      toast(kind === "generate" ? "Generation started." : "Revise started.");
     } catch (caught) {
       toast(caught instanceof Error ? caught.message : "Generation failed.");
     } finally {
@@ -330,13 +394,22 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
         <h2>Inspector</h2>
         <div className="slats"><div className="slat"><span>FIT VOL</span><input type="range" min={0} max={100} value={Number.isFinite(job.score) ? job.score : 0} disabled /><span>{job.score}</span></div></div>
         <p className="sample-boundary">Opening a posting is external only. This tracker never submits, emails, or advances the workflow automatically.</p>
+        {sampleDirectionControls(job.stage).length > 0 && <>
+          <label className="field">{SAMPLE_DIRECTION_LABELS.cvLength}<select value={cvLength} disabled={busyAction !== null || runStarting !== null} onChange={(event) => { const next = event.target.value === "short" ? "short" : "complete"; setCvLength(next); void persistDirection({ cvLength: next }); }}><option value="complete">Complete</option><option value="short">Short</option></select></label>
+          <label className="field">{SAMPLE_DIRECTION_LABELS.letterMode}<select value={letterMode} disabled={busyAction !== null || runStarting !== null} onChange={(event) => { const next = event.target.value === "exploratory" ? "exploratory" : "standard"; setLetterMode(next); void persistDirection({ letterMode: next }); }}><option value="standard">Standard</option><option value="exploratory">Exploratory</option></select></label>
+          <label className="field">{SAMPLE_DIRECTION_LABELS.letterNarration}<textarea maxLength={500} value={letterNarration} disabled={busyAction !== null || runStarting !== null} onChange={(event) => setLetterNarration(event.target.value)} onBlur={() => void persistDirection({ letterNarration })} placeholder="Optional notes for the letter." /></label>
+          {sampleDirectionControls(job.stage).includes("revisionNotes") && <>
+            <label className="field">{SAMPLE_DIRECTION_LABELS.revisionNotes}<textarea maxLength={2000} value={revisionNotes} disabled={busyAction !== null || runStarting !== null} onChange={(event) => setRevisionNotes(event.target.value)} onBlur={() => void persistDirection({ revisionNotes })} placeholder="What to correct in the next generate." /></label>
+            <p className="field">{SAMPLE_DIRECTION_LABELS.remainingRevises}<span>{remainingRevises(job.generation_direction?.revisionCount ?? 0)}</span></p>
+          </>}
+        </>}
         <div className="choices">
           {hasAction("select") && <button disabled={busyAction !== null} onClick={() => void act(`/api/jobs/${job.id}/select`, "POST", undefined, "Job selected.")}>Select</button>}
           {hasAction("unselect") && <button disabled={busyAction !== null} onClick={() => void act(`/api/jobs/${job.id}/select`, "POST", undefined, "Job unselected.")}>Unselect</button>}
           {hasAction("restore-recommended") && <button disabled={busyAction !== null} onClick={() => setConfirm("restore-recommended")}>Restore to Recommended</button>}
           {hasAction("restore") && <button disabled={busyAction !== null} onClick={() => setConfirm("restore")}>Restore</button>}
           {hasAction("generate") && <button disabled={!canStartSampleRun(runActive, Boolean(runStarting)) || busyAction !== null} onClick={() => void startGeneration("generate")}>{runStarting === "generate" ? "Generating…" : runActive ? "Run active" : "Generate documents"}</button>}
-          {hasAction("regenerate") && <button disabled={!canStartSampleRun(runActive, Boolean(runStarting)) || busyAction !== null} onClick={() => void startGeneration("regenerate")}>{runStarting === "regenerate" ? "Regenerating…" : runActive ? "Run active" : "Regenerate"}</button>}
+          {hasAction("revise") && <button disabled={!canReviseSample(job.generation_direction?.revisionCount ?? 0, runActive, Boolean(runStarting)) || busyAction !== null} onClick={() => job.stage === "Ready" ? setConfirm("revise") : void startGeneration("revise")}>{runStarting === "revise" ? "Revising…" : runActive ? "Run active" : "Revise"}</button>}
           {hasAction("approve") && <button disabled={!verified || busyAction !== null} onClick={() => setConfirm("approval")}>{verified ? "Approve documents" : "Verify before approval"}</button>}
           {hasAction("apply") && <button disabled={busyAction !== null} onClick={() => setApplyOpen(true)}>Mark Applied</button>}
           {hasAction("phrase") && <button disabled={busyAction !== null} onClick={() => navigate(trackerHref("phrase", job.id))}>Open PHRASE</button>}
@@ -367,6 +440,7 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
     <ConfirmDialog open={confirm === "restore-recommended"} title="Restore to Recommended?" onClose={() => setConfirm(null)} onConfirm={() => { setConfirm(null); void act(`/api/jobs/${job.id}/restore-recommended`, "POST", undefined, "Job restored to Recommended."); }}>This returns the discarded job to the manual recommendation queue.</ConfirmDialog>
     <ConfirmDialog open={confirm === "restore"} title="Restore this job?" onClose={() => setConfirm(null)} onConfirm={() => { setConfirm(null); void act(`/api/jobs/${job.id}/restore`, "POST", undefined, "Job restored."); }}>This restores the archived job to its previous active stage. No files are deleted.</ConfirmDialog>
     <ConfirmDialog open={confirm === "approval"} title="Approve documents?" onClose={() => setConfirm(null)} onConfirm={() => { setConfirm(null); if (!canApproveSampleDocuments(job.verification)) { toast("Successful verification is required before approval."); return; } void act(`/api/jobs/${job.id}/approve`, "POST", undefined, "Documents approved."); }}>I reviewed both the CV and cover letter. Verification alone does not approve them; this confirmation moves the job to Ready.</ConfirmDialog>
+    <ConfirmDialog open={confirm === "revise"} title="Revise these documents?" onClose={() => setConfirm(null)} onConfirm={() => { setConfirm(null); void startGeneration("revise"); }}>{SAMPLE_READY_REVISE_COPY}</ConfirmDialog>
     <ApplyDialog open={applyOpen} initialDate={job.submitted_at} initialChannel={job.submission_channel} initialNotes={applicationNotes} onClose={() => setApplyOpen(false)} onConfirm={(value) => { setApplyOpen(false); void act(`/api/jobs/${job.id}/applied`, "POST", value, "Application marked Applied."); }} />
     <OutcomeDialog open={outcomeOpen} initialNotes={applicationNotes} onClose={() => setOutcomeOpen(false)} onConfirm={(value) => { setOutcomeOpen(false); void act(`/api/jobs/${job.id}/outcome`, "POST", value, "Outcome updated."); }} />
   </>;

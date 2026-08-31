@@ -170,7 +170,8 @@ Each action stops when its stated output is ready.
 | Save Criteria | Validates and stores criteria | Saved criteria |
 | Scrape Jobs | Searches, fetches details, scores, stores results | Recommended/Discarded list |
 | Select job | Marks job Selected | Selected job |
-| Generate documents | Drafts, writes, compiles, verifies | Documents awaiting approval |
+| Generate documents | Drafts, writes, compiles, verifies. Reads `GenerationDirection` from that application row. See §12. | Documents awaiting approval |
+| Revise documents | Regenerates from stored direction and `revisionNotes`. See §12. | Documents awaiting approval |
 | Approve documents | Marks documents Ready | Ready job |
 | Record Applied | Stores submission data | Applied job |
 | Start mock interview | Runs chat practice | Chat session only |
@@ -479,6 +480,10 @@ Rules:
 ### User action
 
 The Jobs page includes **Generate CV & Cover Letter** for selected jobs.
+
+SAMPLE collects `GenerationDirection` before generate. CV length is `short` or `complete`. Letter stance is `standard` or `exploratory`. Narration is optional. `short` still means two pages. ORDER Accept · generate uses the stored direction. It does not show a second length or stance form.
+
+Revise writes `revisionNotes` then POSTs regenerate. A job allows at most 3 revises. Ready revise returns the job to Drafting. Approve remains the only path to Ready.
 
 For multiple selected jobs, process them sequentially. Each job has its own success or failure result.
 

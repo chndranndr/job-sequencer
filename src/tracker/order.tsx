@@ -136,7 +136,7 @@ export function OrderView({ jobs, orderFocus, onGenerate, navigate, run, onRun, 
     {orderFocus === "follow" && <FollowUpView jobs={jobs} run={run} onRun={onRun} onReload={onReload} toast={toast} />}
     {selected.length > 0 && <div className="reco">
       <h2>Jump ke P-DRF? Generate dokumen untuk pattern P-SEL.</h2>
-      <p>{selected.map((job) => job.company).join(", ")}. Verifikasi tetap harus lulus. Approval tetap milik kamu.</p>
+      <p>{selected.map((job) => job.company).join(", ")}. Generate uses the direction stored on SAMPLE. Verifikasi tetap harus lulus. Approval tetap milik kamu.</p>
       <div className="choices">
         <button onClick={() => onGenerate(selected.map((job) => job.id))}>Accept · generate</button>
         <button onClick={() => navigate("#/pattern")}>Hold</button>
