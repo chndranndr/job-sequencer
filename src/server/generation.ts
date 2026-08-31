@@ -15,6 +15,7 @@ import { splitDescriptionIntoBullets, validateApplicationStrategy } from "./agen
 import { renderCVDocument } from "./agents/render-cv-document.js";
 import { runCritic, type CriticFn } from "./agents/critic.js";
 import { failClosedOnCriticalFactualAudit, runFactualAuditor, type FactualAuditorFn } from "./agents/factual-auditor.js";
+import { MAX_REVISION_ROUNDS, revisionNeeded, runReviser, type ReviserFn } from "./agents/reviser.js";
 import { runStrategist, type StrategistFn } from "./agents/strategist.js";
 import { ApplicationStrategySchema, type ApplicationStrategy, type CVDocument, type EvidenceBank } from "./agents/types.js";
 import { runWriter, type WriterFn } from "./agents/writer.js";
@@ -584,7 +585,7 @@ function generationOutputFromDocument(
   };
 }
 
-export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn; critic?: CriticFn }) {
+export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn; critic?: CriticFn; reviser?: ReviserFn }) {
   const job = options.db.prepare("SELECT * FROM jobs WHERE id=?").get(options.jobId) as Record<string, unknown> | undefined;
   if (!job) throw new Error("Job not found.");
   const direction = getJobDetail(options.db, options.jobId)?.generation_direction ?? { ...defaultGenerationDirection };
@@ -656,28 +657,56 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       settings: options.settings,
       onUsage: options.onUsage,
     });
-    const validatedDocument = validateClaims({
+    let validatedDocument = validateClaims({
       document,
       profile: structured,
       bank: context.evidenceBank,
     });
-    const reviewInput = {
-      document: validatedDocument,
-      context,
-      strategy: parsedStrategy,
-      posting,
-      profile: structured,
-      signal: options.signal,
-      trajectory: options.trajectory,
-      runId,
-      settings: options.settings,
-      onUsage: options.onUsage,
+    const review = async (current: CVDocument) => {
+      const reviewInput = {
+        document: current,
+        context,
+        strategy: parsedStrategy,
+        posting,
+        profile: structured,
+        signal: options.signal,
+        trajectory: options.trajectory,
+        runId,
+        settings: options.settings,
+        onUsage: options.onUsage,
+      };
+      const [audit, critique] = await Promise.all([
+        (options.auditor ?? runFactualAuditor)(reviewInput),
+        (options.critic ?? runCritic)(reviewInput),
+      ]);
+      return { audit, critique };
     };
-    const [audit] = await Promise.all([
-      (options.auditor ?? runFactualAuditor)(reviewInput),
-      (options.critic ?? runCritic)(reviewInput),
-    ]);
-    failClosedOnCriticalFactualAudit(audit);
+    let findings = await review(validatedDocument);
+    for (let round = 1; round <= MAX_REVISION_ROUNDS && revisionNeeded(findings.audit, findings.critique); round += 1) {
+      validatedDocument = await (options.reviser ?? runReviser)({
+        document: validatedDocument,
+        context,
+        strategy: parsedStrategy,
+        posting,
+        direction,
+        profile: structured,
+        audit: findings.audit,
+        critique: findings.critique,
+        round,
+        signal: options.signal,
+        trajectory: options.trajectory,
+        runId,
+        settings: options.settings,
+        onUsage: options.onUsage,
+      });
+      validatedDocument = validateClaims({
+        document: validatedDocument,
+        profile: structured,
+        bank: context.evidenceBank,
+      });
+      findings = await review(validatedDocument);
+    }
+    failClosedOnCriticalFactualAudit(findings.audit);
     const cvTemplate = selectCvTemplate(metadata, tokenise(`${role} ${posting}`));
     output = generationOutputFromDocument(validatedDocument, parsedStrategy, cvTemplate, context.evidenceBank);
     const documentVerification = await runDocumentVerifier({

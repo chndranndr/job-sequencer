@@ -12,6 +12,7 @@ import { generateJob, liveGenerationExecutor, type GenerationExecutor } from "./
 import type { CommandRunner } from "./documents.js";
 import type { CriticFn } from "./agents/critic.js";
 import type { FactualAuditorFn } from "./agents/factual-auditor.js";
+import type { ReviserFn } from "./agents/reviser.js";
 import type { StrategistFn } from "./agents/strategist.js";
 import type { WriterFn } from "./agents/writer.js";
 import { defaultSourceMaxAgeDays, isJobSource, jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryRecorder } from "../shared.js";
@@ -358,7 +359,7 @@ class GenerationRunFailedError extends Error {
 
 export class GenerationRunManager {
   private readonly coordinator: RunCoordinator;
-  constructor(private options: { db: DatabaseSync; dataDir: string; projectRoot?: string; execute?: GenerationExecutor; runner?: CommandRunner; load: () => Promise<{ profile: string; settings: Settings }>; trajectory?: TrajectoryRecorder; coordinator?: RunCoordinator; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn; critic?: CriticFn }) {
+  constructor(private options: { db: DatabaseSync; dataDir: string; projectRoot?: string; execute?: GenerationExecutor; runner?: CommandRunner; load: () => Promise<{ profile: string; settings: Settings }>; trajectory?: TrajectoryRecorder; coordinator?: RunCoordinator; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn; critic?: CriticFn; reviser?: ReviserFn }) {
     this.coordinator = options.coordinator ?? new RunCoordinator({ db: options.db, trajectory: options.trajectory });
   }
   isActive() { return this.coordinator.isWorkflowActive("generate"); }
@@ -389,7 +390,7 @@ export class GenerationRunManager {
       for (const jobId of jobIds) {
         if (signal.aborted) throw new PiRunCancelledError();
         try {
-          await generateJob({ db: this.options.db, dataDir: this.options.dataDir, projectRoot: this.options.projectRoot, jobId, settings: context.settings, profile: context.profile, execute: this.options.execute ?? liveGenerationExecutor, signal, runner: this.options.runner, allowDrafting, runId: id, trajectory: this.options.trajectory, onUsage, strategist: this.options.strategist, writer: this.options.writer, auditor: this.options.auditor, critic: this.options.critic });
+          await generateJob({ db: this.options.db, dataDir: this.options.dataDir, projectRoot: this.options.projectRoot, jobId, settings: context.settings, profile: context.profile, execute: this.options.execute ?? liveGenerationExecutor, signal, runner: this.options.runner, allowDrafting, runId: id, trajectory: this.options.trajectory, onUsage, strategist: this.options.strategist, writer: this.options.writer, auditor: this.options.auditor, critic: this.options.critic, reviser: this.options.reviser });
           if (signal.aborted) throw new PiRunCancelledError();
           results.push({ jobId, status: "succeeded" });
         } catch (error) {

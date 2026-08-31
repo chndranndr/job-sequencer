@@ -54,7 +54,7 @@ async function stubAuditor() {
 }
 
 async function stubCritic() {
-  return { score: 5, issues: [{ severity: "medium" as const, dimension: "specificity" as const, note: "Needs a sharper lead." }], summary: "Needs revision." };
+  return { score: 8, issues: [], summary: "On strategy." };
 }
 
 async function stubWriter(input: RunWriterInput): Promise<CVDocument> {
@@ -165,6 +165,7 @@ test("structured profile generation renders a usable CV and cover letter", async
     if (executable === "pdftotext") return { code: 0, stdout: `${structured.identity.email} ${structured.identity.phone} content`, stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
+  let revisionCalls = 0;
   try {
     await generateJob({
       db,
@@ -182,8 +183,10 @@ test("structured profile generation renders a usable CV and cover letter", async
       strategist: stubStrategist,
       writer: stubWriter,
       auditor: async () => ({ issues: [] }),
-      critic: stubCritic,
+      critic: async () => ({ score: 5, issues: [{ severity: "medium" as const, dimension: "specificity" as const, note: "Needs a sharper lead." }], summary: "Needs revision." }),
+      reviser: async input => { revisionCalls += 1; return input.document; },
     });
+    assert.equal(revisionCalls, 2);
     const currentDir = join(dir, "applications", jobId, "current");
     const strategyText = await readFile(join(dir, "applications", jobId, "revisions", "phase2-structured", "strategy.json"), "utf8");
     assert.match(strategyText, /\n$/);
