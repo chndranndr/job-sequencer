@@ -151,3 +151,30 @@ export const FactualAuditSchema = z.object({
     note: z.string().trim().min(1),
   }).strict()),
 }).strict();
+
+export const CRITIC_SCORE_THRESHOLD = 7;
+
+export type CriticIssueSeverity = "high" | "medium" | "low";
+export type CriticDimension = "relevance" | "specificity" | "clarity" | "order" | "letter";
+
+export type CriticIssue = {
+  severity: CriticIssueSeverity;
+  dimension: CriticDimension;
+  note: string;
+};
+
+export type Critique = {
+  score: number;
+  issues: CriticIssue[];
+  summary: string;
+};
+
+export const CritiqueSchema = z.object({
+  score: z.number().int().min(1).max(10),
+  issues: z.array(z.object({
+    severity: z.enum(["high", "medium", "low"]),
+    dimension: z.enum(["relevance", "specificity", "clarity", "order", "letter"]),
+    note: z.string().trim().min(1),
+  }).strict()),
+  summary: z.string().trim().min(1),
+}).strict();

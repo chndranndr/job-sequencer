@@ -53,6 +53,10 @@ async function stubAuditor() {
   return { issues: [] };
 }
 
+async function stubCritic() {
+  return { score: 5, issues: [{ severity: "medium" as const, dimension: "specificity" as const, note: "Needs a sharper lead." }], summary: "Needs revision." };
+}
+
 async function stubWriter(input: RunWriterInput): Promise<CVDocument> {
   const fallback = input.context.evidenceBank.items[0]?.ref;
   if (!fallback) throw new Error("stub writer needs at least one evidence item");
@@ -178,6 +182,7 @@ test("structured profile generation renders a usable CV and cover letter", async
       strategist: stubStrategist,
       writer: stubWriter,
       auditor: async () => ({ issues: [] }),
+      critic: stubCritic,
     });
     const currentDir = join(dir, "applications", jobId, "current");
     const strategyText = await readFile(join(dir, "applications", jobId, "revisions", "phase2-structured", "strategy.json"), "utf8");
@@ -217,7 +222,7 @@ test("generate is Selected-only, sequential, keeps Drafting, archives, approves,
   const first = insertJob(db, "Selected", "1");
   const second = insertJob(db, "Selected", "2");
   const recommended = insertJob(db, "Recommended", "3");
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter, auditor: stubAuditor });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter, auditor: stubAuditor, critic: stubCritic });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const rejected = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [recommended] } });
@@ -267,7 +272,7 @@ test("busy generation queues the next job", async () => {
   const second = insertJob(db, "Selected", "busy-2");
   let release: () => void = () => {};
   const blocked = new Promise<void>(resolve => { release = () => resolve(); });
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: async input => { await blocked; return stubWriter(input); }, auditor: stubAuditor });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: async input => { await blocked; return stubWriter(input); }, auditor: stubAuditor, critic: stubCritic });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [first] } });
@@ -284,7 +289,7 @@ test("compile failure remains Drafting and cannot approve", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-faildoc-"));
   const db = openDatabase(":memory:");
   const id = insertJob(db);
-  const app = await buildServer({ dataDir: dir, db, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: [] }), commandRunner: async () => ({ code: 1, stdout: "", stderr: "secret compiler detail" }), strategist: stubStrategist, writer: stubWriter, auditor: stubAuditor });
+  const app = await buildServer({ dataDir: dir, db, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: [] }), commandRunner: async () => ({ code: 1, stdout: "", stderr: "secret compiler detail" }), strategist: stubStrategist, writer: stubWriter, auditor: stubAuditor, critic: stubCritic });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const run = (await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } })).json();
@@ -314,7 +319,7 @@ test("Ready regenerate returns 202 then Drafting with approved_at null", async (
   const dir = await mkdtemp(join(tmpdir(), "pjs-ready-regen-"));
   const db = openDatabase(":memory:");
   const id = insertJob(db, "Selected", "ready-regen");
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter, auditor: stubAuditor });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter, auditor: stubAuditor, critic: stubCritic });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } });
@@ -338,7 +343,7 @@ test("third regenerate after two successful revises is 409 naming the cap", asyn
   const dir = await mkdtemp(join(tmpdir(), "pjs-rev-cap-"));
   const db = openDatabase(":memory:");
   const id = insertJob(db, "Selected", "cap");
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter, auditor: stubAuditor });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter, auditor: stubAuditor, critic: stubCritic });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } });

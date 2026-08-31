@@ -47,6 +47,7 @@ import {
 import { liveScrapeExecutor, GenerationRunManager, RunManager, type ScrapeExecutor } from "./runs.js";
 import { jobStages, type JobStage } from "./stages.js";
 import { generationRevisionCap, revisionCapError, type GenerationExecutor } from "./generation.js";
+import type { CriticFn } from "./agents/critic.js";
 import type { FactualAuditorFn } from "./agents/factual-auditor.js";
 import type { StrategistFn } from "./agents/strategist.js";
 import type { WriterFn } from "./agents/writer.js";
@@ -78,6 +79,7 @@ export interface ServerOptions {
   strategist?: StrategistFn;
   writer?: WriterFn;
   auditor?: FactualAuditorFn;
+  critic?: CriticFn;
   interviewExecutor?: InterviewExecutor;
   interviewSessionFactory?: InterviewSessionFactory;
   followUpExecutor?: FollowUpExecutor;
@@ -187,6 +189,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     strategist: options.strategist,
     writer: options.writer,
     auditor: options.auditor,
+    critic: options.critic,
     load: async () => {
       const context = await baseLoad("generation");
       return { profile: context.profile, settings: context.settings };

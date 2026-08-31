@@ -13,6 +13,7 @@ import { buildAgentCandidateContext } from "./agents/context.js";
 import { validateClaims } from "./agents/claim-validator.js";
 import { splitDescriptionIntoBullets, validateApplicationStrategy } from "./agents/evidence.js";
 import { renderCVDocument } from "./agents/render-cv-document.js";
+import { runCritic, type CriticFn } from "./agents/critic.js";
 import { failClosedOnCriticalFactualAudit, runFactualAuditor, type FactualAuditorFn } from "./agents/factual-auditor.js";
 import { runStrategist, type StrategistFn } from "./agents/strategist.js";
 import { ApplicationStrategySchema, type ApplicationStrategy, type CVDocument, type EvidenceBank } from "./agents/types.js";
@@ -583,7 +584,7 @@ function generationOutputFromDocument(
   };
 }
 
-export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn }) {
+export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn; critic?: CriticFn }) {
   const job = options.db.prepare("SELECT * FROM jobs WHERE id=?").get(options.jobId) as Record<string, unknown> | undefined;
   if (!job) throw new Error("Job not found.");
   const direction = getJobDetail(options.db, options.jobId)?.generation_direction ?? { ...defaultGenerationDirection };
@@ -660,7 +661,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       profile: structured,
       bank: context.evidenceBank,
     });
-    const audit = await (options.auditor ?? runFactualAuditor)({
+    const reviewInput = {
       document: validatedDocument,
       context,
       strategy: parsedStrategy,
@@ -671,7 +672,11 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       runId,
       settings: options.settings,
       onUsage: options.onUsage,
-    });
+    };
+    const [audit] = await Promise.all([
+      (options.auditor ?? runFactualAuditor)(reviewInput),
+      (options.critic ?? runCritic)(reviewInput),
+    ]);
     failClosedOnCriticalFactualAudit(audit);
     const cvTemplate = selectCvTemplate(metadata, tokenise(`${role} ${posting}`));
     output = generationOutputFromDocument(validatedDocument, parsedStrategy, cvTemplate, context.evidenceBank);
