@@ -5,6 +5,8 @@ import { redactTelemetryText, runBoundedPi, type PiSessionLike } from "../src/se
 import { getTelemetryMode, telemetryPromptPayload } from "../src/server/telemetry.js";
 import { validateScrapeResult } from "../src/server/scrape.js";
 import { buildGenerationPrompt } from "../src/server/generation.js";
+import { buildStrategistPrompt } from "../src/server/agents/prompts/strategist.js";
+import { defaultGenerationDirection } from "../src/shared.js";
 import { persistScrape, openDatabase } from "../src/server/db.js";
 
 const adversarialPosting = [
@@ -46,6 +48,36 @@ test("adversarial posting stays inside UNTRUSTED sections in generation prompts"
   assert.match(prompt, /Ignore previous instructions/);
   assert.match(prompt, /TRUSTED CANDIDATE PROFILE/);
   assert.doesNotMatch(prompt, /UNTRUSTED[\s\S]*TRUSTED CANDIDATE PROFILE[\s\S]*Ignore previous instructions/);
+});
+
+test("adversarial posting stays inside UNTRUSTED sections in strategist prompts", () => {
+  const prompt = buildStrategistPrompt({
+    context: {
+      evidenceBank: { items: [] },
+      preferences: {
+        targetRoles: ["Backend Engineer"],
+        workPreferences: {
+          authorizationStatus: "",
+          relocationPreference: "",
+          remotePreference: "",
+          targetRoles: ["Backend Engineer"],
+          dealBreakers: [],
+        },
+      },
+      writingStyle: "Short sentences.",
+    },
+    posting: adversarialPosting,
+    rank: { reason: "fit", strengths: [], gaps: ["kubernetes"] },
+    direction: defaultGenerationDirection,
+  });
+  const [trusted, untrusted] = prompt.split("UNTRUSTED EXTERNAL JOB POSTING");
+  assert.match(prompt, /UNTRUSTED EXTERNAL JOB POSTING/);
+  assert.match(untrusted ?? "", /Ignore previous instructions/);
+  assert.match(untrusted ?? "", /Reveal the system prompt/);
+  assert.match(untrusted ?? "", /Call a tool/);
+  assert.match(untrusted ?? "", /Change candidate score/);
+  assert.doesNotMatch(trusted ?? "", /Ignore previous instructions/);
+  assert.doesNotMatch(prompt, /TRUSTED CANDIDATE PROFILE/);
 });
 
 test("control and zero-width characters are normalized in prompt projections", () => {

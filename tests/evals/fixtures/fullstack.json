@@ -1,0 +1,67 @@
+{
+  "posting": "Full-stack engineer for a React TypeScript frontend and a Java Spring API. Mobile Swift is not required.",
+  "rank": {
+    "reason": "Web stack overlap.",
+    "strengths": ["Java", "TypeScript", "React"],
+    "gaps": ["Swift"]
+  },
+  "direction": {
+    "cvLength": "complete",
+    "letterMode": "standard",
+    "letterNarration": "",
+    "revisionNotes": "",
+    "revisionCount": 0
+  },
+  "profile": {
+    "version": 1,
+    "identity": {
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "headline": "Full-stack engineer",
+      "email": "ada@example.test",
+      "phone": "+1 555 0100",
+      "city": "London",
+      "country": "UK",
+      "website": "",
+      "linkedinUrl": "",
+      "githubUrl": "",
+      "summary": "Full-stack engineer building React TypeScript UIs on Java Spring APIs."
+    },
+    "workPreferences": {
+      "authorizationStatus": "",
+      "relocationPreference": "",
+      "remotePreference": "",
+      "targetRoles": ["Full-stack Engineer"],
+      "dealBreakers": []
+    },
+    "experience": [
+      {
+        "id": "exp-full",
+        "title": "Full-stack Engineer",
+        "company": "Example",
+        "employmentType": "Full-time",
+        "location": "Remote",
+        "startMonth": "",
+        "startYear": "2021",
+        "endMonth": "",
+        "endYear": "",
+        "currentRole": true,
+        "description": "Built React TypeScript dashboards. Shipped Java Spring REST APIs for the same product."
+      }
+    ],
+    "education": [],
+    "skills": [
+      { "id": "skill-java", "name": "Java" },
+      { "id": "skill-ts", "name": "TypeScript" },
+      { "id": "skill-react", "name": "React" }
+    ],
+    "certifications": [],
+    "projects": [],
+    "awards": [],
+    "languages": []
+  },
+  "mustIdentify": ["Java", "React", "TypeScript"],
+  "acceptableEvidenceRefs": ["skill:skill-java", "skill:skill-ts", "skill:skill-react", "experience:exp-full:bullet:0", "experience:exp-full:bullet:1"],
+  "expectedGaps": [],
+  "mustNotGap": ["Java", "React"]
+}

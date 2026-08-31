@@ -1,15 +1,17 @@
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { defaultGenerationDirection, type GenerationDirection, type StructuredProfile, type TrajectoryRecorder } from "../shared.js";
+import { defaultGenerationDirection, type GenerationDirection, type Rank, type StructuredProfile, type TrajectoryRecorder } from "../shared.js";
 import { ProfileSchema, type Settings } from "./config.js";
 import { compileAndVerify, containedPath, type CommandRunner } from "./documents.js";
 import { createTaskReporter, getJobDetail, updateJobDirection } from "./db.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 import { loadGuidance } from "./guidance.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "./pi.js";
-import { splitDescriptionIntoBullets } from "./agents/evidence.js";
+import { buildAgentCandidateContext } from "./agents/context.js";
+import { splitDescriptionIntoBullets, validateApplicationStrategy } from "./agents/evidence.js";
+import { runStrategist, type StrategistFn } from "./agents/strategist.js";
 import { runStructured } from "./structured.js";
 import { loadTemplateMetadata } from "./templates.js";
 import { runDocumentVerifier } from "./verifier.js";
@@ -38,6 +40,17 @@ function availableCvTemplateIds(templates: unknown) {
 function knownGenerationGaps(rank: unknown) {
   if (!rank || typeof rank !== "object" || Array.isArray(rank) || !("gaps" in rank) || !Array.isArray(rank.gaps)) return [];
   return rank.gaps.filter((gap): gap is string => typeof gap === "string");
+}
+
+function asRank(value: unknown): Rank {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { reason: "", strengths: [], gaps: [] };
+  const record = value as Record<string, unknown>;
+  const strings = (input: unknown) => Array.isArray(input) ? input.filter((item): item is string => typeof item === "string") : [];
+  return {
+    reason: typeof record.reason === "string" ? record.reason : "",
+    strengths: strings(record.strengths),
+    gaps: strings(record.gaps),
+  };
 }
 
 function userDirectionText(direction: GenerationDirection) {
@@ -539,7 +552,7 @@ function render(template: string, replacements: Record<string, string>) {
   return template.replace(pattern, token => replacements[token] ?? token);
 }
 
-export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void }) {
+export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; strategist?: StrategistFn }) {
   const job = options.db.prepare("SELECT * FROM jobs WHERE id=?").get(options.jobId) as Record<string, unknown> | undefined;
   if (!job) throw new Error("Job not found.");
   const direction = getJobDetail(options.db, options.jobId)?.generation_direction ?? { ...defaultGenerationDirection };
@@ -564,6 +577,28 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const { templatesDir, metadata } = await loadTemplateMetadata(options.projectRoot);
   tasks.complete(`generate:${options.jobId}:prepare`, jobDetail);
   const rank = JSON.parse(String(job.rank_json));
+  const structured = parseStructuredProfile(options.profile);
+  if (structured) {
+    const writingStyle = await loadGuidance(["writingStyle"]);
+    const context = buildAgentCandidateContext({ profile: structured, writingStyle });
+    const posting = typeof job.posting === "string" ? job.posting : String(job.posting ?? "");
+    const runId = options.runId ?? "local";
+    const strategy = await (options.strategist ?? runStrategist)({
+      context,
+      posting,
+      rank: asRank(rank),
+      direction,
+      signal: options.signal,
+      trajectory: options.trajectory,
+      runId,
+      settings: options.settings,
+      onUsage: options.onUsage,
+    });
+    const validated = validateApplicationStrategy(strategy, context.evidenceBank);
+    const strategyPath = containedPath(options.dataDir, "applications", options.jobId, "revisions", runId, "strategy.json");
+    await mkdir(dirname(strategyPath), { recursive: true });
+    await writeFile(strategyPath, `${JSON.stringify(validated, null, 2)}\n`, "utf8");
+  }
   tasks.start({ taskId: `generate:${options.jobId}:content`, label: "Generate tailored content", detail: jobDetail });
   const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, signal: options.signal, runId: options.runId, trajectory: options.trajectory, onUsage: options.onUsage, direction });
   const output = validateGenerationOutput(raw, options.profile, Object.keys(metadata.cv), Array.isArray(rank.gaps) ? rank.gaps : [], `${String(job.role)} ${String(job.company)} ${String(job.posting)}`);
@@ -582,7 +617,6 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const currentDir = containedPath(appDir, "current");
   await mkdir(appDir, { recursive: true });
   await archiveCurrent(appDir, currentDir, now);
-  const structured = parseStructuredProfile(options.profile);
   const { email, phone } = contact(options.profile, structured);
   const role = String(job.role);
   const company = String(job.company);

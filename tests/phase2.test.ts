@@ -12,6 +12,8 @@ import { generateJob, buildGenerationPrompt, validateGenerationOutput } from "..
 import { loadTemplateMetadata, selectCvTemplate, TemplateMetadataSchema } from "../src/server/templates.js";
 import { createFauxRestrictedGenerationSession } from "../src/server/pi.js";
 import { defaultGenerationDirection, type StructuredProfile } from "../src/shared.js";
+import type { ApplicationStrategy } from "../src/server/agents/types.js";
+import type { RunStrategistInput } from "../src/server/agents/strategist.js";
 
 function insertJob(db: any, stage = "Selected", suffix = "1") {
   const id = randomUUID();
@@ -29,6 +31,21 @@ async function wait(app: any, id: string) {
 }
 
 const profile = "# Fixture profile\nEmail: person@example.test\nPhone: +62 812 3456 7890\nTypeScript";
+
+async function stubStrategist(input: RunStrategistInput): Promise<ApplicationStrategy> {
+  const ref = input.context.evidenceBank.items[0]?.ref;
+  if (!ref) throw new Error("stub strategist needs at least one evidence item");
+  return {
+    positioning: "Backend engineer.",
+    targetRole: "Engineer",
+    primarySellingPoints: [{ angle: "Matching experience", evidenceRefs: [ref] }],
+    requirements: [{ requirement: "Core skills", importance: "critical", candidateFit: "strong", evidenceRefs: [ref] }],
+    narrativeGuidance: ["Lead with matching work."],
+    deEmphasize: [],
+    genuineGaps: ["Kubernetes"],
+    rankDisagreements: [],
+  };
+}
 const fakeRunner: CommandRunner = async (executable, args, _timeout, cwd) => {
   if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "pdf");
   if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "pdf");
@@ -98,8 +115,14 @@ test("structured profile generation renders a usable CV and cover letter", async
       runner,
       signal: new AbortController().signal,
       now: "2026-08-14T12:00:00.000Z",
+      runId: "phase2-structured",
+      strategist: stubStrategist,
     });
     const currentDir = join(dir, "applications", jobId, "current");
+    const strategyText = await readFile(join(dir, "applications", jobId, "revisions", "phase2-structured", "strategy.json"), "utf8");
+    assert.match(strategyText, /\n$/);
+    assert.equal(JSON.parse(strategyText).targetRole, "Engineer");
+    await assert.rejects(() => readFile(join(currentDir, "strategy.json"), "utf8"));
     const cv = await readFile(join(currentDir, "cv.tex"), "utf8");
     const letter = await readFile(join(currentDir, "cover-letter.tex"), "utf8");
     const documents = `${cv}\n${letter}`;
@@ -133,7 +156,7 @@ test("generate is Selected-only, sequential, keeps Drafting, archives, approves,
   const second = insertJob(db, "Selected", "2");
   const recommended = insertJob(db, "Recommended", "3");
   const order: string[] = [];
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async context => { order.push(String(context.job.id)); return { cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }; } });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async context => { order.push(String(context.job.id)); return { cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }; }, strategist: stubStrategist });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const rejected = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [recommended] } });
@@ -182,7 +205,7 @@ test("busy generation queues the next job", async () => {
   const second = insertJob(db, "Selected", "busy-2");
   let release: () => void = () => {};
   const blocked = new Promise<void>(resolve => { release = () => resolve(); });
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => { await blocked; return { cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }; } });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => { await blocked; return { cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }; }, strategist: stubStrategist });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [first] } });
@@ -199,7 +222,7 @@ test("compile failure remains Drafting and cannot approve", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-faildoc-"));
   const db = openDatabase(":memory:");
   const id = insertJob(db);
-  const app = await buildServer({ dataDir: dir, db, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: [] }), commandRunner: async () => ({ code: 1, stdout: "", stderr: "secret compiler detail" }) });
+  const app = await buildServer({ dataDir: dir, db, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: [] }), commandRunner: async () => ({ code: 1, stdout: "", stderr: "secret compiler detail" }), strategist: stubStrategist });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const run = (await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } })).json();
@@ -229,7 +252,7 @@ test("Ready regenerate returns 202 then Drafting with approved_at null", async (
   const dir = await mkdtemp(join(tmpdir(), "pjs-ready-regen-"));
   const db = openDatabase(":memory:");
   const id = insertJob(db, "Selected", "ready-regen");
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }) });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } });
@@ -253,7 +276,7 @@ test("third regenerate after two successful revises is 409 naming the cap", asyn
   const dir = await mkdtemp(join(tmpdir(), "pjs-rev-cap-"));
   const db = openDatabase(":memory:");
   const id = insertJob(db, "Selected", "cap");
-  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }) });
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } });
@@ -291,6 +314,8 @@ test("ungrounded revisionNotes tokens are absent from compiled TeX", async () =>
       execute: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }),
       runner: fakeRunner,
       signal: new AbortController().signal,
+      runId: "phase2-rev-leak-1",
+      strategist: stubStrategist,
     });
     updateJobDirection(db, id, { revisionNotes: `${refusal} Lead with ExampleCorp.` });
     await generateJob({
@@ -312,6 +337,8 @@ test("ungrounded revisionNotes tokens are absent from compiled TeX", async () =>
       runner: fakeRunner,
       allowDrafting: true,
       signal: new AbortController().signal,
+      runId: "phase2-rev-leak-2",
+      strategist: stubStrategist,
     });
     const currentDir = join(dir, "applications", id, "current");
     const cv = await readFile(join(currentDir, "cv.tex"), "utf8");

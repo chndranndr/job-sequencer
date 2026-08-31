@@ -10,6 +10,7 @@ import { projectPromptContext, projectPromptText } from "./context.js";
 import { loadGuidance } from "./guidance.js";
 import { generateJob, liveGenerationExecutor, type GenerationExecutor } from "./generation.js";
 import type { CommandRunner } from "./documents.js";
+import type { StrategistFn } from "./agents/strategist.js";
 import { defaultSourceMaxAgeDays, isJobSource, jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryRecorder } from "../shared.js";
 import { runStructured } from "./structured.js";
 import { RunCoordinator } from "./coordinator.js";
@@ -354,7 +355,7 @@ class GenerationRunFailedError extends Error {
 
 export class GenerationRunManager {
   private readonly coordinator: RunCoordinator;
-  constructor(private options: { db: DatabaseSync; dataDir: string; projectRoot?: string; execute?: GenerationExecutor; runner?: CommandRunner; load: () => Promise<{ profile: string; settings: Settings }>; trajectory?: TrajectoryRecorder; coordinator?: RunCoordinator }) {
+  constructor(private options: { db: DatabaseSync; dataDir: string; projectRoot?: string; execute?: GenerationExecutor; runner?: CommandRunner; load: () => Promise<{ profile: string; settings: Settings }>; trajectory?: TrajectoryRecorder; coordinator?: RunCoordinator; strategist?: StrategistFn }) {
     this.coordinator = options.coordinator ?? new RunCoordinator({ db: options.db, trajectory: options.trajectory });
   }
   isActive() { return this.coordinator.isWorkflowActive("generate"); }
@@ -385,7 +386,7 @@ export class GenerationRunManager {
       for (const jobId of jobIds) {
         if (signal.aborted) throw new PiRunCancelledError();
         try {
-          await generateJob({ db: this.options.db, dataDir: this.options.dataDir, projectRoot: this.options.projectRoot, jobId, settings: context.settings, profile: context.profile, execute: this.options.execute ?? liveGenerationExecutor, signal, runner: this.options.runner, allowDrafting, runId: id, trajectory: this.options.trajectory, onUsage });
+          await generateJob({ db: this.options.db, dataDir: this.options.dataDir, projectRoot: this.options.projectRoot, jobId, settings: context.settings, profile: context.profile, execute: this.options.execute ?? liveGenerationExecutor, signal, runner: this.options.runner, allowDrafting, runId: id, trajectory: this.options.trajectory, onUsage, strategist: this.options.strategist });
           if (signal.aborted) throw new PiRunCancelledError();
           results.push({ jobId, status: "succeeded" });
         } catch (error) {

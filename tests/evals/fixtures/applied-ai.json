@@ -1,0 +1,66 @@
+{
+  "posting": "Applied AI engineer to ship retrieval-augmented generation into a production Java backend. Python prototype work is useful. Production Go is not required.",
+  "rank": {
+    "reason": "AI adjacent with Java backend.",
+    "strengths": ["Java", "Python"],
+    "gaps": ["PyTorch research"]
+  },
+  "direction": {
+    "cvLength": "complete",
+    "letterMode": "standard",
+    "letterNarration": "",
+    "revisionNotes": "",
+    "revisionCount": 0
+  },
+  "profile": {
+    "version": 1,
+    "identity": {
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "headline": "Backend engineer",
+      "email": "ada@example.test",
+      "phone": "+1 555 0100",
+      "city": "London",
+      "country": "UK",
+      "website": "",
+      "linkedinUrl": "",
+      "githubUrl": "",
+      "summary": "Backend engineer who integrated Python retrieval pipelines with Java APIs."
+    },
+    "workPreferences": {
+      "authorizationStatus": "",
+      "relocationPreference": "",
+      "remotePreference": "",
+      "targetRoles": ["Applied AI Engineer"],
+      "dealBreakers": []
+    },
+    "experience": [
+      {
+        "id": "exp-ai",
+        "title": "Backend Engineer",
+        "company": "Example",
+        "employmentType": "Full-time",
+        "location": "Remote",
+        "startMonth": "",
+        "startYear": "2023",
+        "endMonth": "",
+        "endYear": "",
+        "currentRole": true,
+        "description": "Served retrieval-augmented answers from a Java API. Built Python offline jobs that indexed product documents."
+      }
+    ],
+    "education": [],
+    "skills": [
+      { "id": "skill-java", "name": "Java" },
+      { "id": "skill-python", "name": "Python" }
+    ],
+    "certifications": [],
+    "projects": [],
+    "awards": [],
+    "languages": []
+  },
+  "mustIdentify": ["Java", "Python"],
+  "acceptableEvidenceRefs": ["skill:skill-java", "skill:skill-python", "experience:exp-ai:bullet:0", "experience:exp-ai:bullet:1"],
+  "expectedGaps": ["PyTorch research"],
+  "mustNotGap": ["Java"]
+}
