@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createEmptyProfile, defaultGenerationDirection, type ProjectEntry, type SkillEntry } from "../src/shared.js";
-import { renderCVDocument } from "../src/server/agents/render-cv-document.js";
+import { renderCVDocument } from "../src/server/rendering/cv.js";
 import { evidenceRef, type CVDocument } from "../src/server/agents/types.js";
-import { buildGenerationPrompt, coverLetterClosing, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
+import { buildGenerationPrompt, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
+import { coverLetterClosing } from "../src/server/rendering/cover-letter.js";
 
 const skill = (name: string): SkillEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name });
 const project = (name: string, role: string, description: string): ProjectEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, role, description, startMonth: "", startYear: "", endMonth: "", endYear: "", url: "" });

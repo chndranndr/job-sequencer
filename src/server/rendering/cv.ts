@@ -1,6 +1,6 @@
 import type { EducationEntry, ExperienceEntry, ProjectEntry, StructuredProfile } from "../../shared.js";
-import { splitDescriptionIntoBullets } from "./evidence.js";
-import type { CVDocument } from "./types.js";
+import { splitDescriptionIntoBullets } from "../agents/evidence.js";
+import type { CVDocument } from "../agents/types.js";
 
 function normalizeProse(value: string) {
   return value.replace(/\s*[\u2011\u2013\u2014]\s*/g, ", ").replace(/--+/g, ", ").replace(/[ \t]{2,}/g, " ").trim();

@@ -4,7 +4,7 @@ import { createEmptyProfile, defaultGenerationDirection, type StructuredProfile 
 import { buildAgentCandidateContext } from "../src/server/agents/context.js";
 import { buildEvidenceBank, validateCVDocument } from "../src/server/agents/evidence.js";
 import { buildWriterPrompt } from "../src/server/agents/prompts/writer.js";
-import { renderCVDocument } from "../src/server/agents/render-cv-document.js";
+import { renderCVDocument } from "../src/server/rendering/cv.js";
 import { runWriter } from "../src/server/agents/writer.js";
 import { StructuredOutputError } from "../src/server/structured.js";
 import { evidenceRef, type ApplicationStrategy, type CVDocument } from "../src/server/agents/types.js";

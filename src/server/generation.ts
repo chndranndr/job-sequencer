@@ -12,7 +12,8 @@ import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from
 import { buildAgentCandidateContext } from "./agents/context.js";
 import { validateClaims } from "./agents/claim-validator.js";
 import { splitDescriptionIntoBullets, validateApplicationStrategy } from "./agents/evidence.js";
-import { renderCVDocument } from "./agents/render-cv-document.js";
+import { renderCVDocument } from "./rendering/cv.js";
+import { coverLetterClosing, renderCoverLetter } from "./rendering/cover-letter.js";
 import { runCritic, type CriticFn } from "./agents/critic.js";
 import { failClosedOnCriticalFactualAudit, runFactualAuditor, type FactualAuditorFn } from "./agents/factual-auditor.js";
 import { MAX_REVISION_ROUNDS, revisionNeeded, runReviser, type ReviserFn } from "./agents/reviser.js";
@@ -489,17 +490,6 @@ function letterParagraphValues(output: GenerationOutput, structured: StructuredP
   return [`I am applying for the ${role} role at ${company}. My background includes ${fact}.`];
 }
 
-function hasEquivalentClosing(paragraphs: readonly string[]) {
-  return paragraphs.some(paragraph => {
-    const text = normalizeProse(paragraph);
-    return /\bwelcom\w*\b/i.test(text) && /\b(?:opportunit\w*|contribut\w*)\b/i.test(text);
-  });
-}
-
-export function coverLetterClosing(paragraphs: readonly string[], role: string, company: string) {
-  return hasEquivalentClosing(paragraphs) ? "" : latex(`I would welcome the opportunity to discuss how I can contribute to ${role} at ${company}.`);
-}
-
 function comparisonTokens(value: string) {
   return new Set(relevanceTokens(value));
 }
@@ -622,6 +612,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   let paragraphs: string[];
   let coverLetterSubject: string;
   let coverLetterBullets: string;
+  let coverLetterClosingText: string;
   if (structured) {
     const writingStyle = await loadGuidance(["writingStyle"]);
     const context = buildAgentCandidateContext({ profile: structured, writingStyle });
@@ -719,9 +710,11 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     if (documentVerification.needsReview) tasks.complete(`generate:${options.jobId}:content`, `${jobDetail} · needs review`);
     else tasks.complete(`generate:${options.jobId}:content`, jobDetail);
     profileReplacements = renderCVDocument(structured, validatedDocument);
-    paragraphs = validatedDocument.coverLetter.paragraphs.map(paragraph => paragraph.text);
-    coverLetterSubject = validatedDocument.coverLetter.subject || `Application for ${role} at ${company}`;
+    const letter = renderCoverLetter(validatedDocument, role, company);
+    paragraphs = letter.paragraphs;
+    coverLetterSubject = letter.subject;
     coverLetterBullets = "";
+    coverLetterClosingText = letter.closing;
   } else {
     tasks.start({ taskId: `generate:${options.jobId}:content`, label: "Generate tailored content", detail: jobDetail });
     const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, signal: options.signal, runId: options.runId, trajectory: options.trajectory, onUsage: options.onUsage, direction });
@@ -739,6 +732,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     paragraphs = letterParagraphValues(output, structured, role, company);
     coverLetterSubject = output.coverLetterSubject || `Application for ${role} at ${company}`;
     coverLetterBullets = letterBullets(output, paragraphs, `${role} ${posting}`, output.roleEmphasis, direction.cvLength);
+    coverLetterClosingText = coverLetterClosing(paragraphs, role, company);
   }
   const info = metadata.cv[output.cvTemplate]!;
   tasks.start({ taskId: `generate:${options.jobId}:documents`, label: "Compile and verify documents", detail: jobDetail });
@@ -757,7 +751,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     SALUTATION: `Dear ${latex(company)} hiring team,`,
     PARAGRAPHS: paragraphs.map(latex).join("\\par\n"),
     BULLETS: coverLetterBullets,
-    CLOSING: coverLetterClosing(paragraphs, role, company),
+    CLOSING: coverLetterClosingText,
   };
   const cv = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, info.file), "utf8"), replacements), direction.revisionNotes, options.profile);
   const letter = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, metadata.coverLetter), "utf8"), replacements), direction.revisionNotes, options.profile);
