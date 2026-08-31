@@ -1,5 +1,5 @@
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { defaultGenerationDirection, type GenerationDirection, type Rank, type StructuredProfile, type TrajectoryRecorder } from "../shared.js";
@@ -529,17 +529,30 @@ export function letterBullets(output: Pick<GenerationOutput, "coverLetterBullets
   return selected.length ? `\\begin{itemize}[leftmargin=1.15em,itemsep=2pt,topsep=2pt,parsep=0pt,partopsep=0pt]\n${selected.map(value => `\\item ${latex(value)}`).join("\n")}\n\\end{itemize}` : "";
 }
 
-async function archiveCurrent(appDir: string, currentDir: string, stamp: string) {
-  try {
-    if ((await readdir(currentDir)).length) {
-      const history = containedPath(appDir, "history", stamp.replace(/[:.]/g, "-"));
-      await mkdir(join(history, ".."), { recursive: true });
-      await rename(currentDir, history);
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+async function writeJson(path: string, value: unknown) {
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function promoteRevision(appDir: string, currentDir: string, revisionDir: string, stamp: string, runId: string) {
+  const safeRunId = runId.replace(/[^A-Za-z0-9_-]/g, "-");
+  const stagingDir = containedPath(appDir, `.current-${safeRunId}`);
+  const historyDir = containedPath(appDir, "history", `${stamp.replace(/[:.]/g, "-")}-${safeRunId}`);
+  await rm(stagingDir, { recursive: true, force: true });
+  await cp(revisionDir, stagingDir, { recursive: true });
+
+  let hasCurrent = false;
+  try { await readdir(currentDir); hasCurrent = true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (hasCurrent) {
+    await mkdir(dirname(historyDir), { recursive: true });
+    await rename(currentDir, historyDir);
   }
-  await mkdir(currentDir, { recursive: true });
+  try {
+    await rename(stagingDir, currentDir);
+  } catch (error) {
+    if (hasCurrent) await rename(historyDir, currentDir);
+    throw error;
+  }
 }
 
 function render(template: string, replacements: Record<string, string>) {
@@ -591,7 +604,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   try {
     options.db.prepare("UPDATE jobs SET stage='Drafting',updated_at=? WHERE id=?").run(now, options.jobId);
     options.db.prepare("INSERT OR IGNORE INTO applications(job_id,updated_at) VALUES(?,?)").run(options.jobId, now);
-    options.db.prepare("UPDATE applications SET verification_json=NULL,approved_at=NULL,updated_at=? WHERE job_id=?").run(now, options.jobId);
+    options.db.prepare("UPDATE applications SET approved_at=NULL,updated_at=? WHERE job_id=?").run(now, options.jobId);
     options.db.exec("COMMIT");
   } catch (error) {
     options.db.exec("ROLLBACK");
@@ -606,6 +619,9 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const posting = typeof job.posting === "string" ? job.posting : String(job.posting ?? "");
   const jobContext = `${role} ${company} ${posting}`;
   const runId = options.runId ?? "local";
+  const appDir = containedPath(options.dataDir, "applications", options.jobId);
+  const revisionDir = containedPath(appDir, "revisions", runId);
+  await mkdir(revisionDir, { recursive: true });
   const { email, phone } = contact(options.profile, structured);
   let output: GenerationOutput;
   let profileReplacements: Record<string, string>;
@@ -613,6 +629,10 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   let coverLetterSubject: string;
   let coverLetterBullets: string;
   let coverLetterClosingText: string;
+  let revisionArtifact: unknown;
+  let auditArtifact: unknown = { issues: [] };
+  let reviewArtifact: unknown = {};
+  let draftArtifacts: unknown[] = [];
   if (structured) {
     const writingStyle = await loadGuidance(["writingStyle"]);
     const context = buildAgentCandidateContext({ profile: structured, writingStyle });
@@ -628,8 +648,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       onUsage: options.onUsage,
     });
     const validated = validateApplicationStrategy(strategy, context.evidenceBank);
-    const strategyPath = containedPath(options.dataDir, "applications", options.jobId, "revisions", runId, "strategy.json");
-    await mkdir(dirname(strategyPath), { recursive: true });
+    const strategyPath = containedPath(revisionDir, "strategy.json");
     await writeFile(strategyPath, `${JSON.stringify(validated, null, 2)}\n`, "utf8");
     // Writer must consume the on-disk AG-2 artifact, not an in-memory rebuild from cvEdits.
     const stored = ApplicationStrategySchema.parse(JSON.parse(await readFile(strategyPath, "utf8")));
@@ -653,6 +672,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       profile: structured,
       bank: context.evidenceBank,
     });
+    const drafts: CVDocument[] = [validatedDocument];
     const review = async (current: CVDocument) => {
       const reviewInput = {
         document: current,
@@ -695,9 +715,14 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
         profile: structured,
         bank: context.evidenceBank,
       });
+      drafts.push(validatedDocument);
       findings = await review(validatedDocument);
     }
     failClosedOnCriticalFactualAudit(findings.audit);
+    revisionArtifact = validatedDocument;
+    auditArtifact = findings.audit;
+    reviewArtifact = findings.critique;
+    draftArtifacts = drafts;
     const cvTemplate = selectCvTemplate(metadata, tokenise(`${role} ${posting}`));
     output = generationOutputFromDocument(validatedDocument, parsedStrategy, cvTemplate, context.evidenceBank);
     const documentVerification = await runDocumentVerifier({
@@ -733,13 +758,18 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     coverLetterSubject = output.coverLetterSubject || `Application for ${role} at ${company}`;
     coverLetterBullets = letterBullets(output, paragraphs, `${role} ${posting}`, output.roleEmphasis, direction.cvLength);
     coverLetterClosingText = coverLetterClosing(paragraphs, role, company);
+    revisionArtifact = output;
+    draftArtifacts = [output];
   }
   const info = metadata.cv[output.cvTemplate]!;
   tasks.start({ taskId: `generate:${options.jobId}:documents`, label: "Compile and verify documents", detail: jobDetail });
-  const appDir = containedPath(options.dataDir, "applications", options.jobId);
   const currentDir = containedPath(appDir, "current");
-  await mkdir(appDir, { recursive: true });
-  await archiveCurrent(appDir, currentDir, now);
+  await writeJson(containedPath(revisionDir, "document.json"), revisionArtifact);
+  await writeJson(containedPath(revisionDir, "audit.json"), auditArtifact);
+  await writeJson(containedPath(revisionDir, "review.json"), reviewArtifact);
+  const draftsDir = containedPath(revisionDir, "drafts");
+  await mkdir(draftsDir, { recursive: true });
+  for (const [index, draft] of draftArtifacts.entries()) await writeJson(containedPath(draftsDir, `${index + 1}.json`), draft);
   const location = structured ? [structured.identity.city, structured.identity.country].filter(value => value.trim()).join(", ") : "";
   const replacements = {
     ...profileReplacements,
@@ -755,10 +785,11 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   };
   const cv = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, info.file), "utf8"), replacements), direction.revisionNotes, options.profile);
   const letter = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, metadata.coverLetter), "utf8"), replacements), direction.revisionNotes, options.profile);
-  await writeFile(containedPath(currentDir, "cv.tex"), cv, "utf8");
-  await writeFile(containedPath(currentDir, "cover-letter.tex"), letter, "utf8");
-  const verification = await compileAndVerify({ currentDir, cvPages: options.settings.cvPages, coverLetterPages: options.settings.coverLetterPages, email, phone, runner: options.runner, now });
-  await writeFile(containedPath(currentDir, "verification.json"), `${JSON.stringify(verification, null, 2)}\n`, "utf8");
+  await writeFile(containedPath(revisionDir, "cv.tex"), cv, "utf8");
+  await writeFile(containedPath(revisionDir, "cover-letter.tex"), letter, "utf8");
+  const verification = await compileAndVerify({ currentDir: revisionDir, cvPages: options.settings.cvPages, coverLetterPages: options.settings.coverLetterPages, email, phone, runner: options.runner, now, signal: options.signal });
+  await writeFile(containedPath(revisionDir, "verification.json"), `${JSON.stringify(verification, null, 2)}\n`, "utf8");
+  await promoteRevision(appDir, currentDir, revisionDir, now, runId);
   tasks.complete(`generate:${options.jobId}:documents`, verification.success ? jobDetail : "Document verification needs review.");
   tasks.start({ taskId: `generate:${options.jobId}:finalize`, label: "Finalize job", detail: jobDetail });
   options.db.prepare("UPDATE applications SET cv_template=?,cv_source=?,cv_pdf=?,cover_letter_source=?,cover_letter_pdf=?,verification_json=?,approved_at=NULL,updated_at=? WHERE job_id=?").run(output.cvTemplate, "cv.tex", "cv.pdf", "cover-letter.tex", "cover-letter.pdf", JSON.stringify(verification), now, options.jobId);

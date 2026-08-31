@@ -191,7 +191,8 @@ test("structured profile generation renders a usable CV and cover letter", async
     const strategyText = await readFile(join(dir, "applications", jobId, "revisions", "phase2-structured", "strategy.json"), "utf8");
     assert.match(strategyText, /\n$/);
     assert.equal(JSON.parse(strategyText).targetRole, "Engineer");
-    await assert.rejects(() => readFile(join(currentDir, "strategy.json"), "utf8"));
+    assert.equal(JSON.parse(await readFile(join(currentDir, "strategy.json"), "utf8")).targetRole, "Engineer");
+    assert.equal(JSON.parse(await readFile(join(currentDir, "document.json"), "utf8")).summary.text, "Backend engineer.");
     const cv = await readFile(join(currentDir, "cv.tex"), "utf8");
     const letter = await readFile(join(currentDir, "cover-letter.tex"), "utf8");
     const documents = `${cv}\n${letter}`;
