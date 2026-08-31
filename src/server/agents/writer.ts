@@ -3,7 +3,6 @@ import type { Settings } from "../config.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "../pi.js";
 import type { StructuredRunOptions } from "../structured.js";
 import { validateClaims } from "./claim-validator.js";
-import { validateCVDocument } from "./evidence.js";
 import { buildWriterPrompt } from "./prompts/writer.js";
 import { runAgentStructured } from "./runtime.js";
 import { CVDocumentSchema, type AgentCandidateContext, type ApplicationStrategy, type CVDocument } from "./types.js";
@@ -63,7 +62,7 @@ export async function runWriter(input: RunWriterInput): Promise<CVDocument> {
     trajectory: input.trajectory,
     runId: input.runId,
     validateBusiness: value => validateClaims({
-      document: validateCVDocument(value, input.profile, input.context.evidenceBank),
+      document: value,
       profile: input.profile,
       bank: input.context.evidenceBank,
     }),

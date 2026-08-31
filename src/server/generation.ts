@@ -11,7 +11,7 @@ import { loadGuidance } from "./guidance.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "./pi.js";
 import { buildAgentCandidateContext } from "./agents/context.js";
 import { validateClaims } from "./agents/claim-validator.js";
-import { splitDescriptionIntoBullets, validateApplicationStrategy, validateCVDocument } from "./agents/evidence.js";
+import { splitDescriptionIntoBullets, validateApplicationStrategy } from "./agents/evidence.js";
 import { renderCVDocument } from "./agents/render-cv-document.js";
 import { runStrategist, type StrategistFn } from "./agents/strategist.js";
 import { ApplicationStrategySchema, type ApplicationStrategy, type CVDocument, type EvidenceBank } from "./agents/types.js";
@@ -655,7 +655,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       onUsage: options.onUsage,
     });
     const validatedDocument = validateClaims({
-      document: validateCVDocument(document, structured, context.evidenceBank),
+      document,
       profile: structured,
       bank: context.evidenceBank,
     });
