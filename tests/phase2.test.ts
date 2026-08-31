@@ -4,14 +4,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { openDatabase } from "../src/server/db.js";
+import { openDatabase, updateJobDirection } from "../src/server/db.js";
 import { buildServer } from "../src/server/app.js";
 import { compileAndVerify, containedPath, type CommandRunner } from "../src/server/documents.js";
 import { defaultSettings } from "../src/server/config.js";
 import { generateJob, buildGenerationPrompt, validateGenerationOutput } from "../src/server/generation.js";
 import { loadTemplateMetadata, selectCvTemplate, TemplateMetadataSchema } from "../src/server/templates.js";
 import { createFauxRestrictedGenerationSession } from "../src/server/pi.js";
-import type { StructuredProfile } from "../src/shared.js";
+import { defaultGenerationDirection, type StructuredProfile } from "../src/shared.js";
 
 function insertJob(db: any, stage = "Selected", suffix = "1") {
   const id = randomUUID();
@@ -211,4 +211,118 @@ test("compile failure remains Drafting and cannot approve", async () => {
     assert.deepEqual(Object.keys(approval.json()), ["error"]);
     assert.doesNotMatch(JSON.stringify(done), /secret compiler detail/);
   } finally { await app.close(); db.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("generation prompt for short includes USER DIRECTION", () => {
+  const prompt = buildGenerationPrompt({
+    profile,
+    job: { role: "Engineer" },
+    rank: { gaps: [] },
+    templates: { cv: { backend_java_spring: { file: "cv/backend_java_spring.tex", tags: ["backend", "java"] } }, coverLetter: "cover-letter.tex" },
+    direction: { ...defaultGenerationDirection, cvLength: "short" },
+  }, "");
+  assert.match(prompt, /USER DIRECTION/);
+  assert.match(prompt, /short/);
+});
+
+test("Ready regenerate returns 202 then Drafting with approved_at null", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-ready-regen-"));
+  const db = openDatabase(":memory:");
+  const id = insertJob(db, "Selected", "ready-regen");
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }) });
+  try {
+    await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
+    const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } });
+    assert.equal(start.statusCode, 202);
+    assert.equal((await wait(app, start.json().runId)).status, "succeeded");
+    const approved = await app.inject({ method: "POST", url: `/api/jobs/${id}/approve` });
+    assert.equal(approved.statusCode, 200);
+    assert.equal(approved.json().stage, "Ready");
+    assert.ok(approved.json().approved_at);
+    const regen = await app.inject({ method: "POST", url: `/api/jobs/${id}/regenerate` });
+    assert.equal(regen.statusCode, 202);
+    assert.equal((await wait(app, regen.json().runId)).status, "succeeded");
+    const after = (await app.inject({ url: `/api/jobs/${id}` })).json();
+    assert.equal(after.stage, "Drafting");
+    assert.equal(after.approved_at, null);
+    assert.equal(after.generation_direction.revisionCount, 1);
+  } finally { await app.close(); db.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("third regenerate after two successful revises is 409 naming the cap", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-rev-cap-"));
+  const db = openDatabase(":memory:");
+  const id = insertJob(db, "Selected", "cap");
+  const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }) });
+  try {
+    await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
+    const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [id] } });
+    assert.equal(start.statusCode, 202);
+    assert.equal((await wait(app, start.json().runId)).status, "succeeded");
+    assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().generation_direction.revisionCount, 0);
+    for (let round = 1; round <= 2; round += 1) {
+      const regen = await app.inject({ method: "POST", url: `/api/jobs/${id}/regenerate` });
+      assert.equal(regen.statusCode, 202);
+      assert.equal((await wait(app, regen.json().runId)).status, "succeeded");
+      assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().generation_direction.revisionCount, round);
+    }
+    const cap = await app.inject({ method: "PUT", url: `/api/jobs/${id}/direction`, payload: { revisionCount: 3 } });
+    assert.equal(cap.statusCode, 200);
+    const third = await app.inject({ method: "POST", url: `/api/jobs/${id}/regenerate` });
+    assert.equal(third.statusCode, 409);
+    assert.match(third.json().error, /cap/i);
+    assert.match(third.json().error, /3/);
+  } finally { await app.close(); db.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ungrounded revisionNotes tokens are absent from compiled TeX", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-rev-leak-"));
+  const db = openDatabase(":memory:");
+  const id = insertJob(db, "Selected", "rev-leak");
+  const leakProfile = `${profile}\nExampleCorp`;
+    const refusal = "Exclude the unsupported claim about increasing quarterly ARR by 847% using the QZ-9912 converter. TypeScript.";
+  try {
+    await generateJob({
+      db,
+      dataDir: dir,
+      jobId: id,
+      settings: defaultSettings,
+      profile: leakProfile,
+      execute: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }),
+      runner: fakeRunner,
+      signal: new AbortController().signal,
+    });
+    updateJobDirection(db, id, { revisionNotes: `${refusal} Lead with ExampleCorp.` });
+    await generateJob({
+      db,
+      dataDir: dir,
+      jobId: id,
+      settings: defaultSettings,
+      profile: leakProfile,
+      execute: async () => ({
+        cvTemplate: "backend_java_spring",
+        profileFacts: ["TypeScript"],
+        cvEdits: [refusal],
+        coverLetterParagraphs: [
+          "I have worked with TypeScript at ExampleCorp.",
+          refusal,
+        ],
+        gaps: ["Kubernetes"],
+      }),
+      runner: fakeRunner,
+      allowDrafting: true,
+      signal: new AbortController().signal,
+    });
+    const currentDir = join(dir, "applications", id, "current");
+    const cv = await readFile(join(currentDir, "cv.tex"), "utf8");
+    const letter = await readFile(join(currentDir, "cover-letter.tex"), "utf8");
+    for (const document of [cv, letter]) {
+      assert.doesNotMatch(document, /847\\?%/);
+      assert.doesNotMatch(document, /QZ-9912/);
+    }
+    assert.match(letter, /ExampleCorp/);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

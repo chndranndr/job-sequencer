@@ -46,7 +46,7 @@ import {
 } from "./config.js";
 import { liveScrapeExecutor, GenerationRunManager, RunManager, type ScrapeExecutor } from "./runs.js";
 import { jobStages, type JobStage } from "./stages.js";
-import type { GenerationExecutor } from "./generation.js";
+import { generationRevisionCap, revisionCapError, type GenerationExecutor } from "./generation.js";
 import type { CommandRunner } from "./documents.js";
 import { containedPath, friendlyDocumentFilename, runCommand } from "./documents.js";
 import {
@@ -458,9 +458,10 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const existing = coordinator.findByIdempotencyKey(idempotencyKey);
     if (existing) return reply.code(202).send({ runId: existing });
     const id = requestId(req);
-    const job = getJob(db, id) as { stage: string } | undefined;
+    const job = getJobDetail(db, id);
     if (!job) throw notFound("Job not found.");
-    if (job.stage !== "Drafting") throw Object.assign(new Error("Only Drafting jobs may regenerate."), { statusCode: 409 });
+    if (job.stage !== "Drafting" && job.stage !== "Ready") throw Object.assign(new Error("Only Drafting or Ready jobs may regenerate."), { statusCode: 409 });
+    if ((job.generation_direction?.revisionCount ?? 0) >= generationRevisionCap) throw Object.assign(new Error(revisionCapError), { statusCode: 409 });
     return reply.code(202).send({ runId: await generation.start([id], true, idempotencyKey) });
   });
   app.post("/api/jobs/:id/approve", async (req) => approveApplication(db, requestId(req)));
