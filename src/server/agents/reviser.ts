@@ -36,6 +36,7 @@ export type RunReviserInput = {
   trajectory?: TrajectoryRecorder;
   runId?: string;
   settings?: Settings;
+  cvPageEstimate?: number | null;
   onUsage?: (usage: PiRunUsage) => void;
 };
 
@@ -81,6 +82,8 @@ export async function runReviser(input: RunReviserInput): Promise<CVDocument> {
     round: input.round,
     research: input.research,
     ats: input.ats,
+    settings: input.settings,
+    cvPageEstimate: input.cvPageEstimate,
   });
   return runAgentStructured({
     prompt,

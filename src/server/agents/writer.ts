@@ -21,6 +21,7 @@ export type RunWriterInput = {
   trajectory?: TrajectoryRecorder;
   runId?: string;
   settings?: Settings;
+  cvPageEstimate?: number | null;
   onUsage?: (usage: PiRunUsage) => void;
 };
 
@@ -56,6 +57,8 @@ export async function runWriter(input: RunWriterInput): Promise<CVDocument> {
     direction: input.direction,
     revisionNotes: input.revisionNotes,
     research: input.research,
+    settings: input.settings,
+    cvPageEstimate: input.cvPageEstimate,
   });
   return runAgentStructured({
     prompt,

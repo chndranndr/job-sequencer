@@ -44,7 +44,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-export const getProfile = () => api<{ profile: StructuredProfile; canonical: boolean; legacyImportAvailable: boolean }>("/api/profile");
+export const getProfile = () => api<{ profile: StructuredProfile; canonical: boolean; legacyImportAvailable: boolean; cvPageEstimate: number | null }>("/api/profile");
 export const importProfile = (file: File, currentProfile?: StructuredProfile | null) => {
   const body = new FormData();
   body.append("file", file);

@@ -847,10 +847,12 @@ h1, h2, h3, p { margin: 0; }
 .chunk li + li { margin-top: 3px; }
 .sample-posting { max-height: none; overflow: visible; }
 .sample-document-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 10px; }
-.sample-document-summary div { display: grid; gap: 3px; padding: 8px; background: var(--well); border: 1px solid var(--line); }
+.sample-document-summary div { display: grid; gap: 3px; padding: 0; }
 .sample-document-summary span { color: var(--mute); font-size: 10px; letter-spacing: .08em; }
 .sample-document-summary b { font-size: 11px; }
 .sample-links { padding: 0 10px 10px; }
+.sample-links a { background: var(--well); border: 1px solid var(--line); }
+.sample-links a:hover { border-color: var(--phos); color: var(--ink); }
 .sample-verification { margin: 0 10px 10px; border: 1px solid var(--line); background: var(--void); }
 .sample-verification .sample-section-head { border-bottom: 1px solid var(--line); }
 .sample-rule { padding: 0 10px 10px; color: var(--warn); font-size: 11px; }
@@ -860,6 +862,8 @@ h1, h2, h3, p { margin: 0; }
 .sample-note-actions button { min-height: 30px; padding: 6px 9px; }
 .sample-boundary, .sample-busy { margin: 10px 0; color: var(--mute); font-size: 11px; line-height: 1.45; }
 .sample-busy { color: var(--warn); }
+.sample-page-meta { margin: -4px 0 10px; color: var(--mute); font-size: 10px; line-height: 1.45; }
+.sample-page-warning { margin: -2px 0 10px; padding: 7px 8px; border: 1px solid var(--warn); background: rgb(255 210 74 / .06); color: var(--warn); font-size: 11px; line-height: 1.45; }
 .sample-dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgb(7 7 11 / .82); }
 .sample-dialog { width: min(560px, 100%); max-height: 90vh; overflow: auto; border: 1px solid var(--phos); background: var(--panel); color: var(--ink); box-shadow: 0 12px 40px rgb(0 0 0 / .6); }
 .sample-dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--void); }

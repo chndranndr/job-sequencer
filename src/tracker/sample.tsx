@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { DocumentVerification, GenerationDirection, Job, JobStage, Run, Settings } from "../shared.js";
-import { defaultGenerationDirection, jobSourceLabel } from "../shared.js";
-import { api, getJob } from "../api.js";
+import { defaultGenerationDirection, effectiveCvPages, jobSourceLabel } from "../shared.js";
+import { api, getJob, getProfile } from "../api.js";
 import { trackerHref } from "./hash.js";
 import { isNarrowLayout, NARROW_LAYOUT_MQ } from "./narrow.js";
 import { scoreToNote } from "./notes.js";
@@ -46,6 +46,7 @@ export const SAMPLE_REVISION_CAP = 3;
 
 export const SAMPLE_DIRECTION_LABELS = {
   cvLength: "CV length",
+  cvPagesOverride: "CV pages override",
   letterMode: "Letter stance",
   letterNarration: "Narration",
   revisionNotes: "Correction",
@@ -55,6 +56,11 @@ export const SAMPLE_DIRECTION_LABELS = {
 export const SAMPLE_READY_REVISE_COPY = "This starts another generate from the stored direction. The job returns to Drafting and loses its approval.";
 
 export type SampleDirectionField = "cvLength" | "letterMode" | "letterNarration" | "revisionNotes";
+
+export function sampleCvPageWarning(cvLength: GenerationDirection["cvLength"], effectivePages: number | null, estimate: number | null) {
+  if (cvLength !== "complete" || effectivePages === null || estimate === null || effectivePages < 1 || effectivePages >= estimate) return "";
+  return `Complete profile is estimated at ${estimate} page${estimate === 1 ? "" : "s"}. With a ${effectivePages}-page target, the AI Agent may shorten the CV to fit.`;
+}
 
 export function sampleDirectionControls(stage: JobStage): SampleDirectionField[] {
   switch (stage) {
@@ -138,6 +144,8 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [runStarting, setRunStarting] = useState<"generate" | "revise" | null>(null);
   const [cvLength, setCvLength] = useState<GenerationDirection["cvLength"]>(defaultGenerationDirection.cvLength);
+  const [cvPagesOverride, setCvPagesOverride] = useState<number | null>(defaultGenerationDirection.cvPagesOverride);
+  const [cvPageEstimate, setCvPageEstimate] = useState<number | null>(null);
   const [letterMode, setLetterMode] = useState<GenerationDirection["letterMode"]>(defaultGenerationDirection.letterMode);
   const [letterNarration, setLetterNarration] = useState(defaultGenerationDirection.letterNarration);
   const [revisionNotes, setRevisionNotes] = useState(defaultGenerationDirection.revisionNotes);
@@ -159,6 +167,7 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
     setApplicationNotes(value.application_notes ?? "");
     const direction = value.generation_direction ?? defaultGenerationDirection;
     setCvLength(direction.cvLength);
+    setCvPagesOverride(direction.cvPagesOverride);
     setLetterMode(direction.letterMode);
     setLetterNarration(direction.letterNarration);
     setRevisionNotes(direction.revisionNotes);
@@ -174,6 +183,11 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
   }, [jobId, syncJob]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    void getProfile().then((result) => { if (active) setCvPageEstimate(result.cvPageEstimate); }).catch(() => { if (active) setCvPageEstimate(null); });
+    return () => { active = false; };
+  }, [jobId]);
   useEffect(() => {
     if (run?.workflow === "generate" && run.status !== "running") void load();
   }, [load, run?.id, run?.status, run?.workflow]);
@@ -253,7 +267,7 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
     }
   }
 
-  async function persistDirection(patch: Partial<Pick<GenerationDirection, "cvLength" | "letterMode" | "letterNarration" | "revisionNotes">>) {
+  async function persistDirection(patch: Partial<Pick<GenerationDirection, "cvLength" | "cvPagesOverride" | "letterMode" | "letterNarration" | "revisionNotes">>) {
     if (!jobId) return false;
     try {
       setJob(await api<Job>(`/api/jobs/${jobId}/direction`, { method: "PUT", body: JSON.stringify(patch) }));
@@ -278,8 +292,8 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
     setRunStarting(kind);
     try {
       const saved = await persistDirection(kind === "generate"
-        ? { cvLength, letterMode, letterNarration }
-        : { cvLength, letterMode, letterNarration, revisionNotes });
+        ? { cvLength, cvPagesOverride, letterMode, letterNarration }
+        : { cvLength, cvPagesOverride, letterMode, letterNarration, revisionNotes });
       if (!saved) return;
       const result = await api<{ runId: string }>(kind === "generate" ? "/api/generate" : `/api/jobs/${jobId}/regenerate`, {
         method: "POST",
@@ -302,6 +316,9 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
   const verified = canApproveSampleDocuments(job.verification);
   const runActive = run?.status === "running";
   const checks = verificationChecks(job.verification);
+  const effectivePages = settings ? effectiveCvPages(settings, { cvPagesOverride }) : null;
+  const pageWarning = sampleCvPageWarning(cvLength, effectivePages, cvPageEstimate);
+  const diskDefault = settings ? `${settings.cvPages} page${settings.cvPages === 1 ? "" : "s"}` : "—";
 
   return <>
     <section className="panel sample-panel">
@@ -396,6 +413,9 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
         <p className="sample-boundary">Opening a posting is external only. This tracker never submits, emails, or advances the workflow automatically.</p>
         {sampleDirectionControls(job.stage).length > 0 && <>
           <label className="field">{SAMPLE_DIRECTION_LABELS.cvLength}<select value={cvLength} disabled={busyAction !== null || runStarting !== null} onChange={(event) => { const next = event.target.value === "short" ? "short" : "complete"; setCvLength(next); void persistDirection({ cvLength: next }); }}><option value="complete">Complete</option><option value="short">Short</option></select></label>
+          <label className="field">{SAMPLE_DIRECTION_LABELS.cvPagesOverride}<input type="number" min={1} max={10} value={cvPagesOverride ?? ""} placeholder={settings ? String(settings.cvPages) : ""} disabled={busyAction !== null || runStarting !== null} onChange={(event) => { const value = event.target.value; setCvPagesOverride(value === "" ? null : Number(value)); }} onBlur={() => { if (cvPagesOverride !== null && (!Number.isInteger(cvPagesOverride) || cvPagesOverride < 1 || cvPagesOverride > 10)) { setCvPagesOverride(job.generation_direction?.cvPagesOverride ?? null); toast("CV pages must be 1–10 or blank."); return; } void persistDirection({ cvPagesOverride }); }} /></label>
+          <p className="sample-page-meta">{cvPagesOverride === null ? `Inherited from DISK · DISK default: ${diskDefault}` : `Override: ${cvPagesOverride} · DISK default: ${diskDefault}`}{cvPageEstimate === null ? " · profile estimate unavailable" : ` · profile estimate ${cvPageEstimate} page${cvPageEstimate === 1 ? "" : "s"}`}{effectivePages === null ? "" : ` · target ${effectivePages}`}</p>
+          {pageWarning && <p className="sample-page-warning" role="status">{pageWarning}</p>}
           <label className="field">{SAMPLE_DIRECTION_LABELS.letterMode}<select value={letterMode} disabled={busyAction !== null || runStarting !== null} onChange={(event) => { const next = event.target.value === "exploratory" ? "exploratory" : "standard"; setLetterMode(next); void persistDirection({ letterMode: next }); }}><option value="standard">Standard</option><option value="exploratory">Exploratory</option></select></label>
           <label className="field">{SAMPLE_DIRECTION_LABELS.letterNarration}<textarea maxLength={500} value={letterNarration} disabled={busyAction !== null || runStarting !== null} onChange={(event) => setLetterNarration(event.target.value)} onBlur={() => void persistDirection({ letterNarration })} placeholder="Optional notes for the letter." /></label>
           {sampleDirectionControls(job.stage).includes("revisionNotes") && <>

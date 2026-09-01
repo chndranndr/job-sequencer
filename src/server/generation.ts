@@ -2,7 +2,7 @@ import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/pro
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { defaultGenerationDirection, type GenerationDirection, type Rank, type StructuredProfile, type TrajectoryRecorder } from "../shared.js";
+import { defaultGenerationDirection, effectiveCvPages, type GenerationDirection, type Rank, type StructuredProfile, type TrajectoryRecorder } from "../shared.js";
 import { ProfileSchema, type Settings } from "./config.js";
 import { compileAndVerify, containedPath, type CommandRunner } from "./documents.js";
 import { createTaskReporter, getJobDetail, updateJobDirection } from "./db.js";
@@ -39,7 +39,7 @@ export const GenerationOutputSchema = z.object({
   gaps: z.array(z.string().trim().min(1)).max(20),
 }).strict();
 export type GenerationOutput = z.infer<typeof GenerationOutputSchema>;
-export type GenerationExecutor = (context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; guidance?: string; settings: Settings; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; direction?: GenerationDirection }) => Promise<unknown>;
+export type GenerationExecutor = (context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; guidance?: string; settings: Settings; cvPageEstimate?: number | null; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; direction?: GenerationDirection }) => Promise<unknown>;
 export const generationRevisionCap = 3;
 export const revisionCapError = `Revision cap of ${generationRevisionCap} already reached.`;
 
@@ -65,11 +65,14 @@ function asRank(value: unknown): Rank {
   };
 }
 
-function userDirectionText(direction: GenerationDirection) {
+function userDirectionText(direction: GenerationDirection, cvPages: number, coverLetterPages: number, cvPageEstimate: number | null) {
+  const compactComplete = direction.cvLength === "complete" && cvPageEstimate !== null && cvPages < cvPageEstimate;
   const lines = [
     direction.cvLength === "short"
-      ? "CV length is short. Write denser two-page copy. Prefer experience achievements and cover-letter evidence that overlap the posting's industry, product domain, and stack. Keep every employer. Drop unrelated bullets instead of summarizing them. Never invent facts. Keep the compiled CV at 2 pages and the cover letter at 1 page. cvEdits must be factual achievement lines from the matching employer only, never planning instructions."
-      : "CV length is complete. Write a full two-page CV. Keep the cover letter at 1 page. cvEdits must be factual achievement lines from the matching employer only, never planning instructions.",
+      ? `CV length is short. Target ${cvPages} CV page(s) and ${coverLetterPages} cover-letter page(s). Write denser copy. Prefer experience achievements and cover-letter evidence that overlap the posting's industry, product domain, and stack. Keep every employer. Drop unrelated bullets instead of summarizing them. Never invent facts. cvEdits must be factual achievement lines from the matching employer only, never planning instructions.`
+      : compactComplete
+        ? `CV length is complete, but the complete profile is estimated at ${cvPageEstimate} CV page(s) while the target is ${cvPages}. Keep every employer and the strongest grounded evidence, then shorten wording and remove redundant or lower-priority detail to fit. Target ${cvPages} CV page(s) and ${coverLetterPages} cover-letter page(s). Never invent facts. cvEdits must be factual achievement lines from the matching employer only, never planning instructions.`
+        : `CV length is complete. Preserve the full profile and target ${cvPages} CV page(s). Keep the cover letter at ${coverLetterPages} page(s). cvEdits must be factual achievement lines from the matching employer only, never planning instructions.`,
     direction.letterMode === "exploratory"
       ? "Letter mode is exploratory. Frame the candidate for an adjacent role. Still list every entry from rank.gaps. Never invent employers, metrics, or titles."
       : "Letter mode is standard. Write to the posted role.",
@@ -84,12 +87,14 @@ function userDirectionText(direction: GenerationDirection) {
   return lines.join("\n");
 }
 
-export function buildGenerationPrompt(context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; direction?: GenerationDirection }, guidance: string, direction = context.direction ?? defaultGenerationDirection) {
+export function buildGenerationPrompt(context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; settings?: Pick<Settings, "cvPages" | "coverLetterPages">; cvPageEstimate?: number | null; direction?: GenerationDirection }, guidance: string, direction = context.direction ?? defaultGenerationDirection) {
   const posting = context.job.posting;
   const jobMetadata = Object.fromEntries(Object.entries(context.job).filter(([key]) => key !== "posting" && key !== "notes" && key !== "application_notes"));
+  const settings = context.settings ?? { cvPages: 2, coverLetterPages: 1 };
+  const cvPages = effectiveCvPages(settings, direction);
   return [
     trustedSection("INSTRUCTIONS", `Return JSON only matching {"cvTemplate":"","roleEmphasis":["verified facts relevant to the role"],"cvEdits":["specific truthful edits"],"profileFacts":["exact verbatim excerpts from profile"],"coverLetterSubject":"","coverLetterParagraphs":["2-4 substantive truthful paragraphs carrying the main narrative and evidence"],"coverLetterBullets":["optional verified complementary points not already stated in paragraphs"],"gaps":["exact entries from rank.gaps"]}. Allowed local CV template IDs: ${JSON.stringify(availableCvTemplateIds(context.templates))}. Set cvTemplate to exactly one ID from this list, verbatim; do not invent, alias, or map template IDs. Use only supplied facts, job data, and gaps; never invent metrics, employers, technologies, responsibilities, or company claims. Keep bullets optional and complementary: omit them when no new evidence remains, and never repeat a paragraph's achievement, metric, or claim. Do not use em-dashes.`),
-    trustedSection("USER DIRECTION", userDirectionText(direction)),
+    trustedSection("USER DIRECTION", userDirectionText(direction, cvPages, settings.coverLetterPages, context.cvPageEstimate ?? null)),
     trustedSection("GUIDANCE", guidance),
     trustedSection("CANDIDATE PROFILE", context.profile),
     untrustedSection("JOB METADATA", JSON.stringify(projectPromptContext(jobMetadata))),
@@ -478,6 +483,78 @@ export function renderStructuredProfile(profile: StructuredProfile, jobText = ""
   };
 }
 
+const PROFILE_ESTIMATE_CHARS_PER_LINE = 95;
+const PROFILE_ESTIMATE_LINES_PER_PAGE = 72;
+
+function estimateTextLines(value: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized ? Math.max(1, Math.ceil(normalized.length / PROFILE_ESTIMATE_CHARS_PER_LINE)) : 0;
+}
+
+function estimateEntryLines(values: readonly string[]) {
+  return values.reduce((total, value) => total + estimateTextLines(value), 0);
+}
+
+/**
+ * ponytail: this is a cheap, template-calibrated advisory estimate; exact PDF
+ * verification remains authoritative if the template or font metrics change.
+ */
+export function estimateCvPages(profile: StructuredProfile) {
+  const experience = profile.experience.filter(entry => entry.title.trim() || entry.company.trim() || entry.description.trim());
+  const skills = selectRelevantSkills(profile.skills, "", []).map(entry => entry.name.trim()).filter(Boolean);
+  const projects = selectRelevantProjects(profile.projects, "", []);
+  const education = profile.education.filter(entry => Boolean(educationEntry(entry)));
+  const certifications = profile.certifications.filter(entry => Boolean(certificationEntry(entry)));
+  const languages = profile.languages.filter(entry => entry.name.trim());
+  const header = [
+    profile.identity.firstName,
+    profile.identity.lastName,
+    profile.identity.headline,
+    profile.identity.email,
+    profile.identity.phone,
+    profile.identity.city,
+    profile.identity.country,
+    profile.identity.website,
+    profile.identity.linkedinUrl,
+    profile.identity.githubUrl,
+  ];
+  const contentLines = estimateTextLines(header.join(" "))
+    + estimateTextLines(profile.identity.summary)
+    + estimateTextLines(skills.join(", "))
+    + experience.reduce((total, entry) => total
+      + estimateTextLines([dateRange(entry), entry.title, entry.company, entry.location, entry.employmentType].join(" "))
+      + estimateEntryLines(selectExperienceBullets(entry.description, "", [], "complete")), 0)
+    + projects.reduce((total, entry) => total
+      + estimateTextLines([dateRange(entry), entry.name, entry.role].join(" "))
+      + estimateEntryLines(splitDescriptionIntoBullets(entry.description)), 0)
+    + education.reduce((total, entry) => total + estimateTextLines([dateRange(entry), entry.degree, entry.fieldOfStudy, entry.institution, entry.gpa].join(" ")), 0)
+    + certifications.reduce((total, entry) => total + estimateTextLines([entry.issueDate, entry.name, entry.issuer, entry.description].join(" ")), 0)
+    + languages.reduce((total, entry) => total + estimateTextLines([entry.name, entry.proficiency].join(" ")), 0);
+  const populatedSections = [
+    profile.identity.summary,
+    skills.join(" "),
+    experience.length ? "experience" : "",
+    projects.length ? "projects" : "",
+    education.length ? "education" : "",
+    certifications.length ? "certifications" : "",
+    languages.length ? "languages" : "",
+  ].filter(Boolean).length;
+  const structuralLines = 5 + populatedSections * 2 + experience.length * 2 + projects.length + education.length * 2 + certifications.length * 2 + languages.length;
+  return Math.max(1, Math.ceil((contentLines + structuralLines) / PROFILE_ESTIMATE_LINES_PER_PAGE));
+}
+
+function compactCvDocument(document: CVDocument, profile: StructuredProfile): CVDocument {
+  // ponytail: cap bullets and restore omitted employer headings as the safety net; exact PDF verification remains authoritative.
+  const present = new Set(document.experiences.map(item => item.experienceId));
+  const omittedEmployers = profile.experience
+    .filter(entry => (entry.title.trim() || entry.company.trim() || entry.description.trim()) && !present.has(entry.id))
+    .map(entry => ({ experienceId: entry.id, bullets: [] }));
+  return {
+    ...document,
+    experiences: [...document.experiences.map(item => ({ ...item, bullets: item.bullets.slice(0, SHORT_EXPERIENCE_BULLET_CAP) })), ...omittedEmployers],
+  };
+}
+
 function renderProfileCompatibility(output: GenerationOutput, email: string, phone: string) {
   const facts = output.profileFacts.map(latex).join("\\\\\n");
   const factBody = facts ? `\\cvitem{}{${facts}}` : "";
@@ -601,6 +678,9 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const allowed = options.allowDrafting ? ["Drafting", "Ready"] : ["Selected"];
   if (!allowed.includes(String(job.stage))) throw new Error(options.allowDrafting ? "Only Drafting or Ready jobs may regenerate." : "Only Selected jobs may generate.");
   if (options.allowDrafting && direction.revisionCount >= generationRevisionCap) throw Object.assign(new Error(revisionCapError), { statusCode: 409 });
+  const structured = parseStructuredProfile(options.profile);
+  const cvPageEstimate = structured ? estimateCvPages(structured) : null;
+  const cvPages = effectiveCvPages(options.settings, direction);
   const tasks = createTaskReporter(options.trajectory, options.runId);
   const jobDetail = `${String(job.role)} · ${String(job.company)}`;
   tasks.start({ taskId: `generate:${options.jobId}:prepare`, label: "Prepare job", detail: jobDetail });
@@ -619,7 +699,6 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const { templatesDir, metadata } = await loadTemplateMetadata(options.projectRoot);
   tasks.complete(`generate:${options.jobId}:prepare`, jobDetail);
   const rank = JSON.parse(String(job.rank_json));
-  const structured = parseStructuredProfile(options.profile);
   const role = String(job.role);
   const company = String(job.company);
   const posting = typeof job.posting === "string" ? job.posting : String(job.posting ?? "");
@@ -692,6 +771,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       trajectory: options.trajectory,
       runId,
       settings: options.settings,
+      cvPageEstimate,
       onUsage: options.onUsage,
       research,
     });
@@ -755,6 +835,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
         trajectory: options.trajectory,
         runId,
         settings: options.settings,
+        cvPageEstimate,
         onUsage: options.onUsage,
         research,
       });
@@ -811,6 +892,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
             trajectory: options.trajectory,
             runId,
             settings: options.settings,
+            cvPageEstimate,
             onUsage: options.onUsage,
           });
           validatedDocument = validateClaims({ document: validatedDocument, profile: structured, bank: context.evidenceBank });
@@ -828,12 +910,14 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     reviewArtifact = findings.critique;
     draftArtifacts = drafts;
     const cvTemplate = selectCvTemplate(metadata, tokenise(`${role} ${posting}`));
+    const compactComplete = direction.cvLength === "complete" && cvPageEstimate !== null && cvPages < cvPageEstimate;
     const renderStructuredDocument = (current: CVDocument) => {
-      visualDocument = current;
-      revisionArtifact = current;
-      output = generationOutputFromDocument(current, parsedStrategy, cvTemplate, context.evidenceBank);
-      profileReplacements = renderCVDocument(structured, current);
-      const letter = renderCoverLetter(current, role, company);
+      const renderable = compactComplete ? compactCvDocument(current, structured) : current;
+      visualDocument = renderable;
+      revisionArtifact = renderable;
+      output = generationOutputFromDocument(renderable, parsedStrategy, cvTemplate, context.evidenceBank);
+      profileReplacements = renderCVDocument(structured, renderable);
+      const letter = renderCoverLetter(renderable, role, company);
       paragraphs = letter.paragraphs;
       coverLetterSubject = letter.subject;
       coverLetterBullets = "";
@@ -857,6 +941,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
           trajectory: options.trajectory,
           runId,
           settings: options.settings,
+          cvPageEstimate,
           onUsage: options.onUsage,
         });
         validatedDocument = validateClaims({ document: validatedDocument, profile: structured, bank: context.evidenceBank });
@@ -866,7 +951,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     }
   } else {
     tasks.start({ taskId: `generate:${options.jobId}:content`, label: "Generate tailored content", detail: jobDetail });
-    const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, signal: options.signal, runId: options.runId, trajectory: options.trajectory, onUsage: options.onUsage, direction });
+    const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, cvPageEstimate, signal: options.signal, runId: options.runId, trajectory: options.trajectory, onUsage: options.onUsage, direction });
     output = validateGenerationOutput(raw, options.profile, Object.keys(metadata.cv), Array.isArray(rank.gaps) ? rank.gaps : [], jobContext);
     const documentVerification = await runDocumentVerifier({
       output,
@@ -913,7 +998,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     const letter = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, metadata.coverLetter), "utf8"), replacements), direction.revisionNotes, options.profile);
     await writeFile(containedPath(revisionDir, "cv.tex"), cv, "utf8");
     await writeFile(containedPath(revisionDir, "cover-letter.tex"), letter, "utf8");
-    const result = await compileAndVerify({ currentDir: revisionDir, cvPages: options.settings.cvPages, coverLetterPages: options.settings.coverLetterPages, email, phone, profile: structured ?? undefined, runner: options.runner, now, signal: options.signal });
+    const result = await compileAndVerify({ currentDir: revisionDir, cvPages, coverLetterPages: options.settings.coverLetterPages, email, phone, profile: structured ?? undefined, runner: options.runner, now, signal: options.signal });
     await writeFile(containedPath(revisionDir, "verification.json"), `${JSON.stringify(result, null, 2)}\n`, "utf8");
     return result;
   };

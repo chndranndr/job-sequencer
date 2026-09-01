@@ -46,7 +46,7 @@ import {
 } from "./config.js";
 import { liveScrapeExecutor, GenerationRunManager, RunManager, type ScrapeExecutor } from "./runs.js";
 import { jobStages, type JobStage } from "./stages.js";
-import { generationRevisionCap, revisionCapError, type GenerationExecutor } from "./generation.js";
+import { estimateCvPages, generationRevisionCap, revisionCapError, type GenerationExecutor } from "./generation.js";
 import type { CriticFn } from "./agents/critic.js";
 import type { FactualAuditorFn } from "./agents/factual-auditor.js";
 import type { ReviserFn } from "./agents/reviser.js";
@@ -315,7 +315,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
 
   app.get("/api/profile", async () => {
     const state = await readStructuredProfile(dataDir);
-    return { profile: state.profile, canonical: state.canonical, legacyImportAvailable: Boolean(state.legacyImport) };
+    return { profile: state.profile, canonical: state.canonical, legacyImportAvailable: Boolean(state.legacyImport), cvPageEstimate: state.canonical ? estimateCvPages(state.profile) : null };
   });
   app.get("/api/profile/legacy", async () => {
     const content = await readLegacyProfile(dataDir);
@@ -327,7 +327,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const value = body && typeof body === "object" && "profile" in body ? (body as { profile: unknown }).profile : body;
     // Backward-compatible only for existing Phase 1–2 API callers; the production UI sends the strict object.
     const profile = typeof value === "string" ? await writeLegacyCompatibilityProfile(dataDir, value) : await writeStructuredProfile(dataDir, ProfileSchema.parse(value));
-    return { profile, canonical: true, legacyImportAvailable: Boolean(await readLegacyProfile(dataDir)) };
+    return { profile, canonical: true, legacyImportAvailable: Boolean(await readLegacyProfile(dataDir)), cvPageEstimate: estimateCvPages(profile) };
   });
   app.post("/api/profile/import", async (req, reply) => {
     let upload: { filename: string; mimetype: string; buffer: Buffer } | undefined;
@@ -453,6 +453,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   app.put("/api/jobs/:id/direction", async (req) => {
     const body = z.object({
       cvLength: z.enum(["short", "complete"]).optional(),
+      cvPagesOverride: z.number().int().min(1).max(10).nullable().optional(),
       letterMode: z.enum(["standard", "exploratory"]).optional(),
       letterNarration: z.string().max(500).optional(),
       revisionNotes: z.string().max(2000).optional(),

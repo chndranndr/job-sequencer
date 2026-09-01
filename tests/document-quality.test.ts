@@ -5,11 +5,52 @@ import { join } from "node:path";
 import { createEmptyProfile, defaultGenerationDirection, type ProjectEntry, type SkillEntry } from "../src/shared.js";
 import { renderCVDocument } from "../src/server/rendering/cv.js";
 import { evidenceRef, type CVDocument } from "../src/server/agents/types.js";
-import { buildGenerationPrompt, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
+import { buildGenerationPrompt, estimateCvPages, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
 import { coverLetterClosing } from "../src/server/rendering/cover-letter.js";
 
 const skill = (name: string): SkillEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name });
 const project = (name: string, role: string, description: string): ProjectEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, role, description, startMonth: "", startYear: "", endMonth: "", endYear: "", url: "" });
+
+function estimatedProfileFixture() {
+  const profile = createEmptyProfile();
+  Object.assign(profile.identity, {
+    firstName: "Ada",
+    lastName: "Lovelace",
+    headline: "Backend Engineer",
+    email: "ada@example.test",
+    phone: "+1 555 0100",
+    city: "London",
+    country: "United Kingdom",
+    summary: "Backend engineer focused on reliable Java platforms. ".repeat(45),
+  });
+  profile.experience = Array.from({ length: 4 }, (_, index) => ({
+    id: `exp-${index}`,
+    title: "Backend Engineer",
+    company: `Example ${index}`,
+    employmentType: "Full-time",
+    location: "Remote",
+    startMonth: "",
+    startYear: "2020",
+    endMonth: "",
+    endYear: "",
+    currentRole: index === 0,
+    description: "Built reliable Java services and improved platform delivery. ".repeat(14),
+  }));
+  profile.skills = Array.from({ length: 18 }, (_, index) => ({ id: `skill-${index}`, name: `Skill ${index}` }));
+  profile.projects = Array.from({ length: 3 }, (_, index) => project(`Backend Project ${index}`, "Engineer", "Built platform services and delivery automation. ".repeat(8)));
+  profile.education = [{ id: "education", institution: "Canonical University", degree: "Bachelor of Science", fieldOfStudy: "Computer Science", startMonth: "", startYear: "2012", endMonth: "", endYear: "2016", gpa: "" }];
+  profile.certifications = [{ id: "certification", name: "AWS Certified", issuer: "Amazon", issueDate: "", expiryDate: "", url: "", description: "" }];
+  profile.languages = [{ id: "language", name: "English", proficiency: "Native" }];
+  return profile;
+}
+
+test("profile CV estimate is deterministic, minimum-one, and monotonic", () => {
+  const profile = estimatedProfileFixture();
+  assert.equal(estimateCvPages(createEmptyProfile()), 1);
+  assert.equal(estimateCvPages(profile), 3);
+  const expanded = { ...profile, experience: profile.experience.map((entry, index) => index === 0 ? { ...entry, description: `${entry.description}\n${"Added grounded delivery detail. ".repeat(40)}` } : entry) };
+  assert.ok(estimateCvPages(expanded) >= estimateCvPages(profile));
+});
 
 test("moderncv template keeps the reference visual contract without reference content", async () => {
   const template = await readFile(join(process.cwd(), "templates/cv/backend_java_spring.tex"), "utf8");
@@ -200,6 +241,20 @@ test("generation prompt makes cover-letter bullets optional and complementary", 
   assert.match(prompt, /optional verified complementary points not already stated in paragraphs/);
   assert.match(prompt, /omit them when no new evidence remains/);
   assert.match(prompt, /never repeat a paragraph's achievement, metric, or claim/);
+});
+
+test("generation prompt describes complete-profile overflow with the effective page target", () => {
+  const prompt = buildGenerationPrompt({
+    profile: "Java backend profile",
+    job: { role: "Backend Engineer" },
+    rank: { gaps: [] },
+    templates: { cv: { backend_java_spring: {} } },
+    settings: { cvPages: 2, coverLetterPages: 1 },
+    cvPageEstimate: 3,
+    direction: { ...defaultGenerationDirection },
+  }, "");
+  assert.match(prompt, /complete profile is estimated at 3 CV page\(s\) while the target is 2/);
+  assert.match(prompt, /shorten wording and remove redundant or lower-priority detail/);
 });
 
 test("revision notes instruct the model not to copy invented claims", () => {

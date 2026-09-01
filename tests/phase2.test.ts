@@ -224,6 +224,61 @@ test("structured profile generation renders a usable CV and cover letter", async
   }
 });
 
+test("structured generation uses the per-job CV page override and DISK cover-letter default", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-override-generation-"));
+  const db = openDatabase(":memory:");
+  const jobId = insertJob(db, "Selected", "override-generation");
+  const structured = createEmptyProfile();
+  Object.assign(structured.identity, {
+    firstName: "Ada",
+    lastName: "Lovelace",
+    headline: "Backend Engineer",
+    email: "ada@example.test",
+    phone: "+1 555 0100",
+    summary: "Backend engineer focused on reliable Java platforms.",
+  });
+  structured.experience = [{ id: "exp-override", title: "Backend Engineer", company: "Example", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2024", endMonth: "", endYear: "", currentRole: true, description: "Built Java services." }];
+  structured.skills = [{ id: "skill-java", name: "Java" }];
+  updateJobDirection(db, jobId, { cvPagesOverride: 3 });
+  const observedPages: number[] = [];
+  const runner: CommandRunner = async (executable, args, _timeout, cwd) => {
+    if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "pdf");
+    if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "pdf");
+    if (executable === "pdfinfo") {
+      const pages = args[0] === "cv.pdf" ? 3 : 1;
+      observedPages.push(pages);
+      return { code: 0, stdout: `Pages: ${pages}\n`, stderr: "" };
+    }
+    if (executable === "pdftotext") return { code: 0, stdout: `${structured.identity.email} ${structured.identity.phone} content`, stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  try {
+    const result = await generateJob({
+      db,
+      dataDir: dir,
+      settings: { ...defaultSettings, cvPages: 2, coverLetterPages: 1 },
+      profile: JSON.stringify(structured),
+      jobId,
+      execute: async () => { throw new Error("structured generation must not call the legacy executor"); },
+      runner,
+      signal: new AbortController().signal,
+      strategist: stubStrategist,
+      writer: async input => {
+        assert.equal(input.settings?.cvPages, 2);
+        assert.equal(input.cvPageEstimate, 1);
+        return stubWriter(input);
+      },
+      auditor: stubAuditor,
+      critic: stubCritic,
+    });
+    assert.equal(result.verification.success, true);
+    assert.deepEqual(observedPages, [3, 1]);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("generate is Selected-only, sequential, keeps Drafting, archives, approves, and explicitly applies", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-p2-"));
   const db = openDatabase(":memory:");

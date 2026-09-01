@@ -243,6 +243,7 @@ export type AtsChecks = {
 
 export type GenerationDirection = {
   cvLength: "short" | "complete";
+  cvPagesOverride: number | null;
   letterMode: "standard" | "exploratory";
   letterNarration: string;
   revisionNotes: string;
@@ -251,11 +252,16 @@ export type GenerationDirection = {
 
 export const defaultGenerationDirection: GenerationDirection = {
   cvLength: "complete",
+  cvPagesOverride: null,
   letterMode: "standard",
   letterNarration: "",
   revisionNotes: "",
   revisionCount: 0,
 };
+
+export function effectiveCvPages(settings: Pick<Settings, "cvPages">, direction: Pick<GenerationDirection, "cvPagesOverride">) {
+  return direction.cvPagesOverride ?? settings.cvPages;
+}
 
 export type Job = {
   id: string;
