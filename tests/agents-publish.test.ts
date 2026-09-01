@@ -78,3 +78,23 @@ test("failed revision compile leaves current bytes and verification unchanged", 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("successful revision replaces current and preserves history", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-publish-success-"));
+  const db = openDatabase(":memory:");
+  const jobId = insertJob(db);
+  const candidate = profile();
+  const signals: AbortSignal[] = [];
+  try {
+    await generateJob(options({ db, dataDir: dir, jobId, runId: "publish-one", profile: JSON.stringify(candidate), runner: runner("first", signals) }));
+    await generateJob(options({ db, dataDir: dir, jobId, runId: "publish-two", profile: JSON.stringify(candidate), runner: runner("second", signals), allowDrafting: true }));
+    const applicationDir = join(dir, "applications", jobId);
+    assert.equal(await readFile(join(applicationDir, "current", "cv.pdf"), "utf8"), "second");
+    const history = await readdir(join(applicationDir, "history"));
+    assert.equal(history.length, 1);
+    assert.equal(await readFile(join(applicationDir, "history", history[0]!, "cv.pdf"), "utf8"), "first");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

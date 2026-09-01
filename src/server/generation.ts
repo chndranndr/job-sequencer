@@ -628,7 +628,21 @@ async function promoteRevision(appDir: string, currentDir: string, revisionDir: 
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (hasCurrent) {
     await mkdir(dirname(historyDir), { recursive: true });
-    await rename(currentDir, historyDir);
+    try {
+      await rename(currentDir, historyDir);
+    } catch (error) {
+      if (process.platform !== "win32") throw error;
+      // ponytail: Windows copy fallback is non-atomic; replace with a lock-aware swap if atomic publish becomes required.
+      await cp(currentDir, historyDir, { recursive: true });
+      try {
+        await cp(stagingDir, currentDir, { recursive: true, force: true });
+      } catch (promoteError) {
+        await cp(historyDir, currentDir, { recursive: true, force: true }).catch(() => {});
+        throw promoteError;
+      }
+      await rm(stagingDir, { recursive: true, force: true });
+      return;
+    }
   }
   try {
     await rename(stagingDir, currentDir);
