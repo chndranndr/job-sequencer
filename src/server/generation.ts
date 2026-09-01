@@ -20,9 +20,13 @@ import { MAX_REVISION_ROUNDS, revisionNeeded, runReviser, type ReviserFn } from 
 import { runStrategist, type StrategistFn } from "./agents/strategist.js";
 import { ApplicationStrategySchema, type ApplicationStrategy, type CVDocument, type EvidenceBank } from "./agents/types.js";
 import { runWriter, type WriterFn } from "./agents/writer.js";
+import { runCompanyResearch, type CompanyResearch, type ResearcherFn } from "./agents/research.js";
+import { runAtsReviewer, type AtsReviewerFn } from "./agents/ats.js";
+import type { AtsReview } from "./agents/types.js";
 import { runStructured } from "./structured.js";
 import { loadTemplateMetadata, selectCvTemplate } from "./templates.js";
 import { runDocumentVerifier } from "./verifier.js";
+import { rasterizePdfPages, type VisualQaFn, type VisualReview } from "./visual.js";
 
 export const GenerationOutputSchema = z.object({
   cvTemplate: z.string().min(1),
@@ -206,12 +210,14 @@ function latex(value: string) { return normalizeProse(value).replace(/[\\#$%&_{}
 function latexUrl(value: string) { return value.trim().replace(/[\\#$%&_{}^~]/g, character => latexEscapes[character] ?? character); }
 
 function parseStructuredProfile(value: string): StructuredProfile | null {
-  try {
-    const parsed = ProfileSchema.safeParse(JSON.parse(value));
-    return parsed.success ? parsed.data as StructuredProfile : null;
-  } catch {
-    return null;
-  }
+  const candidate = value.trim();
+  if (!candidate.startsWith("{") && !candidate.startsWith("[")) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(candidate); }
+  catch { throw new Error("Canonical structured profile is invalid."); }
+  const result = ProfileSchema.safeParse(parsed);
+  if (!result.success) throw new Error("Canonical structured profile is invalid.");
+  return result.data as StructuredProfile;
 }
 
 function contact(profile: string, structured: StructuredProfile | null) {
@@ -472,7 +478,7 @@ export function renderStructuredProfile(profile: StructuredProfile, jobText = ""
   };
 }
 
-function renderLegacyProfile(output: GenerationOutput, email: string, phone: string) {
+function renderProfileCompatibility(output: GenerationOutput, email: string, phone: string) {
   const facts = output.profileFacts.map(latex).join("\\\\\n");
   const factBody = facts ? `\\cvitem{}{${facts}}` : "";
   return { ...headerCommands(null, email, phone), SUMMARY_SECTION: cvSection("Professional Summary", factBody), SKILLS_SECTION: cvSection("Core Skills", factBody), EXPERIENCE: "", EXPERIENCE_SECTION: "", PROJECTS_SECTION: "", EDUCATION_SECTION: "", CERTIFICATIONS_SECTION: "", LANGUAGES_SECTION: "" };
@@ -588,7 +594,7 @@ function generationOutputFromDocument(
   };
 }
 
-export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn; critic?: CriticFn; reviser?: ReviserFn }) {
+export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn; critic?: CriticFn; reviser?: ReviserFn; researcher?: ResearcherFn; researchEnabled?: boolean; atsReviewer?: AtsReviewerFn; atsEnabled?: boolean; visualQa?: VisualQaFn; visualEnabled?: boolean }) {
   const job = options.db.prepare("SELECT * FROM jobs WHERE id=?").get(options.jobId) as Record<string, unknown> | undefined;
   if (!job) throw new Error("Job not found.");
   const direction = getJobDetail(options.db, options.jobId)?.generation_direction ?? { ...defaultGenerationDirection };
@@ -623,7 +629,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const revisionDir = containedPath(appDir, "revisions", runId);
   await mkdir(revisionDir, { recursive: true });
   const { email, phone } = contact(options.profile, structured);
-  let output: GenerationOutput;
+  let output!: GenerationOutput;
   let profileReplacements: Record<string, string>;
   let paragraphs: string[];
   let coverLetterSubject: string;
@@ -632,10 +638,28 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   let revisionArtifact: unknown;
   let auditArtifact: unknown = { issues: [] };
   let reviewArtifact: unknown = {};
+  let atsArtifact: unknown = {};
+  let visualArtifact: unknown = { status: "skipped", pages: [] };
   let draftArtifacts: unknown[] = [];
+  let visualRevision: ((review: VisualReview) => Promise<void>) | undefined;
+  let visualDocument: CVDocument | undefined;
   if (structured) {
     const writingStyle = await loadGuidance(["writingStyle"]);
     const context = buildAgentCandidateContext({ profile: structured, writingStyle });
+    let research: CompanyResearch | undefined;
+    if (options.researchEnabled ?? process.env.COMPANY_RESEARCH_ENABLED === "1") {
+      const researchTask = `generate:${options.jobId}:research`;
+      tasks.start({ taskId: researchTask, label: "Research company context", detail: jobDetail });
+      try {
+        research = await (options.researcher ?? runCompanyResearch)({ company, posting, direction, signal: options.signal, trajectory: options.trajectory, runId, settings: options.settings, onUsage: options.onUsage });
+        tasks.complete(researchTask, jobDetail);
+      } catch (error) {
+        tasks.fail(researchTask, "Company research failed.");
+        throw error;
+      }
+    }
+    const strategyTask = `generate:${options.jobId}:strategy`;
+    tasks.start({ taskId: strategyTask, label: "Plan tailored content", detail: jobDetail });
     const strategy = await (options.strategist ?? runStrategist)({
       context,
       posting,
@@ -646,14 +670,17 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       runId,
       settings: options.settings,
       onUsage: options.onUsage,
+      research,
     });
+    tasks.complete(strategyTask, jobDetail);
     const validated = validateApplicationStrategy(strategy, context.evidenceBank);
     const strategyPath = containedPath(revisionDir, "strategy.json");
     await writeFile(strategyPath, `${JSON.stringify(validated, null, 2)}\n`, "utf8");
     // Writer must consume the on-disk AG-2 artifact, not an in-memory rebuild from cvEdits.
     const stored = ApplicationStrategySchema.parse(JSON.parse(await readFile(strategyPath, "utf8")));
     const parsedStrategy = validateApplicationStrategy(stored, context.evidenceBank);
-    tasks.start({ taskId: `generate:${options.jobId}:content`, label: "Generate tailored content", detail: jobDetail });
+    const writerTask = `generate:${options.jobId}:writer`;
+    tasks.start({ taskId: writerTask, label: "Write tailored content", detail: jobDetail });
     const document = await (options.writer ?? runWriter)({
       context,
       strategy: parsedStrategy,
@@ -666,14 +693,23 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       runId,
       settings: options.settings,
       onUsage: options.onUsage,
+      research,
     });
+    tasks.complete(writerTask, jobDetail);
+    const claimsTask = `generate:${options.jobId}:claims`;
+    tasks.start({ taskId: claimsTask, label: "Validate claims", detail: jobDetail });
     let validatedDocument = validateClaims({
       document,
       profile: structured,
       bank: context.evidenceBank,
     });
+    tasks.complete(claimsTask, jobDetail);
     const drafts: CVDocument[] = [validatedDocument];
-    const review = async (current: CVDocument) => {
+    const review = async (current: CVDocument, round: number) => {
+      const auditTask = `generate:${options.jobId}:audit:${round}`;
+      const criticTask = `generate:${options.jobId}:critic:${round}`;
+      tasks.start({ taskId: auditTask, label: "Audit factual claims", detail: jobDetail });
+      tasks.start({ taskId: criticTask, label: "Critique document quality", detail: jobDetail });
       const reviewInput = {
         document: current,
         context,
@@ -685,15 +721,26 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
         runId,
         settings: options.settings,
         onUsage: options.onUsage,
+        research,
       };
-      const [audit, critique] = await Promise.all([
-        (options.auditor ?? runFactualAuditor)(reviewInput),
-        (options.critic ?? runCritic)(reviewInput),
-      ]);
-      return { audit, critique };
+      try {
+        const [audit, critique] = await Promise.all([
+          (options.auditor ?? runFactualAuditor)(reviewInput),
+          (options.critic ?? runCritic)(reviewInput),
+        ]);
+        tasks.complete(auditTask, jobDetail);
+        tasks.complete(criticTask, jobDetail);
+        return { audit, critique };
+      } catch (error) {
+        tasks.fail(auditTask, "Factual audit failed.");
+        tasks.fail(criticTask, "Quality critique failed.");
+        throw error;
+      }
     };
-    let findings = await review(validatedDocument);
+    let findings = await review(validatedDocument, 0);
     for (let round = 1; round <= MAX_REVISION_ROUNDS && revisionNeeded(findings.audit, findings.critique); round += 1) {
+      const revisionTask = `generate:${options.jobId}:revise:${round}`;
+      tasks.start({ taskId: revisionTask, label: `Revise document (round ${round})`, detail: jobDetail });
       validatedDocument = await (options.reviser ?? runReviser)({
         document: validatedDocument,
         context,
@@ -709,6 +756,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
         runId,
         settings: options.settings,
         onUsage: options.onUsage,
+        research,
       });
       validatedDocument = validateClaims({
         document: validatedDocument,
@@ -716,7 +764,63 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
         bank: context.evidenceBank,
       });
       drafts.push(validatedDocument);
-      findings = await review(validatedDocument);
+      tasks.complete(revisionTask, jobDetail);
+      findings = await review(validatedDocument, round);
+    }
+    const atsEnabled = options.atsEnabled ?? (Boolean(options.atsReviewer) || process.env.ATS_REVIEW_ENABLED === "1");
+    if (atsEnabled) {
+      const atsTask = `generate:${options.jobId}:ats`;
+      tasks.start({ taskId: atsTask, label: "Review ATS coverage", detail: jobDetail });
+      let ats: AtsReview;
+      try {
+        ats = await (options.atsReviewer ?? runAtsReviewer)({
+          document: validatedDocument,
+          context,
+          strategy: parsedStrategy,
+          posting,
+          profile: structured,
+          signal: options.signal,
+          trajectory: options.trajectory,
+          runId,
+          settings: options.settings,
+          onUsage: options.onUsage,
+        });
+        tasks.complete(atsTask, jobDetail);
+      } catch (error) {
+        tasks.fail(atsTask, "ATS review failed.");
+        throw error;
+      }
+      atsArtifact = ats;
+      if (ats.issues.some(issue => issue.kind === "missing_but_supported")) {
+        const atsRevisionTask = `generate:${options.jobId}:ats-revise`;
+        tasks.start({ taskId: atsRevisionTask, label: "Revise ATS coverage", detail: jobDetail });
+        try {
+          validatedDocument = await (options.reviser ?? runReviser)({
+            document: validatedDocument,
+            context,
+            strategy: parsedStrategy,
+            posting,
+            direction,
+            profile: structured,
+            audit: findings.audit,
+            critique: findings.critique,
+            ats,
+            round: 1,
+            research,
+            signal: options.signal,
+            trajectory: options.trajectory,
+            runId,
+            settings: options.settings,
+            onUsage: options.onUsage,
+          });
+          validatedDocument = validateClaims({ document: validatedDocument, profile: structured, bank: context.evidenceBank });
+          drafts.push(validatedDocument);
+          tasks.complete(atsRevisionTask, jobDetail);
+        } catch (error) {
+          tasks.fail(atsRevisionTask, "ATS revision failed.");
+          throw error;
+        }
+      }
     }
     failClosedOnCriticalFactualAudit(findings.audit);
     revisionArtifact = validatedDocument;
@@ -724,22 +828,42 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     reviewArtifact = findings.critique;
     draftArtifacts = drafts;
     const cvTemplate = selectCvTemplate(metadata, tokenise(`${role} ${posting}`));
-    output = generationOutputFromDocument(validatedDocument, parsedStrategy, cvTemplate, context.evidenceBank);
-    const documentVerification = await runDocumentVerifier({
-      output,
-      profile: options.profile,
-      jobContext,
-      trajectory: options.trajectory,
-      runId: options.runId,
-    });
-    if (documentVerification.needsReview) tasks.complete(`generate:${options.jobId}:content`, `${jobDetail} · needs review`);
-    else tasks.complete(`generate:${options.jobId}:content`, jobDetail);
-    profileReplacements = renderCVDocument(structured, validatedDocument);
-    const letter = renderCoverLetter(validatedDocument, role, company);
-    paragraphs = letter.paragraphs;
-    coverLetterSubject = letter.subject;
-    coverLetterBullets = "";
-    coverLetterClosingText = letter.closing;
+    const renderStructuredDocument = (current: CVDocument) => {
+      visualDocument = current;
+      revisionArtifact = current;
+      output = generationOutputFromDocument(current, parsedStrategy, cvTemplate, context.evidenceBank);
+      profileReplacements = renderCVDocument(structured, current);
+      const letter = renderCoverLetter(current, role, company);
+      paragraphs = letter.paragraphs;
+      coverLetterSubject = letter.subject;
+      coverLetterBullets = "";
+      coverLetterClosingText = letter.closing;
+    };
+    renderStructuredDocument(validatedDocument);
+    if (options.visualQa) {
+      visualRevision = async () => {
+        validatedDocument = await (options.reviser ?? runReviser)({
+          document: validatedDocument,
+          context,
+          strategy: parsedStrategy,
+          posting,
+          direction,
+          profile: structured,
+          audit: findings.audit,
+          critique: findings.critique,
+          round: 1,
+          research,
+          signal: options.signal,
+          trajectory: options.trajectory,
+          runId,
+          settings: options.settings,
+          onUsage: options.onUsage,
+        });
+        validatedDocument = validateClaims({ document: validatedDocument, profile: structured, bank: context.evidenceBank });
+        drafts.push(validatedDocument);
+        renderStructuredDocument(validatedDocument);
+      };
+    }
   } else {
     tasks.start({ taskId: `generate:${options.jobId}:content`, label: "Generate tailored content", detail: jobDetail });
     const raw = await options.execute({ profile: options.profile, job, rank, templates: metadata, settings: options.settings, signal: options.signal, runId: options.runId, trajectory: options.trajectory, onUsage: options.onUsage, direction });
@@ -753,7 +877,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     });
     if (documentVerification.needsReview) tasks.complete(`generate:${options.jobId}:content`, `${jobDetail} · needs review`);
     else tasks.complete(`generate:${options.jobId}:content`, jobDetail);
-    profileReplacements = renderLegacyProfile(output, email, phone);
+    profileReplacements = renderProfileCompatibility(output, email, phone);
     paragraphs = letterParagraphValues(output, structured, role, company);
     coverLetterSubject = output.coverLetterSubject || `Application for ${role} at ${company}`;
     coverLetterBullets = letterBullets(output, paragraphs, `${role} ${posting}`, output.roleEmphasis, direction.cvLength);
@@ -764,31 +888,69 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const info = metadata.cv[output.cvTemplate]!;
   tasks.start({ taskId: `generate:${options.jobId}:documents`, label: "Compile and verify documents", detail: jobDetail });
   const currentDir = containedPath(appDir, "current");
-  await writeJson(containedPath(revisionDir, "document.json"), revisionArtifact);
-  await writeJson(containedPath(revisionDir, "audit.json"), auditArtifact);
-  await writeJson(containedPath(revisionDir, "review.json"), reviewArtifact);
   const draftsDir = containedPath(revisionDir, "drafts");
   await mkdir(draftsDir, { recursive: true });
-  for (const [index, draft] of draftArtifacts.entries()) await writeJson(containedPath(draftsDir, `${index + 1}.json`), draft);
-  const location = structured ? [structured.identity.city, structured.identity.country].filter(value => value.trim()).join(", ") : "";
-  const replacements = {
-    ...profileReplacements,
-    CONTACT: [email, phone, location].filter(Boolean).map(latex).join(" \\textbar{} "),
-    ROLE: latex(role),
-    COMPANY: latex(company),
-    DATE: documentDate(now),
-    SUBJECT: latex(coverLetterSubject),
-    SALUTATION: `Dear ${latex(company)} hiring team,`,
-    PARAGRAPHS: paragraphs.map(latex).join("\\par\n"),
-    BULLETS: coverLetterBullets,
-    CLOSING: coverLetterClosingText,
+  const writeAndCompile = async () => {
+    await writeJson(containedPath(revisionDir, "document.json"), revisionArtifact);
+    await writeJson(containedPath(revisionDir, "audit.json"), auditArtifact);
+    await writeJson(containedPath(revisionDir, "review.json"), reviewArtifact);
+    await writeJson(containedPath(revisionDir, "ats.json"), atsArtifact);
+    for (const [index, draft] of draftArtifacts.entries()) await writeJson(containedPath(draftsDir, `${index + 1}.json`), draft);
+    const location = structured ? [structured.identity.city, structured.identity.country].filter(value => value.trim()).join(", ") : "";
+    const replacements = {
+      ...profileReplacements,
+      CONTACT: [email, phone, location].filter(Boolean).map(latex).join(" \\textbar{} "),
+      ROLE: latex(role),
+      COMPANY: latex(company),
+      DATE: documentDate(now),
+      SUBJECT: latex(coverLetterSubject),
+      SALUTATION: `Dear ${latex(company)} hiring team,`,
+      PARAGRAPHS: paragraphs.map(latex).join("\\par\n"),
+      BULLETS: coverLetterBullets,
+      CLOSING: coverLetterClosingText,
+    };
+    const cv = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, info.file), "utf8"), replacements), direction.revisionNotes, options.profile);
+    const letter = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, metadata.coverLetter), "utf8"), replacements), direction.revisionNotes, options.profile);
+    await writeFile(containedPath(revisionDir, "cv.tex"), cv, "utf8");
+    await writeFile(containedPath(revisionDir, "cover-letter.tex"), letter, "utf8");
+    const result = await compileAndVerify({ currentDir: revisionDir, cvPages: options.settings.cvPages, coverLetterPages: options.settings.coverLetterPages, email, phone, profile: structured ?? undefined, runner: options.runner, now, signal: options.signal });
+    await writeFile(containedPath(revisionDir, "verification.json"), `${JSON.stringify(result, null, 2)}\n`, "utf8");
+    return result;
   };
-  const cv = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, info.file), "utf8"), replacements), direction.revisionNotes, options.profile);
-  const letter = stripRevisionNoteLeaks(render(await readFile(containedPath(templatesDir, metadata.coverLetter), "utf8"), replacements), direction.revisionNotes, options.profile);
-  await writeFile(containedPath(revisionDir, "cv.tex"), cv, "utf8");
-  await writeFile(containedPath(revisionDir, "cover-letter.tex"), letter, "utf8");
-  const verification = await compileAndVerify({ currentDir: revisionDir, cvPages: options.settings.cvPages, coverLetterPages: options.settings.coverLetterPages, email, phone, runner: options.runner, now, signal: options.signal });
-  await writeFile(containedPath(revisionDir, "verification.json"), `${JSON.stringify(verification, null, 2)}\n`, "utf8");
+  let verification = await writeAndCompile();
+  const visualEnabled = options.visualEnabled ?? (Boolean(options.visualQa) || process.env.VISUAL_QA_ENABLED === "1");
+  if (visualEnabled && structured && visualDocument) {
+    const visualTask = `generate:${options.jobId}:visual`;
+    tasks.start({ taskId: visualTask, label: "Review rendered pages", detail: jobDetail });
+    const raster = await rasterizePdfPages({ currentDir: revisionDir, runner: options.runner, signal: options.signal });
+    if (raster.status === "ready" && options.visualQa) {
+      try {
+        const review = await options.visualQa({ pagePaths: raster.pages, document: visualDocument, signal: options.signal });
+        visualArtifact = { status: review.status, issues: review.issues, summary: review.summary, pages: raster.pages.map(page => `visual/${page.split(/[\\/]/).pop()}`) };
+        tasks.complete(visualTask, jobDetail);
+        if (review.status === "needs_review" && review.issues.length && visualRevision) {
+          const visualRevisionTask = `generate:${options.jobId}:visual-revise`;
+          tasks.start({ taskId: visualRevisionTask, label: "Revise document layout", detail: jobDetail });
+          try {
+            await visualRevision(review);
+            verification = await writeAndCompile();
+            tasks.complete(visualRevisionTask, jobDetail);
+            visualArtifact = { status: "needs_review", issues: review.issues, summary: review.summary, pages: raster.pages.map(page => `visual/${page.split(/[\\/]/).pop()}`), revisionApplied: true };
+          } catch (error) {
+            tasks.fail(visualRevisionTask, "Visual revision failed.");
+            throw error;
+          }
+        }
+      } catch (error) {
+        tasks.fail(visualTask, "Visual review failed.");
+        throw error;
+      }
+    } else {
+      visualArtifact = { status: "skipped", pages: [] };
+      tasks.complete(visualTask, "Visual review skipped.");
+    }
+  }
+  await writeJson(containedPath(revisionDir, "visual.json"), visualArtifact);
   await promoteRevision(appDir, currentDir, revisionDir, now, runId);
   tasks.complete(`generate:${options.jobId}:documents`, verification.success ? jobDetail : "Document verification needs review.");
   tasks.start({ taskId: `generate:${options.jobId}:finalize`, label: "Finalize job", detail: jobDetail });

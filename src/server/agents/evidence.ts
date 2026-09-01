@@ -2,6 +2,7 @@ import type { StructuredProfile } from "../../shared.js";
 import { evidenceRef, type ApplicationStrategy, type CVDocument, type EvidenceBank, type EvidenceItem, type EvidenceRef } from "./types.js";
 
 const descriptionAbbreviations = new Set(["approx", "co", "corp", "dept", "dr", "e.g", "etc", "fig", "i.e", "inc", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "ltd", "misc", "mr", "mrs", "ms", "no", "nos", "prof", "ref", "rev", "sr", "jr", "st", "vs"]);
+const bulletLinePattern = /^\s*(?:[🟤•●▪◦◉⚫]|[-*])(?:\s+|$)/u;
 
 function isDescriptionAbbreviation(value: string, index: number) {
   if (value[index] !== ".") return false;
@@ -12,7 +13,17 @@ function isDescriptionAbbreviation(value: string, index: number) {
 }
 
 export function splitDescriptionIntoBullets(value: string) {
-  return value.split(/\r\n?|\n/).flatMap(line => {
+  const lines = value.split(/\r\n?|\n/);
+  const wrapped = lines.some(line => bulletLinePattern.test(line))
+    ? lines.reduce<string[]>((result, line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return result;
+      if (result.length && !bulletLinePattern.test(line)) result[result.length - 1] = `${result[result.length - 1]} ${trimmed}`;
+      else result.push(trimmed);
+      return result;
+    }, [])
+    : lines;
+  return wrapped.flatMap(line => {
     const segments: string[] = [];
     let start = 0;
     for (let index = 0; index < line.length; index += 1) {
@@ -112,26 +123,37 @@ function idSet(entries: ReadonlyArray<{ id: string }>) {
   return new Set(entries.map(entry => entry.id));
 }
 
+function canonicalSkillIds(skillIds: string[], known: ReadonlySet<string>) {
+  const normalized = skillIds.map(skillId => {
+    if (known.has(skillId)) return skillId;
+    const rawId = skillId.startsWith("skill:") ? skillId.slice("skill:".length) : "";
+    return rawId && known.has(rawId) ? rawId : skillId;
+  });
+  return normalized.every((skillId, index) => skillId === skillIds[index]) ? skillIds : normalized;
+}
+
 export function validateCVDocument(document: CVDocument, profile: StructuredProfile, bank: EvidenceBank): CVDocument {
   const experienceIds = idSet(profile.experience);
   const projectIds = idSet(profile.projects);
   const skillIds = idSet(profile.skills);
-  for (const experience of document.experiences) {
+  const normalizedSkillIds = canonicalSkillIds(document.skillIds, skillIds);
+  const normalizedDocument = normalizedSkillIds === document.skillIds ? document : { ...document, skillIds: normalizedSkillIds };
+  for (const experience of normalizedDocument.experiences) {
     if (!experienceIds.has(experience.experienceId)) throw new Error(`Unknown experienceId: ${experience.experienceId}`);
   }
-  for (const project of document.projects) {
+  for (const project of normalizedDocument.projects) {
     if (!projectIds.has(project.projectId)) throw new Error(`Unknown projectId: ${project.projectId}`);
   }
-  for (const skillId of document.skillIds) {
+  for (const skillId of normalizedDocument.skillIds) {
     if (!skillIds.has(skillId)) throw new Error(`Unknown skillId: ${skillId}`);
   }
   assertRefsInBank([
-    ...document.summary.evidenceRefs,
-    ...document.experiences.flatMap(experience => experience.bullets.flatMap(bullet => bullet.evidenceRefs)),
-    ...document.projects.flatMap(project => (project.bullets ?? []).flatMap(bullet => bullet.evidenceRefs)),
-    ...document.coverLetter.paragraphs.flatMap(paragraph => paragraph.evidenceRefs),
+    ...normalizedDocument.summary.evidenceRefs,
+    ...normalizedDocument.experiences.flatMap(experience => experience.bullets.flatMap(bullet => bullet.evidenceRefs)),
+    ...normalizedDocument.projects.flatMap(project => (project.bullets ?? []).flatMap(bullet => bullet.evidenceRefs)),
+    ...normalizedDocument.coverLetter.paragraphs.flatMap(paragraph => paragraph.evidenceRefs),
   ], bank);
-  return document;
+  return normalizedDocument;
 }
 
 export function validateApplicationStrategy(strategy: ApplicationStrategy, bank: EvidenceBank): ApplicationStrategy {

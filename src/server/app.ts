@@ -52,6 +52,9 @@ import type { FactualAuditorFn } from "./agents/factual-auditor.js";
 import type { ReviserFn } from "./agents/reviser.js";
 import type { StrategistFn } from "./agents/strategist.js";
 import type { WriterFn } from "./agents/writer.js";
+import type { ResearcherFn } from "./agents/research.js";
+import type { AtsReviewerFn } from "./agents/ats.js";
+import type { VisualQaFn } from "./visual.js";
 import type { CommandRunner } from "./documents.js";
 import { containedPath, friendlyDocumentFilename, runCommand } from "./documents.js";
 import {
@@ -82,6 +85,12 @@ export interface ServerOptions {
   auditor?: FactualAuditorFn;
   critic?: CriticFn;
   reviser?: ReviserFn;
+  researcher?: ResearcherFn;
+  researchEnabled?: boolean;
+  atsReviewer?: AtsReviewerFn;
+  atsEnabled?: boolean;
+  visualQa?: VisualQaFn;
+  visualEnabled?: boolean;
   interviewExecutor?: InterviewExecutor;
   interviewSessionFactory?: InterviewSessionFactory;
   followUpExecutor?: FollowUpExecutor;
@@ -193,6 +202,12 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     auditor: options.auditor,
     critic: options.critic,
     reviser: options.reviser,
+    researcher: options.researcher,
+    researchEnabled: options.researchEnabled,
+    atsReviewer: options.atsReviewer,
+    atsEnabled: options.atsEnabled,
+    visualQa: options.visualQa,
+    visualEnabled: options.visualEnabled,
     load: async () => {
       const context = await baseLoad("generation");
       return { profile: context.profile, settings: context.settings };

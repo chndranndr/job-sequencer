@@ -178,3 +178,17 @@ export const CritiqueSchema = z.object({
   }).strict()),
   summary: z.string().trim().min(1),
 }).strict();
+
+export type AtsIssueKind = "missing_but_supported" | "genuine_gap";
+export type AtsIssue = { requirement: string; kind: AtsIssueKind; evidenceRefs: EvidenceRef[]; note: string };
+export type AtsReview = { issues: AtsIssue[]; summary: string };
+
+export const AtsReviewSchema = z.object({
+  issues: z.array(z.object({
+    requirement: z.string().trim().min(1),
+    kind: z.enum(["missing_but_supported", "genuine_gap"]),
+    evidenceRefs,
+    note: z.string().trim().min(1),
+  }).strict()),
+  summary: z.string().trim().min(1),
+}).strict();

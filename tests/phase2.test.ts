@@ -166,6 +166,7 @@ test("structured profile generation renders a usable CV and cover letter", async
     return { code: 0, stdout: "", stderr: "" };
   };
   let revisionCalls = 0;
+  let researchCalls = 0;
   try {
     await generateJob({
       db,
@@ -185,8 +186,11 @@ test("structured profile generation renders a usable CV and cover letter", async
       auditor: async () => ({ issues: [] }),
       critic: async () => ({ score: 5, issues: [{ severity: "medium" as const, dimension: "specificity" as const, note: "Needs a sharper lead." }], summary: "Needs revision." }),
       reviser: async input => { revisionCalls += 1; return input.document; },
+      researcher: async () => { researchCalls += 1; throw new Error("research should stay off"); },
+      researchEnabled: false,
     });
     assert.equal(revisionCalls, 2);
+    assert.equal(researchCalls, 0);
     const currentDir = join(dir, "applications", jobId, "current");
     const strategyText = await readFile(join(dir, "applications", jobId, "revisions", "phase2-structured", "strategy.json"), "utf8");
     assert.match(strategyText, /\n$/);
@@ -234,9 +238,13 @@ test("generate is Selected-only, sequential, keeps Drafting, archives, approves,
     assert.equal((db.prepare("SELECT stage FROM jobs WHERE id=?").get(recommended) as any).stage, "Recommended");
     const start = await app.inject({ method: "POST", url: "/api/generate", payload: { jobIds: [first, second] } });
     assert.equal(start.statusCode, 202);
-    const done = await wait(app, start.json().runId);
+    const runId = start.json().runId;
+    const done = await wait(app, runId);
     assert.equal(done.status, "succeeded");
     assert.deepEqual(done.summary.results.map((result: { jobId: string }) => result.jobId), [first, second]);
+    const trajectory = (await app.inject({ url: `/api/runs/${runId}/trajectory` })).json();
+    const taskIds = new Set(trajectory.events.filter((event: { type: string }) => event.type.startsWith("task_")).map((event: { payload?: { taskId?: string } }) => event.payload?.taskId));
+    for (const taskId of [`generate:${first}:strategy`, `generate:${first}:writer`, `generate:${first}:claims`, `generate:${first}:audit:0`, `generate:${first}:critic:0`, `generate:${first}:documents`, `generate:${first}:finalize`]) assert.ok(taskIds.has(taskId), taskId);
     for (const id of [first, second]) assert.equal((db.prepare("SELECT stage FROM jobs WHERE id=?").get(id) as any).stage, "Drafting");
     const detail = (await app.inject({ url: `/api/jobs/${first}` })).json();
     assert.equal(detail.verification.success, true);

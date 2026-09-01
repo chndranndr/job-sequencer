@@ -68,6 +68,20 @@ test("task telemetry is ordered, retry-safe, and source-specific", () => {
       ["profile_import:fallback:map", "Map fields with Pi", "pending"],
       ["profile_import:fallback:merge", "Merge into profile bank", "pending"],
     ]);
+    assert.deepEqual(deriveRunTaskRows([], "generate", "running").map((row) => [row.taskId, row.label]), [
+      ["generate:fallback:prepare", "Prepare selected jobs"],
+      ["generate:fallback:research", "Research company context"],
+      ["generate:fallback:strategy", "Plan tailored content"],
+      ["generate:fallback:writer", "Write tailored content"],
+      ["generate:fallback:claims", "Validate claims"],
+      ["generate:fallback:audit", "Audit factual claims"],
+      ["generate:fallback:critic", "Critique document quality"],
+      ["generate:fallback:revise", "Revise document"],
+      ["generate:fallback:ats", "Review ATS coverage"],
+      ["generate:fallback:ats-revise", "Revise ATS coverage"],
+      ["generate:fallback:documents", "Compile and verify documents"],
+      ["generate:fallback:finalize", "Finalize each job"],
+    ]);
   } finally { db.close(); }
 });
 

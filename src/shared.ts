@@ -204,6 +204,9 @@ export type StructuredProfile = {
 export type {
   AgentCandidateContext,
   ApplicationStrategy,
+  AtsIssue,
+  AtsIssueKind,
+  AtsReview,
   CVDocument,
   EvidenceBank,
   EvidenceItem,
@@ -224,6 +227,18 @@ export type DocumentVerification = {
   emailPresent: boolean;
   phonePresent: boolean;
   checkedAt: string;
+  ats?: AtsChecks;
+};
+
+export type AtsChecks = {
+  emailPresent: boolean;
+  phonePresent: boolean;
+  employersPresent: boolean;
+  datesPresent: boolean;
+  glyphError: boolean;
+  replacementCharacter: boolean;
+  duplicateBullets: boolean;
+  issues: string[];
 };
 
 export type GenerationDirection = {
@@ -365,7 +380,15 @@ const fallbackTaskPlan: Record<RunWorkflow, Array<[string, string]>> = {
   ],
   generate: [
     ["generate:fallback:prepare", "Prepare selected jobs"],
-    ["generate:fallback:content", "Generate tailored content"],
+    ["generate:fallback:research", "Research company context"],
+    ["generate:fallback:strategy", "Plan tailored content"],
+    ["generate:fallback:writer", "Write tailored content"],
+    ["generate:fallback:claims", "Validate claims"],
+    ["generate:fallback:audit", "Audit factual claims"],
+    ["generate:fallback:critic", "Critique document quality"],
+    ["generate:fallback:revise", "Revise document"],
+    ["generate:fallback:ats", "Review ATS coverage"],
+    ["generate:fallback:ats-revise", "Revise ATS coverage"],
     ["generate:fallback:documents", "Compile and verify documents"],
     ["generate:fallback:finalize", "Finalize each job"],
   ],

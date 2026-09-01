@@ -6,6 +6,7 @@ import { validateClaims } from "./claim-validator.js";
 import { buildWriterPrompt } from "./prompts/writer.js";
 import { runAgentStructured } from "./runtime.js";
 import { CVDocumentSchema, type AgentCandidateContext, type ApplicationStrategy, type CVDocument } from "./types.js";
+import type { CompanyResearch } from "./research.js";
 
 export type RunWriterInput = {
   context: AgentCandidateContext;
@@ -14,6 +15,7 @@ export type RunWriterInput = {
   direction: GenerationDirection;
   profile: StructuredProfile;
   revisionNotes?: string;
+  research?: CompanyResearch;
   execute?: StructuredRunOptions<CVDocument>["execute"];
   signal?: AbortSignal;
   trajectory?: TrajectoryRecorder;
@@ -53,6 +55,7 @@ export async function runWriter(input: RunWriterInput): Promise<CVDocument> {
     posting: input.posting,
     direction: input.direction,
     revisionNotes: input.revisionNotes,
+    research: input.research,
   });
   return runAgentStructured({
     prompt,

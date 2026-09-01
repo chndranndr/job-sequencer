@@ -6,12 +6,14 @@ import { validateApplicationStrategy } from "./evidence.js";
 import { buildStrategistPrompt } from "./prompts/strategist.js";
 import { runAgentStructured } from "./runtime.js";
 import { ApplicationStrategySchema, type AgentCandidateContext, type ApplicationStrategy } from "./types.js";
+import type { CompanyResearch } from "./research.js";
 
 export type RunStrategistInput = {
   context: AgentCandidateContext;
   posting: string;
   rank: Rank;
   direction: GenerationDirection;
+  research?: CompanyResearch;
   execute?: StructuredRunOptions<ApplicationStrategy>["execute"];
   signal?: AbortSignal;
   trajectory?: TrajectoryRecorder;
@@ -74,6 +76,7 @@ export async function runStrategist(input: RunStrategistInput): Promise<Applicat
     posting: input.posting,
     rank: input.rank,
     direction: input.direction,
+    research: input.research,
   });
   return runAgentStructured({
     prompt,

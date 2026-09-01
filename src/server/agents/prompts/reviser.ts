@@ -1,6 +1,7 @@
 import { projectPromptContext, trustedSection, untrustedSection } from "../../context.js";
 import type { GenerationDirection } from "../../../shared.js";
-import type { AgentCandidateContext, ApplicationStrategy, CVDocument, Critique, FactualAudit } from "../types.js";
+import type { AgentCandidateContext, ApplicationStrategy, AtsReview, CVDocument, Critique, FactualAudit } from "../types.js";
+import type { CompanyResearch } from "../research.js";
 
 const cvDocumentShape = "{\"summary\":{\"text\":\"\",\"evidenceRefs\":[\"\"]},\"experiences\":[{\"experienceId\":\"\",\"bullets\":[{\"text\":\"\",\"evidenceRefs\":[\"\"],\"transformation\":\"rewrite|compress|combine\"}]}],\"skillIds\":[\"\"],\"projects\":[{\"projectId\":\"\",\"bullets\":[{\"text\":\"\",\"evidenceRefs\":[\"\"]}]}],\"coverLetter\":{\"subject\":\"\",\"paragraphs\":[{\"text\":\"\",\"evidenceRefs\":[\"\"]}]}}";
 
@@ -13,6 +14,8 @@ export function buildReviserPrompt(input: {
   audit: FactualAudit;
   critique: Critique;
   round: number;
+  research?: CompanyResearch;
+  ats?: AtsReview;
 }) {
   return [
     trustedSection("INSTRUCTIONS", [
@@ -28,6 +31,8 @@ export function buildReviserPrompt(input: {
     trustedSection("CURRENT CV DOCUMENT", JSON.stringify(projectPromptContext(input.document))),
     trustedSection("FACTUAL AUDIT FINDINGS", JSON.stringify(projectPromptContext(input.audit))),
     trustedSection("QUALITY CRITIQUE FINDINGS", JSON.stringify(projectPromptContext(input.critique))),
+    ...(input.research ? [untrustedSection("EXTERNAL COMPANY RESEARCH", JSON.stringify(projectPromptContext(input.research)))] : []),
+    ...(input.ats ? [trustedSection("ATS COVERAGE FINDINGS", JSON.stringify(projectPromptContext(input.ats)))] : []),
     trustedSection("USER DIRECTION", JSON.stringify(projectPromptContext({
       cvLength: input.direction.cvLength,
       letterMode: input.direction.letterMode,

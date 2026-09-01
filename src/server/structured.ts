@@ -64,6 +64,7 @@ function repairPrompt(prompt: string, previous: string, failure: unknown) {
     prompt,
     "",
     "Repair the prior output. The prior output failed validation. Return corrected JSON only.",
+    "For an Unsupported number error, remove that numeric claim or cite an EvidenceRef containing the exact same number; never substitute a different number.",
     "DETERMINISTIC VALIDATION ERROR (trusted validator output)",
     "---",
     projectPromptText(errorMessage(failure)),

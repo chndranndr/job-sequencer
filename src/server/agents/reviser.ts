@@ -10,10 +10,12 @@ import {
   CVDocumentSchema,
   type AgentCandidateContext,
   type ApplicationStrategy,
+  type AtsReview,
   type CVDocument,
   type Critique,
   type FactualAudit,
 } from "./types.js";
+import type { CompanyResearch } from "./research.js";
 
 export const MAX_REVISION_ROUNDS = 2;
 
@@ -27,6 +29,8 @@ export type RunReviserInput = {
   audit: FactualAudit;
   critique: Critique;
   round: number;
+  research?: CompanyResearch;
+  ats?: AtsReview;
   execute?: StructuredRunOptions<CVDocument>["execute"];
   signal?: AbortSignal;
   trajectory?: TrajectoryRecorder;
@@ -75,6 +79,8 @@ export async function runReviser(input: RunReviserInput): Promise<CVDocument> {
     audit: input.audit,
     critique: input.critique,
     round: input.round,
+    research: input.research,
+    ats: input.ats,
   });
   return runAgentStructured({
     prompt,

@@ -154,6 +154,29 @@ test("evidence bank refs match profile ids and split bullets", () => {
   assert.equal(byRef(bank, "language:lang-en")?.source.entityId, "lang-en");
 });
 
+test("wrapped marked bullets keep their numeric claims together", () => {
+  const profile = createEmptyProfile();
+  profile.experience = [{
+    id: "exp-wrapped",
+    title: "Backend Engineer",
+    company: "Example",
+    employmentType: "Full-time",
+    location: "Remote",
+    startMonth: "",
+    startYear: "2024",
+    endMonth: "",
+    endYear: "",
+    currentRole: true,
+    description: "🟤 Improved API response time by 50%,\nand reduced query time by 30%.\n🟤 Supported 5x peak volume\nwith Kafka.",
+  }];
+  const bank = buildEvidenceBank(profile);
+  const first = byRef(bank, "experience:exp-wrapped:bullet:0");
+  const second = byRef(bank, "experience:exp-wrapped:bullet:1");
+  assert.match(first?.text ?? "", /50%.*30%/);
+  assert.match(second?.text ?? "", /5x.*Kafka/);
+  assert.equal(bank.items.filter(item => item.kind === "experience").length, 2);
+});
+
 test("awards stay off the evidence bank", () => {
   const profile = sampleProfile();
   const bank = buildEvidenceBank(profile);
@@ -229,6 +252,15 @@ test("validateCVDocument throws on an unknown EvidenceRef", () => {
   const document = validDocument(profile);
   document.summary.evidenceRefs = [evidenceRef("skill:not-in-bank")];
   assert.throws(() => validateCVDocument(document, profile, buildEvidenceBank(profile)), /Unknown EvidenceRef: skill:not-in-bank/);
+});
+
+test("validateCVDocument canonicalizes a namespaced skill id but keeps unknown ids invalid", () => {
+  const profile = sampleProfile();
+  const document = validDocument(profile);
+  document.skillIds = ["skill:skill-java"];
+  const normalized = validateCVDocument(document, profile, buildEvidenceBank(profile));
+  assert.deepEqual(normalized.skillIds, ["skill-java"]);
+  assert.throws(() => validateCVDocument({ ...document, skillIds: ["skill:missing"] }, profile, buildEvidenceBank(profile)), /Unknown skillId: skill:missing/);
 });
 
 test("ProfileSchema still accepts a profile that includes awards", () => {
