@@ -44,7 +44,7 @@ function runner(bytes: string, signals: AbortSignal[], fail = false): CommandRun
     if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), bytes);
     if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), bytes);
     if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
-    if (executable === "pdftotext") return { code: 0, stdout: "ada@example.test +1 555 0100", stderr: "" };
+    if (executable === "pdftotext") return { code: 0, stdout: "Example 2024 ada@example.test +1 555 0100", stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
 }

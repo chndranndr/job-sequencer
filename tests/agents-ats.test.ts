@@ -8,7 +8,7 @@ import { createEmptyProfile } from "../src/shared.js";
 import { buildEvidenceBank } from "../src/server/agents/evidence.js";
 import { runAtsReviewer } from "../src/server/agents/ats.js";
 import { AtsReviewSchema, type ApplicationStrategy, type CVDocument } from "../src/server/agents/types.js";
-import { deterministicAtsChecks, type CommandRunner } from "../src/server/documents.js";
+import { compileAndVerify, deterministicAtsChecks, type CommandRunner } from "../src/server/documents.js";
 import { generateJob } from "../src/server/generation.js";
 import { defaultSettings } from "../src/server/config.js";
 import { openDatabase } from "../src/server/db.js";
@@ -59,7 +59,7 @@ test("generation factual-audits a supported ATS revision before promotion", asyn
     if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "cv");
     if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "letter");
     if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
-    if (executable === "pdftotext") return { code: 0, stdout: "ada@example.test +1 555 0100", stderr: "" };
+    if (executable === "pdftotext") return { code: 0, stdout: "Example Labs Jan 2024 ada@example.test +1 555 0100", stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
   let revisionCalls = 0;
@@ -98,7 +98,7 @@ test("generation permits one supported ATS revision", async () => {
     if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "cv");
     if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "letter");
     if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
-    if (executable === "pdftotext") return { code: 0, stdout: "ada@example.test +1 555 0100", stderr: "" };
+    if (executable === "pdftotext") return { code: 0, stdout: "Example Labs Jan 2024 ada@example.test +1 555 0100", stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
   let revisionCalls = 0;
@@ -118,6 +118,44 @@ test("generation permits one supported ATS revision", async () => {
     assert.equal(ats.issues[0].kind, "missing_but_supported");
   } finally {
     db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("compile verification blocks hard deterministic ATS issues", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-ats-hard-gate-"));
+  const { profile } = fixture();
+  try {
+    await writeFile(join(dir, "cv.tex"), "x");
+    await writeFile(join(dir, "cover-letter.tex"), "x");
+    const runner: CommandRunner = async (executable, args, _timeout, cwd) => {
+      if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "pdf");
+      if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "pdf");
+      if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
+      if (executable === "pdftotext") return { code: 0, stdout: "ada@example.test +1 555 0100", stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 2, coverLetterPages: 1, email: profile.identity.email, phone: profile.identity.phone, profile, runner }), /Deterministic ATS checks failed: employer_missing, date_missing/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("duplicate-bullet ATS findings remain non-blocking diagnostics", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-ats-soft-diagnostic-"));
+  const { profile } = fixture();
+  try {
+    await writeFile(join(dir, "cv.tex"), "x");
+    await writeFile(join(dir, "cover-letter.tex"), "x");
+    const runner: CommandRunner = async (executable, args, _timeout, cwd) => {
+      if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "pdf");
+      if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "pdf");
+      if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
+      if (executable === "pdftotext") return { code: 0, stdout: args[0] === "cv.pdf" ? "Example Labs Jan 2024\n- Same bullet\n- Same bullet\nada@example.test +1 555 0100" : "ada@example.test +1 555 0100", stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const result = await compileAndVerify({ currentDir: dir, cvPages: 2, coverLetterPages: 1, email: profile.identity.email, phone: profile.identity.phone, profile, runner });
+    assert.equal(result.success, true);
+    assert.deepEqual(result.ats?.issues, ["duplicate_bullet"]);
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

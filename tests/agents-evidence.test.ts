@@ -6,7 +6,7 @@ import { ProfileSchema } from "../src/server/config.js";
 import { buildAgentCandidateContext } from "../src/server/agents/context.js";
 import { buildEvidenceBank, validateApplicationStrategy, validateCVDocument } from "../src/server/agents/evidence.js";
 import { runAgentStructured } from "../src/server/agents/runtime.js";
-import { evidenceRef, type ApplicationStrategy, type CVDocument, type EvidenceRef } from "../src/server/agents/types.js";
+import { CVDocumentSchema, evidenceRef, type ApplicationStrategy, type CVDocument, type EvidenceRef } from "../src/server/agents/types.js";
 
 const OutputSchema = z.object({ value: z.string().min(1) }).strict();
 const splitDescription = "Improved availability to 99.95% using e.g. Java. Reduced response time for customers.";
@@ -252,6 +252,20 @@ test("validateCVDocument throws on an unknown EvidenceRef", () => {
   const document = validDocument(profile);
   document.summary.evidenceRefs = [evidenceRef("skill:not-in-bank")];
   assert.throws(() => validateCVDocument(document, profile, buildEvidenceBank(profile)), /Unknown EvidenceRef: skill:not-in-bank/);
+});
+
+test("candidate claims require provenance while cover-letter context may omit it", () => {
+  const profile = sampleProfile();
+  const bank = buildEvidenceBank(profile);
+  const document = validDocument(profile);
+  assert.doesNotThrow(() => CVDocumentSchema.parse(document));
+  const emptySummary = { ...document, summary: { ...document.summary, evidenceRefs: [] } };
+  assert.throws(() => CVDocumentSchema.parse(emptySummary));
+  assert.throws(() => validateCVDocument(emptySummary, profile, bank), /Summary requires at least one EvidenceRef/);
+  const experience = document.experiences[0]!;
+  assert.throws(() => CVDocumentSchema.parse({ ...document, experiences: [{ ...experience, bullets: [{ ...experience.bullets[0]!, evidenceRefs: [] }] }] }));
+  assert.throws(() => CVDocumentSchema.parse({ ...document, projects: [{ projectId: "proj-api", bullets: [{ text: "Built APIs.", evidenceRefs: [] }] }] }));
+  assert.doesNotThrow(() => CVDocumentSchema.parse({ ...document, coverLetter: { ...document.coverLetter, paragraphs: [{ text: "I am applying for this role.", evidenceRefs: [] }] } }));
 });
 
 test("validateCVDocument canonicalizes a namespaced skill id but keeps unknown ids invalid", () => {

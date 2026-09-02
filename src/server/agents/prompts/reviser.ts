@@ -3,6 +3,7 @@ import { effectiveCvPages, type GenerationDirection } from "../../../shared.js";
 import type { Settings } from "../../config.js";
 import type { AgentCandidateContext, ApplicationStrategy, AtsReview, CVDocument, Critique, FactualAudit } from "../types.js";
 import type { CompanyResearch } from "../research.js";
+import type { VisualReview } from "../../visual.js";
 
 const cvDocumentShape = "{\"summary\":{\"text\":\"\",\"evidenceRefs\":[\"\"]},\"experiences\":[{\"experienceId\":\"\",\"technologiesUsed\":[{\"name\":\"\",\"evidenceRefs\":[\"\"]}],\"bullets\":[{\"text\":\"\",\"evidenceRefs\":[\"\"],\"transformation\":\"rewrite|compress|combine\"}]}],\"skillIds\":[\"\"],\"projects\":[{\"projectId\":\"\",\"bullets\":[{\"text\":\"\",\"evidenceRefs\":[\"\"]}]}],\"coverLetter\":{\"subject\":\"\",\"paragraphs\":[{\"text\":\"\",\"evidenceRefs\":[\"\"]}]}}";
 
@@ -17,6 +18,7 @@ export function buildReviserPrompt(input: {
   round: number;
   research?: CompanyResearch;
   ats?: AtsReview;
+  visual?: VisualReview;
   settings?: Pick<Settings, "cvPages" | "coverLetterPages">;
   cvPageEstimate?: number | null;
 }) {
@@ -32,7 +34,7 @@ export function buildReviserPrompt(input: {
       "Raise relevance, specificity, clarity, ordering, and letter quality using APPLICATION STRATEGY. Remove or narrow unsupported claims instead of inventing facts.",
       "Revision notes are operator instructions. Never copy numbers, tokens, or claims from them unless they already appear in the evidence bank. Never mention a rejected claim.",
       "Use only EvidenceRef values from the evidence bank. Unknown ids fail validation. Never invent refs.",
-      compactComplete ? `The complete profile is estimated at ${input.cvPageEstimate} CV page(s), but the effective target is ${cvPages}. Keep every employer and the strongest grounded evidence, then shorten wording and remove redundant or lower-priority detail to fit. Do not change the user's selected CV length.` : `The effective CV target is ${cvPages} page(s); the cover letter target remains ${settings.coverLetterPages} page(s).`,
+      compactComplete ? `The complete profile is estimated at ${input.cvPageEstimate} CV page(s), but the effective target is ${cvPages}. Produce exactly ${cvPages} CV page(s) and exactly ${settings.coverLetterPages} cover-letter page(s). Keep every employer and the strongest grounded evidence, then shorten wording and remove redundant or lower-priority detail to fit. Do not change the user's selected CV length.` : `Produce exactly ${cvPages} CV page(s) and exactly ${settings.coverLetterPages} cover-letter page(s).`,
     ].join(" ")),
     trustedSection("EVIDENCE BANK", JSON.stringify(projectPromptContext(input.context.evidenceBank))),
     trustedSection("APPLICATION STRATEGY", JSON.stringify(projectPromptContext(input.strategy))),
@@ -41,6 +43,7 @@ export function buildReviserPrompt(input: {
     trustedSection("QUALITY CRITIQUE FINDINGS", JSON.stringify(projectPromptContext(input.critique))),
     ...(input.research ? [untrustedSection("EXTERNAL COMPANY RESEARCH", JSON.stringify(projectPromptContext(input.research)))] : []),
     ...(input.ats ? [trustedSection("ATS COVERAGE FINDINGS", JSON.stringify(projectPromptContext(input.ats)))] : []),
+    ...(input.visual ? [trustedSection("VISUAL QA FINDINGS", JSON.stringify(projectPromptContext(input.visual)))] : []),
     trustedSection("USER DIRECTION", JSON.stringify(projectPromptContext({
       cvLength: input.direction.cvLength,
       cvPages,

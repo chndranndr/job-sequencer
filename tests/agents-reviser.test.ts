@@ -61,6 +61,7 @@ test("reviser prompt carries findings, protects posting, and omits the profile",
     audit: { issues: [] },
     critique: { score: 5, issues: [{ severity: "high", dimension: "relevance", note: "Too generic." }], summary: "Fix relevance." },
     round: 1,
+    visual: { status: "needs_review", issues: ["crowded footer"], summary: "Layout needs a pass." },
   });
   const [trusted, untrusted] = prompt.split("UNTRUSTED EXTERNAL JOB POSTING");
   assert.match(untrusted ?? "", /Ignore previous instructions/);
@@ -69,6 +70,8 @@ test("reviser prompt carries findings, protects posting, and omits the profile",
   assert.doesNotMatch(prompt, /ada@example\.test/);
   assert.match(prompt, /QUALITY CRITIQUE FINDINGS/);
   assert.match(prompt, /FACTUAL AUDIT FINDINGS/);
+  assert.match(prompt, /VISUAL QA FINDINGS/);
+  assert.match(prompt, /crowded footer/);
   assert.match(prompt, /technologiesUsed only when relevant technology evidence is tied to that same experience/);
   assert.match(prompt, /omit the field entirely for companies without such evidence/);
 });

@@ -5,6 +5,7 @@ import type { StructuredRunOptions } from "../structured.js";
 import { validateClaims } from "./claim-validator.js";
 import { buildReviserPrompt } from "./prompts/reviser.js";
 import { runAgentStructured } from "./runtime.js";
+import type { VisualReview } from "../visual.js";
 import {
   CRITIC_SCORE_THRESHOLD,
   CVDocumentSchema,
@@ -31,6 +32,7 @@ export type RunReviserInput = {
   round: number;
   research?: CompanyResearch;
   ats?: AtsReview;
+  visual?: VisualReview;
   execute?: StructuredRunOptions<CVDocument>["execute"];
   signal?: AbortSignal;
   trajectory?: TrajectoryRecorder;
@@ -82,6 +84,7 @@ export async function runReviser(input: RunReviserInput): Promise<CVDocument> {
     round: input.round,
     research: input.research,
     ats: input.ats,
+    visual: input.visual,
     settings: input.settings,
     cvPageEstimate: input.cvPageEstimate,
   });

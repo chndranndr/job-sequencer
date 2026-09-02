@@ -94,7 +94,7 @@ const fakeRunner: CommandRunner = async (executable, args, _timeout, cwd) => {
   if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "pdf");
   if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "pdf");
   if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
-  if (executable === "pdftotext") return { code: 0, stdout: "person@example.test +62 812 3456 7890 content", stderr: "" };
+  if (executable === "pdftotext") return { code: 0, stdout: "Example 2024 person@example.test +62 812 3456 7890 content", stderr: "" };
   return { code: 0, stdout: "", stderr: "" };
 };
 
@@ -112,18 +112,18 @@ test("generation Pi session exposes no tools", async () => {
   try { assert.deepEqual(session.getActiveToolNames(), []); } finally { session.dispose(); }
 });
 
-test("document verification accepts under-target pages and rejects overflow", async () => {
+test("document verification requires exact target pages", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-doc-"));
   try {
     await writeFile(join(dir, "cv.tex"), "x");
     await writeFile(join(dir, "cover-letter.tex"), "x");
     const result = await compileAndVerify({ currentDir: dir, cvPages: 2, coverLetterPages: 1, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner });
     assert.equal(result.success, true);
-    const underTarget = await compileAndVerify({ currentDir: dir, cvPages: 3, coverLetterPages: 2, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner });
-    assert.equal(underTarget.cvPages, 2);
-    assert.equal(underTarget.coverLetterPages, 1);
-    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 1, coverLetterPages: 1, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /CV must be at most 1 page/);
-    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 2, coverLetterPages: 0, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /Cover letter must be at most 0 pages/);
+    assert.equal(result.cvPages, 2);
+    assert.equal(result.coverLetterPages, 1);
+    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 3, coverLetterPages: 2, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /CV must be exactly 3 pages/);
+    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 1, coverLetterPages: 1, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /CV must be exactly 1 page/);
+    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 2, coverLetterPages: 0, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /Cover letter must be exactly 0 pages/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -166,7 +166,7 @@ test("structured profile generation renders a usable CV and cover letter", async
     if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "pdf");
     if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "pdf");
     if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
-    if (executable === "pdftotext") return { code: 0, stdout: `${structured.identity.email} ${structured.identity.phone} content`, stderr: "" };
+    if (executable === "pdftotext") return { code: 0, stdout: `${experience.company} ${experience.startYear} ${structured.identity.email} ${structured.identity.phone} content`, stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
   let revisionCalls = 0;
@@ -253,7 +253,7 @@ test("structured generation uses the per-job CV page override and DISK cover-let
       observedPages.push(pages);
       return { code: 0, stdout: `Pages: ${pages}\n`, stderr: "" };
     }
-    if (executable === "pdftotext") return { code: 0, stdout: `${structured.identity.email} ${structured.identity.phone} content`, stderr: "" };
+    if (executable === "pdftotext") return { code: 0, stdout: `Example 2024 ${structured.identity.email} ${structured.identity.phone} content`, stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
   try {

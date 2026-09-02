@@ -68,6 +68,7 @@ export async function runCommand(executable: string, args: string[], timeoutMs =
 }
 
 function pageCount(output:string){ const match=/^Pages:\s*(\d+)\s*$/im.exec(output); if(!match)throw new Error("Could not read PDF page count."); return Number(match[1]); }
+const hardAtsIssues = new Set(["email_missing", "phone_missing", "employer_missing", "date_missing", "cid_glyph_error", "replacement_character"]);
 function dateVariants(value: string) {
   const variants = [value.trim()];
   const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(value.trim());
@@ -113,9 +114,12 @@ export async function compileAndVerify(options:{currentDir:string;cvPages:number
   const cvText=(await checked(runner,"pdftotext",["cv.pdf","-"],options.currentDir,options.signal)).stdout.trim();
   const letterText=(await checked(runner,"pdftotext",["cover-letter.pdf","-"],options.currentDir,options.signal)).stdout.trim();
   const cvCount=pageCount(cvInfo.stdout),letterCount=pageCount(letterInfo.stdout);
-  if(cvCount>options.cvPages)throw new Error(`CV must be at most ${options.cvPages} pages.`);
-  if(letterCount>options.coverLetterPages)throw new Error(`Cover letter must be at most ${options.coverLetterPages} pages.`);
+  if(cvCount!==options.cvPages)throw new Error(`CV must be exactly ${options.cvPages} pages.`);
+  if(letterCount!==options.coverLetterPages)throw new Error(`Cover letter must be exactly ${options.coverLetterPages} pages.`);
   if(!cvText||!letterText)throw new Error("Generated PDF text is empty.");
   if(!cvText.includes(options.email)||!cvText.includes(options.phone)||!letterText.includes(options.email)||!letterText.includes(options.phone))throw new Error("Each generated PDF must contain the profile email and phone.");
-  return {success:true,cvPages:cvCount,coverLetterPages:letterCount,cvTextPresent:true,coverLetterTextPresent:true,emailPresent:true,phonePresent:true,checkedAt:options.now??new Date().toISOString(),ats:deterministicAtsChecks({ cvText, coverLetterText: letterText, profile: options.profile })};
+  const ats=deterministicAtsChecks({ cvText, coverLetterText: letterText, profile: options.profile });
+  const blockingAtsIssues=ats.issues.filter(issue => hardAtsIssues.has(issue));
+  if(blockingAtsIssues.length)throw new Error(`Deterministic ATS checks failed: ${blockingAtsIssues.join(", ")}.`);
+  return {success:true,cvPages:cvCount,coverLetterPages:letterCount,cvTextPresent:true,coverLetterTextPresent:true,emailPresent:true,phonePresent:true,checkedAt:options.now??new Date().toISOString(),ats};
 }

@@ -61,17 +61,19 @@ test("visual findings trigger at most one document revision before promotion", a
   let audits = 0;
   let compilePass = 0;
   const visualReviews: string[][] = [];
+  let reviserVisualIssues: string[] = [];
   const runner = async (executable: string, args: string[], _timeout?: number, cwd?: string) => {
     if (executable === "lualatex") { compilePass += 1; await writeFile(join(cwd!, "cv.pdf"), "cv"); }
     if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "letter");
     if (executable === "pdftoppm") await writeFile(`${args.at(-1)}-${compilePass}.png`, "png");
     if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
-    if (executable === "pdftotext") return { code: 0, stdout: "ada@example.test +1 555 0100", stderr: "" };
+    if (executable === "pdftotext") return { code: 0, stdout: "Example 2024 ada@example.test +1 555 0100", stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
   try {
-    await generateJob({ db, dataDir: dir, jobId, settings: defaultSettings, profile: JSON.stringify(profile), execute: async () => ({}), runner, signal: new AbortController().signal, strategist: async () => strategy, writer: async () => document, auditor: async () => { audits += 1; return { issues: [] }; }, critic: async () => ({ score: 8, issues: [], summary: "Ready." }), reviser: async input => { revisions += 1; return input.document; }, visualQa: async input => { visualReviews.push(input.pagePaths); return visualReviews.length === 1 ? { status: "needs_review", issues: ["crowded footer"], summary: "Layout needs a pass." } : { status: "passed", issues: [], summary: "Final layout is readable." }; }, visualEnabled: true });
+    await generateJob({ db, dataDir: dir, jobId, settings: defaultSettings, profile: JSON.stringify(profile), execute: async () => ({}), runner, signal: new AbortController().signal, strategist: async () => strategy, writer: async () => document, auditor: async () => { audits += 1; return { issues: [] }; }, critic: async () => ({ score: 8, issues: [], summary: "Ready." }), reviser: async input => { revisions += 1; reviserVisualIssues = input.visual?.issues ?? []; return input.document; }, visualQa: async input => { visualReviews.push(input.pagePaths); return visualReviews.length === 1 ? { status: "needs_review", issues: ["crowded footer"], summary: "Layout needs a pass." } : { status: "passed", issues: [], summary: "Final layout is readable." }; }, visualEnabled: true });
     assert.equal(revisions, 1);
+    assert.deepEqual(reviserVisualIssues, ["crowded footer"]);
     assert.equal(audits, 2);
     assert.equal(visualReviews.length, 2);
     assert.notDeepEqual(visualReviews[0], visualReviews[1]);

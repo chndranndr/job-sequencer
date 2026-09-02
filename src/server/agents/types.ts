@@ -82,7 +82,7 @@ const candidateFit = z.enum(["strong", "partial", "gap"]);
 export const CVDocumentSchema = z.object({
   summary: z.object({
     text: z.string(),
-    evidenceRefs,
+    evidenceRefs: nonEmptyEvidenceRefs,
   }).strict(),
   experiences: z.array(z.object({
     experienceId: z.string().trim().min(1),
@@ -92,7 +92,7 @@ export const CVDocumentSchema = z.object({
     }).strict()).min(1).optional(),
     bullets: z.array(z.object({
       text: z.string().trim().min(1),
-      evidenceRefs,
+      evidenceRefs: nonEmptyEvidenceRefs,
       transformation: z.enum(["rewrite", "compress", "combine"]),
     }).strict()),
   }).strict()),
@@ -101,7 +101,7 @@ export const CVDocumentSchema = z.object({
     projectId: z.string().trim().min(1),
     bullets: z.array(z.object({
       text: z.string().trim().min(1),
-      evidenceRefs,
+      evidenceRefs: nonEmptyEvidenceRefs,
     }).strict()).optional(),
   }).strict()),
   coverLetter: z.object({

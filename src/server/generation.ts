@@ -67,10 +67,10 @@ function userDirectionText(direction: GenerationDirection, cvPages: number, cove
   const compactComplete = direction.cvLength === "complete" && cvPageEstimate !== null && cvPages < cvPageEstimate;
   const lines = [
     direction.cvLength === "short"
-      ? `CV length is short. Target ${cvPages} CV page(s) and ${coverLetterPages} cover-letter page(s). Write denser copy. Prefer experience achievements and cover-letter evidence that overlap the posting's industry, product domain, and stack. Keep every employer. Drop unrelated bullets instead of summarizing them. Never invent facts. cvEdits must be factual achievement lines from the matching employer only, never planning instructions.`
+      ? `CV length is short. Produce exactly ${cvPages} CV page(s) and exactly ${coverLetterPages} cover-letter page(s). Write denser copy. Prefer experience achievements and cover-letter evidence that overlap the posting's industry, product domain, and stack. Keep every employer. Drop unrelated bullets instead of summarizing them. Never invent facts. cvEdits must be factual achievement lines from the matching employer only, never planning instructions.`
       : compactComplete
-        ? `CV length is complete, but the complete profile is estimated at ${cvPageEstimate} CV page(s) while the target is ${cvPages}. Keep every employer and the strongest grounded evidence, then shorten wording and remove redundant or lower-priority detail to fit. Target ${cvPages} CV page(s) and ${coverLetterPages} cover-letter page(s). Never invent facts. cvEdits must be factual achievement lines from the matching employer only, never planning instructions.`
-        : `CV length is complete. Preserve the full profile and target ${cvPages} CV page(s). Keep the cover letter at ${coverLetterPages} page(s). cvEdits must be factual achievement lines from the matching employer only, never planning instructions.`,
+        ? `CV length is complete, but the complete profile is estimated at ${cvPageEstimate} CV page(s) while the target is ${cvPages}. Keep every employer and the strongest grounded evidence, then shorten wording and remove redundant or lower-priority detail to fit. Produce exactly ${cvPages} CV page(s) and exactly ${coverLetterPages} cover-letter page(s). Never invent facts. cvEdits must be factual achievement lines from the matching employer only, never planning instructions.`
+        : `CV length is complete. Preserve the full profile and produce exactly ${cvPages} CV page(s) and exactly ${coverLetterPages} cover-letter page(s). cvEdits must be factual achievement lines from the matching employer only, never planning instructions.`,
     direction.letterMode === "exploratory"
       ? "Letter mode is exploratory. Frame the candidate for an adjacent role. Still list every entry from rank.gaps. Never invent employers, metrics, or titles."
       : "Letter mode is standard. Write to the posted role.",
@@ -975,7 +975,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     };
     renderStructuredDocument(validatedDocument);
     if (visualQa) {
-      visualRevision = async () => {
+      visualRevision = async (review) => {
         validatedDocument = await (options.reviser ?? runReviser)({
           document: validatedDocument,
           context,
@@ -993,6 +993,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
           settings: options.settings,
           cvPageEstimate,
           onUsage: options.onUsage,
+          visual: review,
         });
         validatedDocument = validateClaims({ document: validatedDocument, profile: structured, bank: context.evidenceBank });
         drafts.push(validatedDocument);

@@ -132,6 +132,18 @@ function canonicalSkillIds(skillIds: string[], known: ReadonlySet<string>) {
   return normalized.every((skillId, index) => skillId === skillIds[index]) ? skillIds : normalized;
 }
 
+function assertNonEmptyClaimRefs(document: CVDocument) {
+  const assertPresent = (label: string, refs: readonly EvidenceRef[]) => {
+    if (!refs.length) throw new Error(`${label} requires at least one EvidenceRef.`);
+  };
+  assertPresent("Summary", document.summary.evidenceRefs);
+  for (const experience of document.experiences) {
+    for (const [index, technology] of (experience.technologiesUsed ?? []).entries()) assertPresent(`Experience ${experience.experienceId} technology ${index}`, technology.evidenceRefs);
+    for (const [index, bullet] of experience.bullets.entries()) assertPresent(`Experience ${experience.experienceId} bullet ${index}`, bullet.evidenceRefs);
+  }
+  for (const project of document.projects) for (const [index, bullet] of (project.bullets ?? []).entries()) assertPresent(`Project ${project.projectId} bullet ${index}`, bullet.evidenceRefs);
+}
+
 export function validateCVDocument(document: CVDocument, profile: StructuredProfile, bank: EvidenceBank): CVDocument {
   const experienceIds = idSet(profile.experience);
   const projectIds = idSet(profile.projects);
@@ -147,6 +159,7 @@ export function validateCVDocument(document: CVDocument, profile: StructuredProf
   for (const skillId of normalizedDocument.skillIds) {
     if (!skillIds.has(skillId)) throw new Error(`Unknown skillId: ${skillId}`);
   }
+  assertNonEmptyClaimRefs(normalizedDocument);
   assertRefsInBank([
     ...normalizedDocument.summary.evidenceRefs,
     ...normalizedDocument.experiences.flatMap(experience => [
