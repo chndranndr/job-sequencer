@@ -98,3 +98,25 @@ test("successful revision replaces current and preserves history", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("successful revisions retain only the three most recent history entries", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-publish-history-limit-"));
+  const db = openDatabase(":memory:");
+  const jobId = insertJob(db);
+  const candidate = profile();
+  const signals: AbortSignal[] = [];
+  try {
+    await generateJob(options({ db, dataDir: dir, jobId, runId: "publish-one", profile: JSON.stringify(candidate), runner: runner("first", signals) }));
+    for (const [runId, bytes] of [["publish-two", "second"], ["publish-three", "third"], ["publish-four", "fourth"], ["publish-five", "fifth"]] as const) {
+      await generateJob(options({ db, dataDir: dir, jobId, runId, profile: JSON.stringify(candidate), runner: runner(bytes, signals), allowDrafting: true }));
+    }
+    const applicationDir = join(dir, "applications", jobId);
+    const history = await readdir(join(applicationDir, "history"));
+    assert.equal(history.length, 3);
+    assert.deepEqual((await Promise.all(history.map((entry) => readFile(join(applicationDir, "history", entry, "cv.pdf"), "utf8")))).sort(), ["fourth", "second", "third"]);
+    assert.equal(await readFile(join(applicationDir, "current", "cv.pdf"), "utf8"), "fifth");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -9,7 +9,7 @@ import {
   type AgentSession,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, type ImageContent } from "@earendil-works/pi-ai";
 import { createScrapeTools } from "./scrape.js";
 import type { Settings } from "./config.js";
 import { jobSourceLabel, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
@@ -17,7 +17,7 @@ import { telemetryAssistantPayload, telemetryPromptPayload, telemetrySystemPromp
 
 export interface PiSessionLike {
   subscribe(listener: (event: unknown) => void): () => void;
-  prompt(text: string): Promise<void>;
+  prompt(text: string, options?: PiPromptOptions): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
   readonly systemPrompt?: string;
@@ -25,6 +25,8 @@ export interface PiSessionLike {
   getActiveToolNames?: () => string[];
   getAllTools?: () => unknown[];
 }
+
+export type PiPromptOptions = { images?: ImageContent[] };
 
 export class PiRunTimeoutError extends Error {
   constructor(message = "Pi run timed out") {
@@ -249,6 +251,7 @@ function lifecyclePayload(event: Record<string, unknown>): unknown {
 
 export async function runBoundedPi<T = void>(options: {
   prompt: string;
+  images?: ImageContent[];
   timeoutMs: number;
   inactivityTimeoutMs?: number;
   signal?: AbortSignal;
@@ -469,7 +472,7 @@ export async function runBoundedPi<T = void>(options: {
       else options.signal.addEventListener("abort", onAbort, { once: true });
     }
     try {
-      const prompt = session.prompt(options.prompt).then(() => undefined as T);
+      const prompt = session.prompt(options.prompt, options.images ? { images: options.images } : undefined).then(() => undefined as T);
       let result: T;
       try {
         result = await Promise.race([prompt, outcome]) as T;

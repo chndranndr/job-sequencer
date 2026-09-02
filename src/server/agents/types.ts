@@ -53,6 +53,10 @@ export type CVDocument = {
   summary: { text: string; evidenceRefs: EvidenceRef[] };
   experiences: Array<{
     experienceId: string;
+    technologiesUsed?: Array<{
+      name: string;
+      evidenceRefs: EvidenceRef[];
+    }>;
     bullets: Array<{
       text: string;
       evidenceRefs: EvidenceRef[];
@@ -72,6 +76,7 @@ export type CVDocument = {
 
 const EvidenceRefSchema = z.string().trim().min(1).transform(evidenceRef);
 const evidenceRefs = z.array(EvidenceRefSchema);
+const nonEmptyEvidenceRefs = evidenceRefs.min(1);
 const candidateFit = z.enum(["strong", "partial", "gap"]);
 
 export const CVDocumentSchema = z.object({
@@ -81,6 +86,10 @@ export const CVDocumentSchema = z.object({
   }).strict(),
   experiences: z.array(z.object({
     experienceId: z.string().trim().min(1),
+    technologiesUsed: z.array(z.object({
+      name: z.string().trim().min(1),
+      evidenceRefs: nonEmptyEvidenceRefs,
+    }).strict()).min(1).optional(),
     bullets: z.array(z.object({
       text: z.string().trim().min(1),
       evidenceRefs,

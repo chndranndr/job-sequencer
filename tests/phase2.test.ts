@@ -410,10 +410,10 @@ test("Ready regenerate returns 202 then Drafting with approved_at null", async (
   } finally { await app.close(); db.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("third regenerate after two successful revises is 409 naming the cap", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pjs-rev-cap-"));
+test("manual revise remains available after three successful revises", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-rev-unlimited-"));
   const db = openDatabase(":memory:");
-  const id = insertJob(db, "Selected", "cap");
+  const id = insertJob(db, "Selected", "unlimited");
   const app = await buildServer({ dataDir: dir, db, commandRunner: fakeRunner, generationExecutor: async () => ({ cvTemplate: "backend_java_spring", profileFacts: ["TypeScript"], gaps: ["Kubernetes"] }), strategist: stubStrategist, writer: stubWriter, auditor: stubAuditor, critic: stubCritic });
   try {
     await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
@@ -421,18 +421,12 @@ test("third regenerate after two successful revises is 409 naming the cap", asyn
     assert.equal(start.statusCode, 202);
     assert.equal((await wait(app, start.json().runId)).status, "succeeded");
     assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().generation_direction.revisionCount, 0);
-    for (let round = 1; round <= 2; round += 1) {
+    for (let round = 1; round <= 4; round += 1) {
       const regen = await app.inject({ method: "POST", url: `/api/jobs/${id}/regenerate` });
       assert.equal(regen.statusCode, 202);
       assert.equal((await wait(app, regen.json().runId)).status, "succeeded");
       assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().generation_direction.revisionCount, round);
     }
-    const cap = await app.inject({ method: "PUT", url: `/api/jobs/${id}/direction`, payload: { revisionCount: 3 } });
-    assert.equal(cap.statusCode, 200);
-    const third = await app.inject({ method: "POST", url: `/api/jobs/${id}/regenerate` });
-    assert.equal(third.statusCode, 409);
-    assert.match(third.json().error, /cap/i);
-    assert.match(third.json().error, /3/);
   } finally { await app.close(); db.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

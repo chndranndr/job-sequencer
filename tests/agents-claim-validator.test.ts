@@ -83,6 +83,7 @@ function twoEmployerDocument(profile: StructuredProfile, bank: EvidenceBank): CV
     experiences: [
       {
         experienceId: "exp-infosys",
+        technologiesUsed: [{ name: "Java", evidenceRefs: [infosys1] }],
         bullets: [
           { text: "Cut gold-ledger query time by 30%.", evidenceRefs: [infosys0], transformation: "rewrite" },
           { text: "Built Java services.", evidenceRefs: [infosys1], transformation: "compress" },
@@ -170,6 +171,29 @@ test("Infosys experience bullet citing the other employer throws", () => {
   assert.throws(
     () => validateClaims({ document: foreign, profile, bank }),
     error => error instanceof Error && error.message === "Experience locality: cited exp-tcs on exp-infosys",
+  );
+});
+
+test("technologies used are optional per experience and must cite local evidence", () => {
+  const profile = twoEmployerProfile();
+  const bank = buildEvidenceBank(profile);
+  const document = twoEmployerDocument(profile, bank);
+  assert.equal(validateClaims({ document, profile, bank }), document);
+  assert.deepEqual(document.experiences.map(experience => experience.technologiesUsed?.map(technology => technology.name)), [["Java"], undefined]);
+
+  const tcs0 = requireRef(itemOf(bank, { kind: "experience", entityId: "exp-tcs", bulletIndex: 0 }), "tcs");
+  const infosys = document.experiences[0];
+  if (!infosys) throw new Error("infosys document missing");
+  const foreign: CVDocument = {
+    ...document,
+    experiences: [
+      { ...infosys, technologiesUsed: [{ name: "Payments", evidenceRefs: [tcs0] }] },
+      ...document.experiences.slice(1),
+    ],
+  };
+  assert.throws(
+    () => validateClaims({ document: foreign, profile, bank }),
+    error => error instanceof Error && error.message === "Technology locality: cited experience:exp-tcs:bullet:0 on exp-infosys",
   );
 });
 

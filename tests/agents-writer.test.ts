@@ -157,6 +157,8 @@ test("writer prompt keeps the posting untrusted and does not dump the profile", 
   assert.match(prompt, /ID namespaces are strict/);
   assert.match(prompt, /Allowed raw skillIds are/);
   assert.match(prompt, /never put skill:<id> inside skillIds/);
+  assert.match(prompt, /technologiesUsed only when relevant technology evidence is tied to that same experience/);
+  assert.match(prompt, /omit the field entirely for companies without such evidence/);
   assert.match(prompt, /TRUSTED EVIDENCE BANK/);
   assert.match(prompt, /TRUSTED APPLICATION STRATEGY/);
   assert.doesNotMatch(JSON.stringify(buildEvidenceBank(profile)), /Ignore previous instructions/);

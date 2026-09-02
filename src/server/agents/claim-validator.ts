@@ -26,7 +26,10 @@ function citedItems(input: {
 function claimFields(document: CVDocument) {
   return [
     document.summary,
-    ...document.experiences.flatMap(experience => experience.bullets),
+    ...document.experiences.flatMap(experience => [
+      ...(experience.technologiesUsed ?? []).map(technology => ({ text: technology.name, evidenceRefs: technology.evidenceRefs })),
+      ...experience.bullets,
+    ]),
     ...document.projects.flatMap(project => project.bullets ?? []),
     ...document.coverLetter.paragraphs,
   ];
@@ -87,6 +90,12 @@ function assertExperienceLocality(input: {
   byRef: Map<EvidenceRef, EvidenceItem>;
 }) {
   for (const experience of input.document.experiences) {
+    for (const technology of experience.technologiesUsed ?? []) {
+      for (const item of citedItems({ refs: technology.evidenceRefs, byRef: input.byRef })) {
+        if (item.kind === "experience" && item.source.entityId === experience.experienceId) continue;
+        throw new Error(`Technology locality: cited ${item.ref} on ${experience.experienceId}`);
+      }
+    }
     for (const bullet of experience.bullets) {
       for (const item of citedItems({ refs: bullet.evidenceRefs, byRef: input.byRef })) {
         if (item.kind !== "experience") continue;

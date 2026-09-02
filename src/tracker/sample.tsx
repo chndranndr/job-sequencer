@@ -42,15 +42,12 @@ export function sampleStageActions(stage: JobStage): SampleAction[] {
   }
 }
 
-export const SAMPLE_REVISION_CAP = 3;
-
 export const SAMPLE_DIRECTION_LABELS = {
   cvLength: "CV length",
   cvPagesOverride: "CV pages override",
   letterMode: "Letter stance",
   letterNarration: "Narration",
   revisionNotes: "Correction",
-  remainingRevises: "Remaining revises",
 } as const;
 
 export const SAMPLE_READY_REVISE_COPY = "This starts another generate from the stored direction. The job returns to Drafting and loses its approval.";
@@ -71,16 +68,12 @@ export function sampleDirectionControls(stage: JobStage): SampleDirectionField[]
   }
 }
 
-export function remainingRevises(revisionCount: number) {
-  return Math.max(0, SAMPLE_REVISION_CAP - revisionCount);
-}
-
 export function canStartSampleRun(globalRunActive: boolean, localStartPending: boolean) {
   return !globalRunActive && !localStartPending;
 }
 
-export function canReviseSample(revisionCount: number, globalRunActive: boolean, localStartPending: boolean) {
-  return remainingRevises(revisionCount) > 0 && canStartSampleRun(globalRunActive, localStartPending);
+export function canReviseSample(globalRunActive: boolean, localStartPending: boolean) {
+  return canStartSampleRun(globalRunActive, localStartPending);
 }
 
 export function sampleReadyReviseRequest() {
@@ -279,9 +272,8 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
   }
 
   async function startGeneration(kind: "generate" | "revise") {
-    const revisionCount = job?.generation_direction?.revisionCount ?? 0;
-    if (kind === "revise" && !canReviseSample(revisionCount, run?.status === "running", Boolean(runStarting))) {
-      toast(remainingRevises(revisionCount) === 0 ? "Revision cap of 3 already reached." : "Another run is already active.");
+    if (kind === "revise" && !canReviseSample(run?.status === "running", Boolean(runStarting))) {
+      toast("Another run is already active.");
       return;
     }
     if (kind === "generate" && !canStartSampleRun(run?.status === "running", Boolean(runStarting))) {
@@ -420,7 +412,6 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
           <label className="field">{SAMPLE_DIRECTION_LABELS.letterNarration}<textarea maxLength={500} value={letterNarration} disabled={busyAction !== null || runStarting !== null} onChange={(event) => setLetterNarration(event.target.value)} onBlur={() => void persistDirection({ letterNarration })} placeholder="Optional notes for the letter." /></label>
           {sampleDirectionControls(job.stage).includes("revisionNotes") && <>
             <label className="field">{SAMPLE_DIRECTION_LABELS.revisionNotes}<textarea maxLength={2000} value={revisionNotes} disabled={busyAction !== null || runStarting !== null} onChange={(event) => setRevisionNotes(event.target.value)} onBlur={() => void persistDirection({ revisionNotes })} placeholder="What to correct in the next generate." /></label>
-            <p className="field">{SAMPLE_DIRECTION_LABELS.remainingRevises}<span>{remainingRevises(job.generation_direction?.revisionCount ?? 0)}</span></p>
           </>}
         </>}
         <div className="choices">
@@ -429,7 +420,7 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
           {hasAction("restore-recommended") && <button disabled={busyAction !== null} onClick={() => setConfirm("restore-recommended")}>Restore to Recommended</button>}
           {hasAction("restore") && <button disabled={busyAction !== null} onClick={() => setConfirm("restore")}>Restore</button>}
           {hasAction("generate") && <button disabled={!canStartSampleRun(runActive, Boolean(runStarting)) || busyAction !== null} onClick={() => void startGeneration("generate")}>{runStarting === "generate" ? "Generating…" : runActive ? "Run active" : "Generate documents"}</button>}
-          {hasAction("revise") && <button disabled={!canReviseSample(job.generation_direction?.revisionCount ?? 0, runActive, Boolean(runStarting)) || busyAction !== null} onClick={() => job.stage === "Ready" ? setConfirm("revise") : void startGeneration("revise")}>{runStarting === "revise" ? "Revising…" : runActive ? "Run active" : "Revise"}</button>}
+          {hasAction("revise") && <button disabled={!canReviseSample(runActive, Boolean(runStarting)) || busyAction !== null} onClick={() => job.stage === "Ready" ? setConfirm("revise") : void startGeneration("revise")}>{runStarting === "revise" ? "Revising…" : runActive ? "Run active" : "Revise"}</button>}
           {hasAction("approve") && <button disabled={!verified || busyAction !== null} onClick={() => setConfirm("approval")}>{verified ? "Approve documents" : "Verify before approval"}</button>}
           {hasAction("apply") && <button disabled={busyAction !== null} onClick={() => setApplyOpen(true)}>Mark Applied</button>}
           {hasAction("phrase") && <button disabled={busyAction !== null} onClick={() => navigate(trackerHref("phrase", job.id))}>Open PHRASE</button>}

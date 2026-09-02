@@ -246,7 +246,7 @@ function parseGenerationDirection(raw: unknown): GenerationDirection {
     letterMode: value.letterMode === "standard" || value.letterMode === "exploratory" ? value.letterMode : defaultGenerationDirection.letterMode,
     letterNarration: typeof value.letterNarration === "string" ? value.letterNarration.slice(0, 500) : defaultGenerationDirection.letterNarration,
     revisionNotes: typeof value.revisionNotes === "string" ? value.revisionNotes.slice(0, 2000) : defaultGenerationDirection.revisionNotes,
-    revisionCount: typeof value.revisionCount === "number" && Number.isInteger(value.revisionCount) && value.revisionCount >= 0 && value.revisionCount <= 3 ? value.revisionCount : defaultGenerationDirection.revisionCount,
+    revisionCount: typeof value.revisionCount === "number" && Number.isInteger(value.revisionCount) && value.revisionCount >= 0 ? value.revisionCount : defaultGenerationDirection.revisionCount,
   };
 }
 

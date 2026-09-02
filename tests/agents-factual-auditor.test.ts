@@ -122,6 +122,7 @@ test("auditor prompt keeps the posting untrusted and does not dump the profile",
   assert.match(prompt, /TRUSTED EVIDENCE BANK/);
   assert.match(prompt, /TRUSTED CV DOCUMENT/);
   assert.match(prompt, /TRUSTED APPLICATION STRATEGY/);
+  assert.match(prompt, /Technologies Used entries/);
   assert.doesNotMatch(JSON.stringify(buildEvidenceBank(profile)), /Ignore previous instructions/);
 });
 

@@ -483,7 +483,7 @@ The Jobs page includes **Generate CV & Cover Letter** for selected jobs.
 
 SAMPLE collects `GenerationDirection` before generate. CV length is `short` or `complete`. Letter stance is `standard` or `exploratory`. Narration is optional. `short` still means two pages. ORDER Accept · generate uses the stored direction. It does not show a second length or stance form.
 
-Revise writes `revisionNotes` then POSTs regenerate. A job allows at most 3 revises. Ready revise returns the job to Drafting. Approve remains the only path to Ready.
+Revise writes `revisionNotes` then POSTs regenerate. Manual revises have no fixed cap. Ready revise returns the job to Drafting. Keep only the three most recent prior document versions in history. Approve remains the only path to Ready.
 
 For multiple selected jobs, process them sequentially. Each job has its own success or failure result.
 
@@ -563,7 +563,7 @@ data/applications/<job-id>/
     <timestamp>/
 ```
 
-Before replacing `current/`, move the previous version into `history/`.
+Before replacing `current/`, move the previous version into `history/` and retain only the three most recent history directories.
 
 ### Compilation and verification
 

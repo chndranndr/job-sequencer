@@ -71,17 +71,19 @@ function certificationEntry(entry: StructuredProfile["certifications"][number]) 
   return `\\cventry{${latex(date)}}{\\textbf{${latex(title)}}}{${issuer}}{}{}{${latex(entry.description)}}`;
 }
 
-function experienceEntry(entry: ExperienceEntry, bullets: string[]) {
-  if (!entry.title.trim() && !entry.company.trim() && !bullets.length) return "";
+function experienceEntry(entry: ExperienceEntry, bullets: string[], technologiesUsed: string[]) {
+  if (!entry.title.trim() && !entry.company.trim() && !bullets.length && !technologiesUsed.length) return "";
   const title = entry.title.trim() || entry.company.trim();
   const company = entry.company.trim() && entry.title.trim() ? latex(entry.company) : "";
   const date = dateRange(entry);
+  const technologies = technologiesUsed.length ? [`\\cvitem{}{Technologies Used: ${technologiesUsed.map(latex).join(", ")}}`] : [];
   return [
     "\\needspace{7\\baselineskip}",
     `\\cventry{${latex(date)}}{${latex(title)}}{${company}}{${latex(entry.location)}}{${latex(entry.employmentType)}}{%`,
+    ...technologies,
     cvBullets(bullets),
     "}",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function projectEntry(entry: ProjectEntry, bullets: string[]) {
@@ -104,7 +106,7 @@ export function renderCVDocument(profile: StructuredProfile, document: CVDocumen
   const experienceBody = document.experiences.map(item => {
     const entry = experiences.get(item.experienceId);
     if (!entry) return "";
-    return experienceEntry(entry, item.bullets.map(bullet => bullet.text));
+    return experienceEntry(entry, item.bullets.map(bullet => bullet.text), (item.technologiesUsed ?? []).map(technology => technology.name.trim()).filter(Boolean));
   }).filter(Boolean).join("\n");
   const skillNames = document.skillIds.map(id => skills.get(id)?.name.trim() ?? "").filter(Boolean).map(name => latex(name)).join(", ");
   const projectBody = document.projects.map(item => {

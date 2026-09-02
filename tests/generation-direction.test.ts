@@ -103,11 +103,12 @@ test("PUT on Applied or Recommended returns 409", async () => {
   });
 });
 
-test("PUT revisionCount 4 returns 400", async () => {
+test("PUT revisionCount accepts values above the old manual cap", async () => {
   await withApp(async (app, db) => {
-    const id = insertJob(db, "Selected", "cap");
+    const id = insertJob(db, "Selected", "unlimited");
     const response = await app.inject({ method: "PUT", url: `/api/jobs/${id}/direction`, payload: { revisionCount: 4 } });
-    assert.equal(response.statusCode, 400);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().generation_direction.revisionCount, 4);
   });
 });
 

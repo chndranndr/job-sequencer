@@ -48,8 +48,48 @@ test("ATS cannot attach evidence to a genuine gap", async () => {
   await assert.rejects(() => runAtsReviewer({ profile, context: { evidenceBank: bank, preferences: { targetRoles: [], workPreferences: profile.workPreferences }, writingStyle: "plain" }, strategy, document, posting: "Go role", execute: async () => JSON.stringify({ issues: [{ requirement: "Go", kind: "genuine_gap", evidenceRefs: [bank.items[0]!.ref], note: "No Go." }], summary: "Gap." }) }), /genuine_gap/);
 });
 
-test("generation permits one supported ATS revision", async () => {
+test("generation factual-audits a supported ATS revision before promotion", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-ats-generation-"));
+  const db = openDatabase(":memory:");
+  const id = randomUUID();
+  db.prepare("INSERT INTO jobs(id,source_id,source,url,company,role,posting,score,rank_json,stage,first_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(id, "ats-source", "manual", "https://example.test/ats", "Example", "Engineer", "Java backend role", 80, JSON.stringify({ reason: "fit", strengths: [], gaps: [] }), "Selected", "2026-08-31T00:00:00.000Z", "2026-08-31T00:00:00.000Z");
+  const { profile, bank, strategy, document } = fixture();
+  const ref = bank.items.find(item => item.ref === "experience:exp:bullet:0")!.ref;
+  const runner: CommandRunner = async (executable, args, _timeout, cwd) => {
+    if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "cv");
+    if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "letter");
+    if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
+    if (executable === "pdftotext") return { code: 0, stdout: "ada@example.test +1 555 0100", stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  let revisionCalls = 0;
+  let auditCalls = 0;
+  try {
+    await assert.rejects(() => generateJob({
+      db, dataDir: dir, jobId: id, settings: defaultSettings, profile: JSON.stringify(profile), execute: async () => { throw new Error("legacy path must not run"); }, runner, signal: new AbortController().signal,
+      strategist: async () => strategy,
+      writer: async () => document,
+      auditor: async ({ document: current }) => {
+        auditCalls += 1;
+        return current.summary.text.includes("enterprise-wide")
+          ? { issues: [{ kind: "scope_inflation", severity: "critical" as const, claim: current.summary.text, evidenceRefs: [ref], note: "Scope is broader than the evidence." }] }
+          : { issues: [] };
+      },
+      critic: async () => ({ score: 8, issues: [], summary: "Ready." }),
+      atsReviewer: async () => ({ issues: [{ requirement: "Java", kind: "missing_but_supported" as const, evidenceRefs: [bank.items.find(item => item.ref === "skill:java")!.ref], note: "Add Java." }], summary: "Supported omission." }),
+      reviser: async input => { revisionCalls += 1; return { ...input.document, summary: { ...input.document.summary, text: "Architected enterprise-wide event-driven platforms." } }; },
+      atsEnabled: true,
+    }), /Critical factual issue: scope_inflation/);
+    assert.equal(revisionCalls, 1);
+    assert.equal(auditCalls, 2);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("generation permits one supported ATS revision", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-ats-generation-success-"));
   const db = openDatabase(":memory:");
   const id = randomUUID();
   db.prepare("INSERT INTO jobs(id,source_id,source,url,company,role,posting,score,rank_json,stage,first_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(id, "ats-source", "manual", "https://example.test/ats", "Example", "Engineer", "Java backend role", 80, JSON.stringify({ reason: "fit", strengths: [], gaps: [] }), "Selected", "2026-08-31T00:00:00.000Z", "2026-08-31T00:00:00.000Z");

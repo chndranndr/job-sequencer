@@ -149,7 +149,10 @@ export function validateCVDocument(document: CVDocument, profile: StructuredProf
   }
   assertRefsInBank([
     ...normalizedDocument.summary.evidenceRefs,
-    ...normalizedDocument.experiences.flatMap(experience => experience.bullets.flatMap(bullet => bullet.evidenceRefs)),
+    ...normalizedDocument.experiences.flatMap(experience => [
+      ...(experience.technologiesUsed ?? []).flatMap(technology => technology.evidenceRefs),
+      ...experience.bullets.flatMap(bullet => bullet.evidenceRefs),
+    ]),
     ...normalizedDocument.projects.flatMap(project => (project.bullets ?? []).flatMap(bullet => bullet.evidenceRefs)),
     ...normalizedDocument.coverLetter.paragraphs.flatMap(paragraph => paragraph.evidenceRefs),
   ], bank);

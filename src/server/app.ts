@@ -46,7 +46,7 @@ import {
 } from "./config.js";
 import { liveScrapeExecutor, GenerationRunManager, RunManager, type ScrapeExecutor } from "./runs.js";
 import { jobStages, type JobStage } from "./stages.js";
-import { estimateCvPages, generationRevisionCap, revisionCapError, type GenerationExecutor } from "./generation.js";
+import { estimateCvPages, type GenerationExecutor } from "./generation.js";
 import type { CriticFn } from "./agents/critic.js";
 import type { FactualAuditorFn } from "./agents/factual-auditor.js";
 import type { ReviserFn } from "./agents/reviser.js";
@@ -457,7 +457,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       letterMode: z.enum(["standard", "exploratory"]).optional(),
       letterNarration: z.string().max(500).optional(),
       revisionNotes: z.string().max(2000).optional(),
-      revisionCount: z.number().int().min(0).max(3).optional(),
+      revisionCount: z.number().int().min(0).optional(),
     }).strict().parse(req.body ?? {});
     const row = updateJobDirection(db, requestId(req), body);
     if (!row) throw notFound("Job not found.");
@@ -515,7 +515,6 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const job = getJobDetail(db, id);
     if (!job) throw notFound("Job not found.");
     if (job.stage !== "Drafting" && job.stage !== "Ready") throw Object.assign(new Error("Only Drafting or Ready jobs may regenerate."), { statusCode: 409 });
-    if ((job.generation_direction?.revisionCount ?? 0) >= generationRevisionCap) throw Object.assign(new Error(revisionCapError), { statusCode: 409 });
     return reply.code(202).send({ runId: await generation.start([id], true, idempotencyKey) });
   });
   app.post("/api/jobs/:id/approve", async (req) => approveApplication(db, requestId(req)));

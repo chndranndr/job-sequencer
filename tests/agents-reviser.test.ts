@@ -69,6 +69,8 @@ test("reviser prompt carries findings, protects posting, and omits the profile",
   assert.doesNotMatch(prompt, /ada@example\.test/);
   assert.match(prompt, /QUALITY CRITIQUE FINDINGS/);
   assert.match(prompt, /FACTUAL AUDIT FINDINGS/);
+  assert.match(prompt, /technologiesUsed only when relevant technology evidence is tied to that same experience/);
+  assert.match(prompt, /omit the field entirely for companies without such evidence/);
 });
 
 test("runReviser validates claims and repairs one invalid draft", async () => {

@@ -145,6 +145,32 @@ test("CVDocument render uses profile company names and education institutions", 
   assert.equal("company" in document.experiences[0]!, false);
 });
 
+test("Technologies Used renders only for experiences that provide it", () => {
+  const profile = createEmptyProfile();
+  profile.experience = [
+    { id: "role-with-tech", title: "Backend Engineer", company: "Aetherwave", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2024", endMonth: "", endYear: "", currentRole: true, description: "Built Java services." },
+    { id: "role-without-tech", title: "Software Engineer", company: "Northstar", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2022", endMonth: "", endYear: "2023", currentRole: false, description: "Shipped APIs." },
+  ];
+  const document: CVDocument = {
+    summary: { text: "Backend engineer.", evidenceRefs: [] },
+    experiences: [
+      { experienceId: "role-with-tech", technologiesUsed: [{ name: "Java", evidenceRefs: [evidenceRef("experience:role-with-tech:bullet:0")] }], bullets: [] },
+      { experienceId: "role-without-tech", bullets: [] },
+    ],
+    skillIds: [],
+    projects: [],
+    coverLetter: { subject: "Backend Engineer", paragraphs: [] },
+  };
+  const rendered = renderCVDocument(profile, document);
+  assert.equal((rendered.EXPERIENCE.match(/Technologies Used:/g) ?? []).length, 1);
+  assert.match(rendered.EXPERIENCE, /Technologies Used: Java/);
+  assert.match(rendered.EXPERIENCE, /Aetherwave/);
+  assert.match(rendered.EXPERIENCE, /Northstar/);
+  const withoutTechnologyEntry = rendered.EXPERIENCE.slice(rendered.EXPERIENCE.indexOf("Northstar"));
+  assert.doesNotMatch(withoutTechnologyEntry, /Technologies Used:/);
+  assert.doesNotMatch(withoutTechnologyEntry, /\n\n/);
+});
+
 test("education CV rendering uses month ranges and optional GPA", () => {
   const profile = createEmptyProfile();
   profile.education = [{ id: "education", institution: "Example University", degree: "Bachelor of Science", fieldOfStudy: "Computer Science", startMonth: "2012-09", startYear: "2012", endMonth: "2016-06", endYear: "2016", gpa: "3.8/4.0" }];

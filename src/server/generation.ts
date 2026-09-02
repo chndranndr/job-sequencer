@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
@@ -26,7 +26,7 @@ import type { AtsReview } from "./agents/types.js";
 import { runStructured } from "./structured.js";
 import { loadTemplateMetadata, selectCvTemplate } from "./templates.js";
 import { runDocumentVerifier } from "./verifier.js";
-import { rasterizePdfPages, type VisualQaFn, type VisualReview } from "./visual.js";
+import { rasterizePdfPages, runVisualReviewer, type VisualQaFn, type VisualReview } from "./visual.js";
 
 export const GenerationOutputSchema = z.object({
   cvTemplate: z.string().min(1),
@@ -40,8 +40,6 @@ export const GenerationOutputSchema = z.object({
 }).strict();
 export type GenerationOutput = z.infer<typeof GenerationOutputSchema>;
 export type GenerationExecutor = (context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; guidance?: string; settings: Settings; cvPageEstimate?: number | null; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; direction?: GenerationDirection }) => Promise<unknown>;
-export const generationRevisionCap = 3;
-export const revisionCapError = `Revision cap of ${generationRevisionCap} already reached.`;
 
 function availableCvTemplateIds(templates: unknown) {
   if (!templates || typeof templates !== "object" || Array.isArray(templates) || !("cv" in templates)) return [];
@@ -616,6 +614,22 @@ async function writeJson(path: string, value: unknown) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+const MAX_DOCUMENT_HISTORY = 3;
+
+// ponytail: history pruning is best effort; a later publish retries transient filesystem cleanup instead of failing an already-published document.
+async function pruneDocumentHistory(appDir: string) {
+  const historyRoot = containedPath(appDir, "history");
+  let entries;
+  try { entries = await readdir(historyRoot, { withFileTypes: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const directories = await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => ({ entry, modifiedAt: (await stat(containedPath(historyRoot, entry.name))).mtimeMs })));
+  directories.sort((left, right) => right.modifiedAt - left.modifiedAt || right.entry.name.localeCompare(left.entry.name));
+  for (const { entry } of directories.slice(MAX_DOCUMENT_HISTORY)) await rm(containedPath(historyRoot, entry.name), { recursive: true, force: true });
+}
+
 async function promoteRevision(appDir: string, currentDir: string, revisionDir: string, stamp: string, runId: string) {
   const safeRunId = runId.replace(/[^A-Za-z0-9_-]/g, "-");
   const stagingDir = containedPath(appDir, `.current-${safeRunId}`);
@@ -641,6 +655,7 @@ async function promoteRevision(appDir: string, currentDir: string, revisionDir: 
         throw promoteError;
       }
       await rm(stagingDir, { recursive: true, force: true });
+      await pruneDocumentHistory(appDir).catch(() => {});
       return;
     }
   }
@@ -650,6 +665,7 @@ async function promoteRevision(appDir: string, currentDir: string, revisionDir: 
     if (hasCurrent) await rename(historyDir, currentDir);
     throw error;
   }
+  await pruneDocumentHistory(appDir).catch(() => {});
 }
 
 function render(template: string, replacements: Record<string, string>) {
@@ -667,7 +683,10 @@ function generationOutputFromDocument(
 ): GenerationOutput {
   const refs = [
     ...document.summary.evidenceRefs,
-    ...document.experiences.flatMap(experience => experience.bullets.flatMap(bullet => bullet.evidenceRefs)),
+    ...document.experiences.flatMap(experience => [
+      ...(experience.technologiesUsed ?? []).flatMap(technology => technology.evidenceRefs),
+      ...experience.bullets.flatMap(bullet => bullet.evidenceRefs),
+    ]),
     ...document.projects.flatMap(project => (project.bullets ?? []).flatMap(bullet => bullet.evidenceRefs)),
     ...document.coverLetter.paragraphs.flatMap(paragraph => paragraph.evidenceRefs),
   ];
@@ -691,7 +710,6 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   const direction = getJobDetail(options.db, options.jobId)?.generation_direction ?? { ...defaultGenerationDirection };
   const allowed = options.allowDrafting ? ["Drafting", "Ready"] : ["Selected"];
   if (!allowed.includes(String(job.stage))) throw new Error(options.allowDrafting ? "Only Drafting or Ready jobs may regenerate." : "Only Selected jobs may generate.");
-  if (options.allowDrafting && direction.revisionCount >= generationRevisionCap) throw Object.assign(new Error(revisionCapError), { statusCode: 409 });
   const structured = parseStructuredProfile(options.profile);
   const cvPageEstimate = structured ? estimateCvPages(structured) : null;
   const cvPages = effectiveCvPages(options.settings, direction);
@@ -736,6 +754,8 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
   let draftArtifacts: unknown[] = [];
   let visualRevision: ((review: VisualReview) => Promise<void>) | undefined;
   let visualDocument: CVDocument | undefined;
+  const visualEnabled = options.visualEnabled ?? (Boolean(options.visualQa) || process.env.VISUAL_QA_ENABLED === "1");
+  const visualQa = visualEnabled ? options.visualQa ?? runVisualReviewer : undefined;
   if (structured) {
     const writingStyle = await loadGuidance(["writingStyle"]);
     const context = buildAgentCandidateContext({ profile: structured, writingStyle });
@@ -799,37 +819,52 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     });
     tasks.complete(claimsTask, jobDetail);
     const drafts: CVDocument[] = [validatedDocument];
-    const review = async (current: CVDocument, round: number) => {
-      const auditTask = `generate:${options.jobId}:audit:${round}`;
-      const criticTask = `generate:${options.jobId}:critic:${round}`;
+    const reviewInput = (document: CVDocument) => ({
+      document,
+      context,
+      strategy: parsedStrategy,
+      posting,
+      profile: structured,
+      signal: options.signal,
+      trajectory: options.trajectory,
+      runId,
+      settings: options.settings,
+      onUsage: options.onUsage,
+      research,
+    });
+    const auditDocument = async (document: CVDocument, suffix: string) => {
+      const auditTask = `generate:${options.jobId}:audit:${suffix}`;
       tasks.start({ taskId: auditTask, label: "Audit factual claims", detail: jobDetail });
-      tasks.start({ taskId: criticTask, label: "Critique document quality", detail: jobDetail });
-      const reviewInput = {
-        document: current,
-        context,
-        strategy: parsedStrategy,
-        posting,
-        profile: structured,
-        signal: options.signal,
-        trajectory: options.trajectory,
-        runId,
-        settings: options.settings,
-        onUsage: options.onUsage,
-        research,
-      };
       try {
-        const [audit, critique] = await Promise.all([
-          (options.auditor ?? runFactualAuditor)(reviewInput),
-          (options.critic ?? runCritic)(reviewInput),
-        ]);
+        const audit = await (options.auditor ?? runFactualAuditor)(reviewInput(document));
         tasks.complete(auditTask, jobDetail);
-        tasks.complete(criticTask, jobDetail);
-        return { audit, critique };
+        return audit;
       } catch (error) {
         tasks.fail(auditTask, "Factual audit failed.");
+        throw error;
+      }
+    };
+    const auditAfterMutation = async (document: CVDocument, suffix: string) => {
+      const audit = await auditDocument(document, suffix);
+      failClosedOnCriticalFactualAudit(audit);
+      return audit;
+    };
+    const critiqueDocument = async (document: CVDocument, suffix: string) => {
+      const criticTask = `generate:${options.jobId}:critic:${suffix}`;
+      tasks.start({ taskId: criticTask, label: "Critique document quality", detail: jobDetail });
+      try {
+        const critique = await (options.critic ?? runCritic)(reviewInput(document));
+        tasks.complete(criticTask, jobDetail);
+        return critique;
+      } catch (error) {
         tasks.fail(criticTask, "Quality critique failed.");
         throw error;
       }
+    };
+    const review = async (current: CVDocument, round: number) => {
+      const suffix = String(round);
+      const [audit, critique] = await Promise.all([auditDocument(current, suffix), critiqueDocument(current, suffix)]);
+      return { audit, critique };
     };
     let findings = await review(validatedDocument, 0);
     for (let round = 1; round <= MAX_REVISION_ROUNDS && revisionNeeded(findings.audit, findings.critique); round += 1) {
@@ -911,6 +946,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
           });
           validatedDocument = validateClaims({ document: validatedDocument, profile: structured, bank: context.evidenceBank });
           drafts.push(validatedDocument);
+          findings = { ...findings, audit: await auditAfterMutation(validatedDocument, "ats") };
           tasks.complete(atsRevisionTask, jobDetail);
         } catch (error) {
           tasks.fail(atsRevisionTask, "ATS revision failed.");
@@ -938,7 +974,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       coverLetterClosingText = letter.closing;
     };
     renderStructuredDocument(validatedDocument);
-    if (options.visualQa) {
+    if (visualQa) {
       visualRevision = async () => {
         validatedDocument = await (options.reviser ?? runReviser)({
           document: validatedDocument,
@@ -960,6 +996,8 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
         });
         validatedDocument = validateClaims({ document: validatedDocument, profile: structured, bank: context.evidenceBank });
         drafts.push(validatedDocument);
+        findings = { ...findings, audit: await auditAfterMutation(validatedDocument, "visual") };
+        auditArtifact = findings.audit;
         renderStructuredDocument(validatedDocument);
       };
     }
@@ -1017,29 +1055,34 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     return result;
   };
   let verification = await writeAndCompile();
-  const visualEnabled = options.visualEnabled ?? (Boolean(options.visualQa) || process.env.VISUAL_QA_ENABLED === "1");
   if (visualEnabled && structured && visualDocument) {
     const visualTask = `generate:${options.jobId}:visual`;
     tasks.start({ taskId: visualTask, label: "Review rendered pages", detail: jobDetail });
     const raster = await rasterizePdfPages({ currentDir: revisionDir, runner: options.runner, signal: options.signal });
-    if (raster.status === "ready" && options.visualQa) {
+    if (raster.status === "ready" && visualQa) {
       try {
-        const review = await options.visualQa({ pagePaths: raster.pages, document: visualDocument, signal: options.signal });
-        visualArtifact = { status: review.status, issues: review.issues, summary: review.summary, pages: raster.pages.map(page => `visual/${page.split(/[\\/]/).pop()}`) };
-        tasks.complete(visualTask, jobDetail);
+        let review = await visualQa({ pagePaths: raster.pages, document: visualDocument, signal: options.signal, trajectory: options.trajectory, runId, settings: options.settings, onUsage: options.onUsage });
+        let pages = raster.pages;
+        let revisionApplied = false;
         if (review.status === "needs_review" && review.issues.length && visualRevision) {
           const visualRevisionTask = `generate:${options.jobId}:visual-revise`;
           tasks.start({ taskId: visualRevisionTask, label: "Revise document layout", detail: jobDetail });
           try {
             await visualRevision(review);
             verification = await writeAndCompile();
+            const finalRaster = await rasterizePdfPages({ currentDir: revisionDir, runner: options.runner, signal: options.signal });
+            if (finalRaster.status !== "ready") throw new Error("Visual review of revised documents is unavailable.");
+            review = await visualQa({ pagePaths: finalRaster.pages, document: visualDocument!, signal: options.signal, trajectory: options.trajectory, runId, settings: options.settings, onUsage: options.onUsage });
+            pages = finalRaster.pages;
+            revisionApplied = true;
             tasks.complete(visualRevisionTask, jobDetail);
-            visualArtifact = { status: "needs_review", issues: review.issues, summary: review.summary, pages: raster.pages.map(page => `visual/${page.split(/[\\/]/).pop()}`), revisionApplied: true };
           } catch (error) {
             tasks.fail(visualRevisionTask, "Visual revision failed.");
             throw error;
           }
         }
+        visualArtifact = { status: review.status, issues: review.issues, summary: review.summary, pages: pages.map(page => `visual/${page.split(/[\\/]/).pop()}`), ...(visualRevision ? { revisionApplied } : {}) };
+        tasks.complete(visualTask, jobDetail);
       } catch (error) {
         tasks.fail(visualTask, "Visual review failed.");
         throw error;
