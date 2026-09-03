@@ -4,10 +4,9 @@ import {
   canApproveSampleDocuments,
   canReviseSample,
   canStartSampleRun,
-  remainingRevises,
   SAMPLE_DIRECTION_LABELS,
   SAMPLE_READY_REVISE_COPY,
-  SAMPLE_REVISION_CAP,
+  sampleCvPageWarning,
   sampleDirectionControls,
   sampleReadyReviseRequest,
   sampleStageActions,
@@ -31,21 +30,27 @@ test("Selected SAMPLE shows direction controls before generate", () => {
   assert.equal(SAMPLE_DIRECTION_LABELS.cvLength, "CV length");
   assert.equal(SAMPLE_DIRECTION_LABELS.letterMode, "Letter stance");
   assert.equal(SAMPLE_DIRECTION_LABELS.letterNarration, "Narration");
+  assert.equal(SAMPLE_DIRECTION_LABELS.cvPagesOverride, "Maximum CV pages");
+});
+
+test("complete CV page warning is advisory and only appears below the profile estimate", () => {
+  assert.match(sampleCvPageWarning("complete", 2, 3), /Complete profile is estimated at 3 pages/);
+  assert.match(sampleCvPageWarning("complete", 2, 3), /2-page maximum/);
+  assert.equal(sampleCvPageWarning("complete", 3, 3), "");
+  assert.equal(sampleCvPageWarning("short", 2, 3), "");
+  assert.equal(sampleCvPageWarning("complete", null, 3), "");
 });
 
 test("Drafting SAMPLE exposes Revise with a correction box", () => {
   assert.ok(sampleStageActions("Drafting").includes("revise"));
   assert.deepEqual(sampleDirectionControls("Drafting"), ["cvLength", "letterMode", "letterNarration", "revisionNotes"]);
   assert.equal(SAMPLE_DIRECTION_LABELS.revisionNotes, "Correction");
-  assert.equal(SAMPLE_DIRECTION_LABELS.remainingRevises, "Remaining revises");
-  assert.equal(remainingRevises(0), SAMPLE_REVISION_CAP);
 });
 
-test("Revise disables when remaining revises is 0", () => {
-  assert.equal(remainingRevises(3), 0);
-  assert.equal(canReviseSample(3, false, false), false);
-  assert.equal(canReviseSample(2, false, false), true);
-  assert.equal(canReviseSample(2, true, false), false);
+test("Revise stays available while no run is active", () => {
+  assert.equal(canReviseSample(false, false), true);
+  assert.equal(canReviseSample(true, false), false);
+  assert.equal(canReviseSample(false, true), false);
 });
 
 test("Ready SAMPLE revise POSTs regenerate and confirm copy names Drafting", () => {

@@ -3,10 +3,54 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createEmptyProfile, defaultGenerationDirection, type ProjectEntry, type SkillEntry } from "../src/shared.js";
-import { buildGenerationPrompt, coverLetterClosing, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
+import { renderCVDocument } from "../src/server/rendering/cv.js";
+import { evidenceRef, type CVDocument } from "../src/server/agents/types.js";
+import { buildGenerationPrompt, estimateCvPages, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
+import { coverLetterClosing } from "../src/server/rendering/cover-letter.js";
 
 const skill = (name: string): SkillEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name });
 const project = (name: string, role: string, description: string): ProjectEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, role, description, startMonth: "", startYear: "", endMonth: "", endYear: "", url: "" });
+
+function estimatedProfileFixture() {
+  const profile = createEmptyProfile();
+  Object.assign(profile.identity, {
+    firstName: "Ada",
+    lastName: "Lovelace",
+    headline: "Backend Engineer",
+    email: "ada@example.test",
+    phone: "+1 555 0100",
+    city: "London",
+    country: "United Kingdom",
+    summary: "Backend engineer focused on reliable Java platforms. ".repeat(45),
+  });
+  profile.experience = Array.from({ length: 4 }, (_, index) => ({
+    id: `exp-${index}`,
+    title: "Backend Engineer",
+    company: `Example ${index}`,
+    employmentType: "Full-time",
+    location: "Remote",
+    startMonth: "",
+    startYear: "2020",
+    endMonth: "",
+    endYear: "",
+    currentRole: index === 0,
+    description: "Built reliable Java services and improved platform delivery. ".repeat(14),
+  }));
+  profile.skills = Array.from({ length: 18 }, (_, index) => ({ id: `skill-${index}`, name: `Skill ${index}` }));
+  profile.projects = Array.from({ length: 3 }, (_, index) => project(`Backend Project ${index}`, "Engineer", "Built platform services and delivery automation. ".repeat(8)));
+  profile.education = [{ id: "education", institution: "Canonical University", degree: "Bachelor of Science", fieldOfStudy: "Computer Science", startMonth: "", startYear: "2012", endMonth: "", endYear: "2016", gpa: "" }];
+  profile.certifications = [{ id: "certification", name: "AWS Certified", issuer: "Amazon", issueDate: "", expiryDate: "", url: "", description: "" }];
+  profile.languages = [{ id: "language", name: "English", proficiency: "Native" }];
+  return profile;
+}
+
+test("profile CV estimate is deterministic, minimum-one, and monotonic", () => {
+  const profile = estimatedProfileFixture();
+  assert.equal(estimateCvPages(createEmptyProfile()), 1);
+  assert.equal(estimateCvPages(profile), 3);
+  const expanded = { ...profile, experience: profile.experience.map((entry, index) => index === 0 ? { ...entry, description: `${entry.description}\n${"Added grounded delivery detail. ".repeat(40)}` } : entry) };
+  assert.ok(estimateCvPages(expanded) >= estimateCvPages(profile));
+});
 
 test("moderncv template keeps the reference visual contract without reference content", async () => {
   const template = await readFile(join(process.cwd(), "templates/cv/backend_java_spring.tex"), "utf8");
@@ -66,6 +110,65 @@ test("structured CV rendering emits dynamic moderncv headers and cventry fragmen
   assert.equal(withoutOptionalHeader.ADDRESS_COMMAND, "");
   assert.equal(withoutOptionalHeader.PHONE_COMMAND, "");
   assert.equal(withoutOptionalHeader.EMAIL_COMMAND, "");
+});
+
+test("CVDocument render uses profile company names and education institutions", () => {
+  const profile = createEmptyProfile();
+  Object.assign(profile.identity, {
+    firstName: "Ada",
+    lastName: "Lovelace",
+    headline: "Backend Engineer",
+    email: "ada@example.test",
+    phone: "+1 555 0100",
+  });
+  profile.experience = [{ id: "role", title: "Backend Engineer", company: "Aetherwave Robotics Ltd", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2024", endMonth: "", endYear: "", currentRole: true, description: "Built Java services." }];
+  profile.education = [{ id: "education", institution: "Canonical University", degree: "Bachelor of Science", fieldOfStudy: "Computer Science", startMonth: "2012-09", startYear: "2012", endMonth: "2016-06", endYear: "2016", gpa: "" }];
+  profile.skills = [{ id: "skill-java", name: "Java" }];
+  const document: CVDocument = {
+    summary: { text: "Java platform engineer.", evidenceRefs: [evidenceRef("identity:summary")] },
+    experiences: [{
+      experienceId: "role",
+      bullets: [{ text: "Shipped Java services for capture workflows.", evidenceRefs: [evidenceRef("experience:role:bullet:0")], transformation: "rewrite" }],
+    }],
+    skillIds: ["skill-java"],
+    projects: [],
+    coverLetter: {
+      subject: "Backend Engineer",
+      paragraphs: [{ text: "I build Java platforms.", evidenceRefs: [evidenceRef("experience:role:bullet:0")] }],
+    },
+  };
+  const rendered = renderCVDocument(profile, document);
+  assert.match(rendered.EXPERIENCE, /\\cventry\{2024 - Present\}\{Backend Engineer\}\{Aetherwave Robotics Ltd\}/);
+  assert.match(rendered.EDUCATION_SECTION, /Canonical University/);
+  assert.match(rendered.SUMMARY_SECTION, /Java platform engineer/);
+  assert.doesNotMatch(rendered.SUMMARY_SECTION, /Aetherwave Robotics Ltd/);
+  assert.equal("company" in document.experiences[0]!, false);
+});
+
+test("Technologies Used renders only for experiences that provide it", () => {
+  const profile = createEmptyProfile();
+  profile.experience = [
+    { id: "role-with-tech", title: "Backend Engineer", company: "Aetherwave", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2024", endMonth: "", endYear: "", currentRole: true, description: "Built Java services." },
+    { id: "role-without-tech", title: "Software Engineer", company: "Northstar", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2022", endMonth: "", endYear: "2023", currentRole: false, description: "Shipped APIs." },
+  ];
+  const document: CVDocument = {
+    summary: { text: "Backend engineer.", evidenceRefs: [] },
+    experiences: [
+      { experienceId: "role-with-tech", technologiesUsed: [{ name: "Java", evidenceRefs: [evidenceRef("experience:role-with-tech:bullet:0")] }], bullets: [] },
+      { experienceId: "role-without-tech", bullets: [] },
+    ],
+    skillIds: [],
+    projects: [],
+    coverLetter: { subject: "Backend Engineer", paragraphs: [] },
+  };
+  const rendered = renderCVDocument(profile, document);
+  assert.equal((rendered.EXPERIENCE.match(/Technologies Used:/g) ?? []).length, 1);
+  assert.match(rendered.EXPERIENCE, /Technologies Used: Java/);
+  assert.match(rendered.EXPERIENCE, /Aetherwave/);
+  assert.match(rendered.EXPERIENCE, /Northstar/);
+  const withoutTechnologyEntry = rendered.EXPERIENCE.slice(rendered.EXPERIENCE.indexOf("Northstar"));
+  assert.doesNotMatch(withoutTechnologyEntry, /Technologies Used:/);
+  assert.doesNotMatch(withoutTechnologyEntry, /\n\n/);
 });
 
 test("education CV rendering uses month ranges and optional GPA", () => {
@@ -164,6 +267,21 @@ test("generation prompt makes cover-letter bullets optional and complementary", 
   assert.match(prompt, /optional verified complementary points not already stated in paragraphs/);
   assert.match(prompt, /omit them when no new evidence remains/);
   assert.match(prompt, /never repeat a paragraph's achievement, metric, or claim/);
+});
+
+test("generation prompt describes complete-profile overflow with the page maximum", () => {
+  const prompt = buildGenerationPrompt({
+    profile: "Java backend profile",
+    job: { role: "Backend Engineer" },
+    rank: { gaps: [] },
+    templates: { cv: { backend_java_spring: {} } },
+    settings: { cvPages: 2, coverLetterPages: 1 },
+    cvPageEstimate: 3,
+    direction: { ...defaultGenerationDirection },
+  }, "");
+  assert.match(prompt, /complete profile is estimated at 3 CV page\(s\) while the maximum is 2/);
+  assert.match(prompt, /at most 2 CV page\(s\) and at most 1 cover-letter page\(s\)/);
+  assert.match(prompt, /shorten wording and remove redundant or lower-priority detail/);
 });
 
 test("revision notes instruct the model not to copy invented claims", () => {

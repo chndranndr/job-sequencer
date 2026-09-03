@@ -242,10 +242,11 @@ function parseGenerationDirection(raw: unknown): GenerationDirection {
   const value = parsed as Record<string, unknown>;
   return {
     cvLength: value.cvLength === "short" || value.cvLength === "complete" ? value.cvLength : defaultGenerationDirection.cvLength,
+    cvPagesOverride: typeof value.cvPagesOverride === "number" && Number.isInteger(value.cvPagesOverride) && value.cvPagesOverride >= 1 && value.cvPagesOverride <= 10 ? value.cvPagesOverride : defaultGenerationDirection.cvPagesOverride,
     letterMode: value.letterMode === "standard" || value.letterMode === "exploratory" ? value.letterMode : defaultGenerationDirection.letterMode,
     letterNarration: typeof value.letterNarration === "string" ? value.letterNarration.slice(0, 500) : defaultGenerationDirection.letterNarration,
     revisionNotes: typeof value.revisionNotes === "string" ? value.revisionNotes.slice(0, 2000) : defaultGenerationDirection.revisionNotes,
-    revisionCount: typeof value.revisionCount === "number" && Number.isInteger(value.revisionCount) && value.revisionCount >= 0 && value.revisionCount <= 3 ? value.revisionCount : defaultGenerationDirection.revisionCount,
+    revisionCount: typeof value.revisionCount === "number" && Number.isInteger(value.revisionCount) && value.revisionCount >= 0 ? value.revisionCount : defaultGenerationDirection.revisionCount,
   };
 }
 

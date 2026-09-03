@@ -1,0 +1,67 @@
+{
+  "posting": "SRE for Kubernetes platforms. Own Datadog monitors, on-call, and Helm releases. Bare-metal networking is not required.",
+  "rank": {
+    "reason": "Platform operations overlap.",
+    "strengths": ["Kubernetes", "Datadog"],
+    "gaps": ["bare-metal networking"]
+  },
+  "direction": {
+    "cvLength": "complete",
+    "letterMode": "standard",
+    "letterNarration": "",
+    "revisionNotes": "",
+    "revisionCount": 0
+  },
+  "profile": {
+    "version": 1,
+    "identity": {
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "headline": "Platform engineer",
+      "email": "ada@example.test",
+      "phone": "+1 555 0100",
+      "city": "London",
+      "country": "UK",
+      "website": "",
+      "linkedinUrl": "",
+      "githubUrl": "",
+      "summary": "Platform engineer running Kubernetes services with Datadog and Helm."
+    },
+    "workPreferences": {
+      "authorizationStatus": "",
+      "relocationPreference": "",
+      "remotePreference": "",
+      "targetRoles": ["SRE"],
+      "dealBreakers": []
+    },
+    "experience": [
+      {
+        "id": "exp-sre",
+        "title": "Platform Engineer",
+        "company": "Example",
+        "employmentType": "Full-time",
+        "location": "Remote",
+        "startMonth": "",
+        "startYear": "2020",
+        "endMonth": "",
+        "endYear": "",
+        "currentRole": true,
+        "description": "Operated Kubernetes workloads with Helm. Owned Datadog monitors and on-call for Java services."
+      }
+    ],
+    "education": [],
+    "skills": [
+      { "id": "skill-k8s", "name": "Kubernetes" },
+      { "id": "skill-datadog", "name": "Datadog" },
+      { "id": "skill-helm", "name": "Helm" }
+    ],
+    "certifications": [],
+    "projects": [],
+    "awards": [],
+    "languages": []
+  },
+  "mustIdentify": ["Kubernetes", "Datadog"],
+  "acceptableEvidenceRefs": ["skill:skill-k8s", "skill:skill-datadog", "skill:skill-helm", "experience:exp-sre:bullet:0", "experience:exp-sre:bullet:1"],
+  "expectedGaps": ["bare-metal networking"],
+  "mustNotGap": ["Kubernetes"]
+}

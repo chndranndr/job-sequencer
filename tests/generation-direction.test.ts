@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDatabase } from "../src/server/db.js";
 import { buildServer } from "../src/server/app.js";
-import { defaultGenerationDirection } from "../src/shared.js";
+import { createEmptyProfile, defaultGenerationDirection, effectiveCvPages } from "../src/shared.js";
 
 function insertJob(db: any, stage = "Selected", suffix = "1") {
   const id = randomUUID();
@@ -52,6 +52,46 @@ test("PUT cvLength short round-trips and keeps other fields and Selected stage",
   });
 });
 
+test("CV page override round-trips, clears to DISK inheritance, and resolves precedence", async () => {
+  await withApp(async (app, db) => {
+    const id = insertJob(db, "Selected", "pages");
+    const set = await app.inject({ method: "PUT", url: `/api/jobs/${id}/direction`, payload: { cvPagesOverride: 3 } });
+    assert.equal(set.statusCode, 200);
+    const overridden = (await app.inject({ method: "GET", url: `/api/jobs/${id}` })).json();
+    assert.equal(overridden.generation_direction.cvPagesOverride, 3);
+    assert.equal(effectiveCvPages({ cvPages: 2 }, overridden.generation_direction), 3);
+
+    const clear = await app.inject({ method: "PUT", url: `/api/jobs/${id}/direction`, payload: { cvPagesOverride: null } });
+    assert.equal(clear.statusCode, 200);
+    const inherited = (await app.inject({ method: "GET", url: `/api/jobs/${id}` })).json();
+    assert.equal(inherited.generation_direction.cvPagesOverride, null);
+    assert.equal(effectiveCvPages({ cvPages: 2 }, inherited.generation_direction), 2);
+  });
+});
+
+test("CV page override rejects values outside the document setting bounds", async () => {
+  await withApp(async (app, db) => {
+    const id = insertJob(db, "Selected", "page-bounds");
+    for (const value of [0, 11, "3"]) {
+      const response = await app.inject({ method: "PUT", url: `/api/jobs/${id}/direction`, payload: { cvPagesOverride: value } });
+      assert.equal(response.statusCode, 400);
+    }
+  });
+});
+
+test("profile API exposes the deterministic CV page estimate", async () => {
+  await withApp(async (app) => {
+    const profile = createEmptyProfile();
+    profile.identity.summary = "Backend engineer.";
+    const put = await app.inject({ method: "PUT", url: "/api/profile", payload: { profile } });
+    assert.equal(put.statusCode, 200);
+    assert.equal(put.json().cvPageEstimate, 1);
+    const get = await app.inject({ method: "GET", url: "/api/profile" });
+    assert.equal(get.statusCode, 200);
+    assert.equal(get.json().cvPageEstimate, 1);
+  });
+});
+
 test("PUT on Applied or Recommended returns 409", async () => {
   await withApp(async (app, db) => {
     const applied = insertJob(db, "Applied", "applied");
@@ -63,11 +103,12 @@ test("PUT on Applied or Recommended returns 409", async () => {
   });
 });
 
-test("PUT revisionCount 4 returns 400", async () => {
+test("PUT revisionCount accepts values above the old manual cap", async () => {
   await withApp(async (app, db) => {
-    const id = insertJob(db, "Selected", "cap");
+    const id = insertJob(db, "Selected", "unlimited");
     const response = await app.inject({ method: "PUT", url: `/api/jobs/${id}/direction`, payload: { revisionCount: 4 } });
-    assert.equal(response.statusCode, 400);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().generation_direction.revisionCount, 4);
   });
 });
 

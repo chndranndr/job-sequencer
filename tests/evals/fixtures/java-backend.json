@@ -1,0 +1,67 @@
+{
+  "posting": "Staff Go engineer for production Go microservices. You will own on-call for Go services, write Go APIs, and ship Go to production. Java, Scala, or Python experience is not a substitute for Go production work.",
+  "rank": {
+    "reason": "Languages overlap except Go.",
+    "strengths": ["Java"],
+    "gaps": ["Go"]
+  },
+  "direction": {
+    "cvLength": "complete",
+    "letterMode": "standard",
+    "letterNarration": "",
+    "revisionNotes": "",
+    "revisionCount": 0
+  },
+  "profile": {
+    "version": 1,
+    "identity": {
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "headline": "Backend engineer",
+      "email": "ada@example.test",
+      "phone": "+1 555 0100",
+      "city": "London",
+      "country": "UK",
+      "website": "",
+      "linkedinUrl": "",
+      "githubUrl": "",
+      "summary": "Backend engineer with production Java, Scala, and Python services."
+    },
+    "workPreferences": {
+      "authorizationStatus": "",
+      "relocationPreference": "",
+      "remotePreference": "",
+      "targetRoles": ["Backend Engineer"],
+      "dealBreakers": []
+    },
+    "experience": [
+      {
+        "id": "exp-java",
+        "title": "Backend Engineer",
+        "company": "Example",
+        "employmentType": "Full-time",
+        "location": "Remote",
+        "startMonth": "",
+        "startYear": "2022",
+        "endMonth": "",
+        "endYear": "",
+        "currentRole": true,
+        "description": "Shipped Java Spring Boot APIs in production. Maintained Scala batch jobs. Wrote Python tooling for internal platforms."
+      }
+    ],
+    "education": [],
+    "skills": [
+      { "id": "skill-java", "name": "Java" },
+      { "id": "skill-scala", "name": "Scala" },
+      { "id": "skill-python", "name": "Python" }
+    ],
+    "certifications": [],
+    "projects": [],
+    "awards": [],
+    "languages": []
+  },
+  "mustIdentify": ["Java"],
+  "acceptableEvidenceRefs": ["skill:skill-java", "experience:exp-java:bullet:0"],
+  "expectedGaps": ["Go"],
+  "mustNotGap": ["Java"]
+}

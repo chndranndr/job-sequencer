@@ -3,6 +3,10 @@ public/audio/*.mp3
 data/
 .pi-disabled/
 .hermes/
+.audit/
+.codex/
+.cursor/
+.tmp*
 
 # Local runtime state and databases
 runtime/
@@ -79,3 +83,10 @@ pnpm-debug.log*
 Thumbs.db
 *.swp
 *.swo
+
+# Local-only planning and superseded working documents
+/UI_UX_SPEC.md
+/harnes-upgrade-plan.md
+/docs/agent-native-cv-generation-execution.md
+/docs/agent-native-cv-generation-plan.md
+/docs/generation-direction-plan.md

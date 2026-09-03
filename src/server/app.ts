@@ -46,7 +46,15 @@ import {
 } from "./config.js";
 import { liveScrapeExecutor, GenerationRunManager, RunManager, type ScrapeExecutor } from "./runs.js";
 import { jobStages, type JobStage } from "./stages.js";
-import { generationRevisionCap, revisionCapError, type GenerationExecutor } from "./generation.js";
+import { estimateCvPages, type GenerationExecutor } from "./generation.js";
+import type { CriticFn } from "./agents/critic.js";
+import type { FactualAuditorFn } from "./agents/factual-auditor.js";
+import type { ReviserFn } from "./agents/reviser.js";
+import type { StrategistFn } from "./agents/strategist.js";
+import type { WriterFn } from "./agents/writer.js";
+import type { ResearcherFn } from "./agents/research.js";
+import type { AtsReviewerFn } from "./agents/ats.js";
+import type { VisualQaFn } from "./visual.js";
 import type { CommandRunner } from "./documents.js";
 import { containedPath, friendlyDocumentFilename, runCommand } from "./documents.js";
 import {
@@ -72,6 +80,17 @@ export interface ServerOptions {
   db?: DatabaseSync;
   scrapeExecutor?: ScrapeExecutor;
   generationExecutor?: GenerationExecutor;
+  strategist?: StrategistFn;
+  writer?: WriterFn;
+  auditor?: FactualAuditorFn;
+  critic?: CriticFn;
+  reviser?: ReviserFn;
+  researcher?: ResearcherFn;
+  researchEnabled?: boolean;
+  atsReviewer?: AtsReviewerFn;
+  atsEnabled?: boolean;
+  visualQa?: VisualQaFn;
+  visualEnabled?: boolean;
   interviewExecutor?: InterviewExecutor;
   interviewSessionFactory?: InterviewSessionFactory;
   followUpExecutor?: FollowUpExecutor;
@@ -178,6 +197,17 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     execute: options.generationExecutor,
     runner: options.commandRunner,
     trajectory,
+    strategist: options.strategist,
+    writer: options.writer,
+    auditor: options.auditor,
+    critic: options.critic,
+    reviser: options.reviser,
+    researcher: options.researcher,
+    researchEnabled: options.researchEnabled,
+    atsReviewer: options.atsReviewer,
+    atsEnabled: options.atsEnabled,
+    visualQa: options.visualQa,
+    visualEnabled: options.visualEnabled,
     load: async () => {
       const context = await baseLoad("generation");
       return { profile: context.profile, settings: context.settings };
@@ -285,7 +315,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
 
   app.get("/api/profile", async () => {
     const state = await readStructuredProfile(dataDir);
-    return { profile: state.profile, canonical: state.canonical, legacyImportAvailable: Boolean(state.legacyImport) };
+    return { profile: state.profile, canonical: state.canonical, legacyImportAvailable: Boolean(state.legacyImport), cvPageEstimate: state.canonical ? estimateCvPages(state.profile) : null };
   });
   app.get("/api/profile/legacy", async () => {
     const content = await readLegacyProfile(dataDir);
@@ -297,7 +327,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const value = body && typeof body === "object" && "profile" in body ? (body as { profile: unknown }).profile : body;
     // Backward-compatible only for existing Phase 1–2 API callers; the production UI sends the strict object.
     const profile = typeof value === "string" ? await writeLegacyCompatibilityProfile(dataDir, value) : await writeStructuredProfile(dataDir, ProfileSchema.parse(value));
-    return { profile, canonical: true, legacyImportAvailable: Boolean(await readLegacyProfile(dataDir)) };
+    return { profile, canonical: true, legacyImportAvailable: Boolean(await readLegacyProfile(dataDir)), cvPageEstimate: estimateCvPages(profile) };
   });
   app.post("/api/profile/import", async (req, reply) => {
     let upload: { filename: string; mimetype: string; buffer: Buffer } | undefined;
@@ -423,10 +453,11 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   app.put("/api/jobs/:id/direction", async (req) => {
     const body = z.object({
       cvLength: z.enum(["short", "complete"]).optional(),
+      cvPagesOverride: z.number().int().min(1).max(10).nullable().optional(),
       letterMode: z.enum(["standard", "exploratory"]).optional(),
       letterNarration: z.string().max(500).optional(),
       revisionNotes: z.string().max(2000).optional(),
-      revisionCount: z.number().int().min(0).max(3).optional(),
+      revisionCount: z.number().int().min(0).optional(),
     }).strict().parse(req.body ?? {});
     const row = updateJobDirection(db, requestId(req), body);
     if (!row) throw notFound("Job not found.");
@@ -484,7 +515,6 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const job = getJobDetail(db, id);
     if (!job) throw notFound("Job not found.");
     if (job.stage !== "Drafting" && job.stage !== "Ready") throw Object.assign(new Error("Only Drafting or Ready jobs may regenerate."), { statusCode: 409 });
-    if ((job.generation_direction?.revisionCount ?? 0) >= generationRevisionCap) throw Object.assign(new Error(revisionCapError), { statusCode: 409 });
     return reply.code(202).send({ runId: await generation.start([id], true, idempotencyKey) });
   });
   app.post("/api/jobs/:id/approve", async (req) => approveApplication(db, requestId(req)));

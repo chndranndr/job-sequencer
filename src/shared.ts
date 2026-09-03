@@ -201,6 +201,19 @@ export type StructuredProfile = {
   languages: LanguageEntry[];
 };
 
+export type {
+  AgentCandidateContext,
+  ApplicationStrategy,
+  AtsIssue,
+  AtsIssueKind,
+  AtsReview,
+  CVDocument,
+  EvidenceBank,
+  EvidenceItem,
+  EvidenceRef,
+  StrategyRequirement,
+} from "./server/agents/types.js";
+
 export type LegacyProfile = { available: boolean; content: string | null };
 
 export type Rank = { reason: string; strengths: string[]; gaps: string[] };
@@ -214,10 +227,23 @@ export type DocumentVerification = {
   emailPresent: boolean;
   phonePresent: boolean;
   checkedAt: string;
+  ats?: AtsChecks;
+};
+
+export type AtsChecks = {
+  emailPresent: boolean;
+  phonePresent: boolean;
+  employersPresent: boolean;
+  datesPresent: boolean;
+  glyphError: boolean;
+  replacementCharacter: boolean;
+  duplicateBullets: boolean;
+  issues: string[];
 };
 
 export type GenerationDirection = {
   cvLength: "short" | "complete";
+  cvPagesOverride: number | null;
   letterMode: "standard" | "exploratory";
   letterNarration: string;
   revisionNotes: string;
@@ -226,11 +252,16 @@ export type GenerationDirection = {
 
 export const defaultGenerationDirection: GenerationDirection = {
   cvLength: "complete",
+  cvPagesOverride: null,
   letterMode: "standard",
   letterNarration: "",
   revisionNotes: "",
   revisionCount: 0,
 };
+
+export function effectiveCvPages(settings: Pick<Settings, "cvPages">, direction: Pick<GenerationDirection, "cvPagesOverride">) {
+  return direction.cvPagesOverride ?? settings.cvPages;
+}
 
 export type Job = {
   id: string;
@@ -355,7 +386,15 @@ const fallbackTaskPlan: Record<RunWorkflow, Array<[string, string]>> = {
   ],
   generate: [
     ["generate:fallback:prepare", "Prepare selected jobs"],
-    ["generate:fallback:content", "Generate tailored content"],
+    ["generate:fallback:research", "Research company context"],
+    ["generate:fallback:strategy", "Plan tailored content"],
+    ["generate:fallback:writer", "Write tailored content"],
+    ["generate:fallback:claims", "Validate claims"],
+    ["generate:fallback:audit", "Audit factual claims"],
+    ["generate:fallback:critic", "Critique document quality"],
+    ["generate:fallback:revise", "Revise document"],
+    ["generate:fallback:ats", "Review ATS coverage"],
+    ["generate:fallback:ats-revise", "Revise ATS coverage"],
     ["generate:fallback:documents", "Compile and verify documents"],
     ["generate:fallback:finalize", "Finalize each job"],
   ],

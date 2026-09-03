@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "profile": "standard",
+  "project": {
+    "kind": "web-app",
+    "stacks": [
+      "fastify",
+      "node",
+      "react",
+      "typescript",
+      "vite"
+    ]
+  },
+  "capabilities": {
+    "application_scaffold": {
+      "status": "implemented",
+      "artifacts": [
+        "package.json",
+        "src/server/start.ts",
+        "index.html"
+      ]
+    },
+    "knowledge_base": {
+      "status": "implemented",
+      "artifacts": [
+        "AGENTS.md",
+        "docs/index.md",
+        "README.md",
+        "IDEA.md"
+      ]
+    },
+    "repository_commands": {
+      "status": "implemented",
+      "artifacts": [
+        "package.json",
+        "scripts/harness.ts"
+      ]
+    },
+    "quality_checks": {
+      "status": "implemented",
+      "artifacts": [
+        "tsconfig.json",
+        "tsconfig.server.json",
+        "tests/harness.test.ts"
+      ]
+    },
+    "ci": {
+      "status": "deferred",
+      "artifacts": []
+    },
+    "observability": {
+      "status": "partial",
+      "artifacts": [
+        "src/server/telemetry.ts",
+        "src/server/app.ts"
+      ]
+    },
+    "internal_tools": {
+      "status": "not_applicable",
+      "artifacts": [
+        "package.json"
+      ]
+    },
+    "evaluation": {
+      "status": "implemented",
+      "artifacts": [
+        "tests/ai-fixtures.test.ts",
+        "tests/fixtures/ai",
+        "scripts/browser-smoke-tracker.ts"
+      ]
+    },
+    "architecture_rules": {
+      "status": "implemented",
+      "artifacts": [
+        "docs/index.md",
+        "scripts/harness.ts",
+        "tests/harness.test.ts"
+      ]
+    },
+    "garbage_collection": {
+      "status": "implemented",
+      "artifacts": [
+        ".gitignore",
+        "scripts/harness.ts"
+      ]
+    }
+  },
+  "managed_artifacts": [
+    ".harness/manifest.json",
+    "AGENTS.md",
+    "docs/index.md",
+    "package.json",
+    "scripts/harness.ts",
+    "tests/harness.test.ts"
+  ],
+  "commands": {
+    "setup": "npm ci",
+    "dev": "npm run dev",
+    "format": "npm run format",
+    "check": "npm run check",
+    "test": "npm test",
+    "eval": "npm run eval",
+    "doctor": "npm run doctor",
+    "gc": "npm run gc"
+  },
+  "deferred": [
+    {
+      "capability": "ci",
+      "reason": "No repository CI provider is configured.",
+      "next_step": "Choose the repository CI provider, then rerun $harness upgrade standard to install the existing checks there."
+    },
+    {
+      "capability": "observability",
+      "reason": "Workflow telemetry and JSON health are structured, but general request, error, and lifecycle logging is incomplete.",
+      "next_step": "Add bounded structured application logging, then rerun $harness upgrade standard."
+    }
+  ]
+}

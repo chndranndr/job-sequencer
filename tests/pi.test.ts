@@ -8,6 +8,7 @@ import {
   runBoundedPi,
   selectConfiguredModel,
   type PiSessionLike,
+  type PiPromptOptions,
 } from "../src/server/pi.js";
 
 const priorTelemetryMode = process.env.TELEMETRY_MODE;
@@ -32,6 +33,7 @@ class FakeSession implements PiSessionLike {
   unsubscribed = false;
   abortCalls = 0;
   promptText = "";
+  promptOptions: PiPromptOptions | undefined;
   private readonly listeners = new Set<(event: unknown) => void>();
   private lateReject: ((reason: Error) => void) | undefined;
   constructor(
@@ -46,8 +48,9 @@ class FakeSession implements PiSessionLike {
       this.listeners.delete(listener);
     };
   }
-  async prompt(text: string): Promise<void> {
+  async prompt(text: string, options?: PiPromptOptions): Promise<void> {
     this.promptText = text;
+    this.promptOptions = options;
     for (const event of this.events) {
       for (const listener of this.listeners) listener(event);
     }
@@ -131,6 +134,18 @@ test("Pi session.prompt receives the expected prompt string", async () => {
     createSession: async () => (session = new FakeSession("ok")),
   });
   assert.equal(session.promptText, "expected prompt");
+});
+
+test("Pi forwards image attachments to session.prompt", async () => {
+  let session!: FakeSession;
+  const images = [{ type: "image" as const, data: "cG5n", mimeType: "image/png" }];
+  await runBoundedPi({
+    prompt: "inspect these pages",
+    images,
+    timeoutMs: 1000,
+    createSession: async () => (session = new FakeSession("ok")),
+  });
+  assert.deepEqual(session.promptOptions?.images, images);
 });
 
 test("text_delta events are forwarded via onEvent and accumulated", async () => {

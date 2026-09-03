@@ -1,0 +1,67 @@
+{
+  "posting": "Platform backend engineer for event-driven systems. You will work with Kafka, Artemis, async webhooks, idempotent payments, and Redis locking across payment capture workflows.",
+  "rank": {
+    "reason": "Missing the phrase event-driven architecture.",
+    "strengths": ["Java"],
+    "gaps": ["event-driven architecture"]
+  },
+  "direction": {
+    "cvLength": "complete",
+    "letterMode": "standard",
+    "letterNarration": "",
+    "revisionNotes": "",
+    "revisionCount": 0
+  },
+  "profile": {
+    "version": 1,
+    "identity": {
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "headline": "Platform engineer",
+      "email": "ada@example.test",
+      "phone": "+1 555 0100",
+      "city": "London",
+      "country": "UK",
+      "website": "",
+      "linkedinUrl": "",
+      "githubUrl": "",
+      "summary": "Platform engineer focused on Java services and async messaging."
+    },
+    "workPreferences": {
+      "authorizationStatus": "",
+      "relocationPreference": "",
+      "remotePreference": "",
+      "targetRoles": ["Platform Engineer"],
+      "dealBreakers": []
+    },
+    "experience": [
+      {
+        "id": "exp-platform",
+        "title": "Platform Engineer",
+        "company": "Example",
+        "employmentType": "Full-time",
+        "location": "Remote",
+        "startMonth": "",
+        "startYear": "2021",
+        "endMonth": "",
+        "endYear": "",
+        "currentRole": true,
+        "description": "Produced and consumed Kafka topics for payment workflows. Handled async webhooks with idempotent consumers. Used Redis locking around payment capture."
+      }
+    ],
+    "education": [],
+    "skills": [
+      { "id": "skill-java", "name": "Java" },
+      { "id": "skill-kafka", "name": "Kafka" },
+      { "id": "skill-redis", "name": "Redis" }
+    ],
+    "certifications": [],
+    "projects": [],
+    "awards": [],
+    "languages": []
+  },
+  "mustIdentify": ["Kafka", "event-driven"],
+  "acceptableEvidenceRefs": ["skill:skill-kafka", "skill:skill-redis", "experience:exp-platform:bullet:0", "experience:exp-platform:bullet:1", "experience:exp-platform:bullet:2"],
+  "expectedGaps": [],
+  "mustNotGap": ["event-driven architecture"]
+}

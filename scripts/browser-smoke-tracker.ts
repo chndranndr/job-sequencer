@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,6 +10,9 @@ import { buildServer } from "../src/server/app.js";
 import { writeSettings, writeStructuredProfile } from "../src/server/config.js";
 import { listJobs, openDatabase, persistScrape, setJobStage } from "../src/server/db.js";
 import { createEmptyProfile } from "../src/shared.js";
+import type { ApplicationStrategy, CVDocument } from "../src/server/agents/types.js";
+import type { RunStrategistInput } from "../src/server/agents/strategist.js";
+import type { RunWriterInput } from "../src/server/agents/writer.js";
 import type { ManualJobImportResult } from "../src/server/manual-job.js";
 import type { CommandRunner } from "../src/server/documents.js";
 
@@ -107,11 +110,20 @@ async function assertNoOverflow(page: import("playwright").Page, label: string) 
 }
 
 const fakeRunner: CommandRunner = async () => ({ code: 0, stdout: "", stderr: "" });
+const generationRunner: CommandRunner = async (executable, args, _timeout, cwd) => {
+  if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "pdf");
+  if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "pdf");
+  if (executable === "pdfinfo") return { code: 0, stdout: "Pages: 1\n", stderr: "" };
+  if (executable === "pdftotext") return { code: 0, stdout: "generated document person@example.test +62 812 3456 7890", stderr: "" };
+  return { code: 0, stdout: "", stderr: "" };
+};
 const dataDir = await mkdtemp(join(tmpdir(), "pjs-tracker-browser-"));
 await writeSettings(dataDir, smokeSettings);
 const smokeProfile = createEmptyProfile();
 smokeProfile.identity.headline = "Backend Engineer";
-smokeProfile.identity.summary = "TypeScript backend engineer focused on reliable services.";
+smokeProfile.identity.email = "person@example.test";
+smokeProfile.identity.phone = "+62 812 3456 7890";
+smokeProfile.identity.summary = "TypeScript backend engineer focused on reliable services. ".repeat(250);
 await writeStructuredProfile(dataDir, smokeProfile);
 const db = openDatabase(":memory:");
 persistScrape(db, { jobs: fixtures });
@@ -126,6 +138,17 @@ const app = await buildServer({
   dataDir,
   db,
   documentStatusRunner: fakeRunner,
+  commandRunner: generationRunner,
+  strategist: async (input: RunStrategistInput): Promise<ApplicationStrategy> => {
+    const ref = input.context.evidenceBank.items[0]!.ref;
+    return { positioning: "Backend engineer.", targetRole: "Engineer", primarySellingPoints: [{ angle: "Reliable services", evidenceRefs: [ref] }], requirements: [{ requirement: "Backend", importance: "critical", candidateFit: "strong", evidenceRefs: [ref] }], narrativeGuidance: ["Lead with reliable services."], deEmphasize: [], genuineGaps: [], rankDisagreements: [] };
+  },
+  writer: async (input: RunWriterInput): Promise<CVDocument> => {
+    const ref = input.context.evidenceBank.items[0]!.ref;
+    return { summary: { text: "Backend engineer.", evidenceRefs: [ref] }, experiences: [], skillIds: [], projects: [], coverLetter: { subject: "Engineer", paragraphs: [{ text: "I build reliable services.", evidenceRefs: [ref] }] } };
+  },
+  auditor: async () => ({ issues: [] }),
+  critic: async () => ({ score: 8, issues: [], summary: "Ready." }),
   availableModels: async () => [{ id: "fixture", name: "Fixture" }],
   manualImporter: async () => manualImportFixture,
   projectRoot: process.cwd(),
@@ -295,6 +318,30 @@ try {
   await expect(page.locator(".reco .conf")).toHaveCount(0);
   const desktopBoard = await page.locator(".order-list").evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
   if (desktopBoard.scrollWidth <= desktopBoard.clientWidth) throw new Error(`ORDER board is not horizontally scrollable: ${JSON.stringify(desktopBoard)}`);
+
+  await openTracker(page, base, `#/sample/${selectedJob.id}`);
+  await page.locator(".sample-aside").waitFor();
+  const pageOverride = page.getByLabel("Maximum CV pages");
+  await expect(pageOverride).toHaveValue("");
+  await expect(page.locator(".sample-page-meta")).toContainText("Inherited from DISK");
+  await pageOverride.fill("1");
+  await pageOverride.blur();
+  await expect(page.locator(".sample-page-meta")).toContainText("Override: 1");
+  await expect(page.locator(".sample-page-warning")).toContainText("Complete profile is estimated");
+  await page.getByLabel("CV length").selectOption("short");
+  await expect(page.locator(".sample-page-warning")).toHaveCount(0);
+  await page.getByLabel("CV length").selectOption("complete");
+  await expect(page.locator(".sample-page-warning")).toContainText("may shorten the CV to fit");
+  const generateDocuments = page.getByRole("button", { name: "Generate documents", exact: true });
+  await expect(generateDocuments).toBeEnabled();
+  await generateDocuments.click();
+  await expect(page.getByRole("button", { name: "Revise", exact: true })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Revise", exact: true }).click();
+  await expect.poll(async () => {
+    const response = await page.request.get(`${base}/api/jobs/${selectedJob.id}`);
+    return (await response.json()).generation_direction.revisionCount;
+  }, { timeout: 30_000 }).toBe(1);
+  await expect(page.getByRole("button", { name: "Revise", exact: true })).toBeEnabled({ timeout: 30_000 });
 
   await page.setViewportSize({ width: 390, height: 844 });
   for (const route of routes) {
