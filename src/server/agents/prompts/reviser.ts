@@ -34,7 +34,7 @@ export function buildReviserPrompt(input: {
       "Raise relevance, specificity, clarity, ordering, and letter quality using APPLICATION STRATEGY. Remove or narrow unsupported claims instead of inventing facts.",
       "Revision notes are operator instructions. Never copy numbers, tokens, or claims from them unless they already appear in the evidence bank. Never mention a rejected claim.",
       "Use only EvidenceRef values from the evidence bank. Unknown ids fail validation. Never invent refs.",
-      compactComplete ? `The complete profile is estimated at ${input.cvPageEstimate} CV page(s), but the effective target is ${cvPages}. Produce exactly ${cvPages} CV page(s) and exactly ${settings.coverLetterPages} cover-letter page(s). Keep every employer and the strongest grounded evidence, then shorten wording and remove redundant or lower-priority detail to fit. Do not change the user's selected CV length.` : `Produce exactly ${cvPages} CV page(s) and exactly ${settings.coverLetterPages} cover-letter page(s).`,
+      compactComplete ? `The complete profile is estimated at ${input.cvPageEstimate} CV page(s), but the maximum is ${cvPages}. Produce at most ${cvPages} CV page(s) and at most ${settings.coverLetterPages} cover-letter page(s). Keep every employer and the strongest grounded evidence, then shorten wording and remove redundant or lower-priority detail to fit. Do not change the user's selected CV length.` : `Produce at most ${cvPages} CV page(s) and at most ${settings.coverLetterPages} cover-letter page(s).`,
     ].join(" ")),
     trustedSection("EVIDENCE BANK", JSON.stringify(projectPromptContext(input.context.evidenceBank))),
     trustedSection("APPLICATION STRATEGY", JSON.stringify(projectPromptContext(input.strategy))),

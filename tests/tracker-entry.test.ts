@@ -154,6 +154,9 @@ test("Tracker table columns and SAMPLE inspector layout stay focused", () => {
   assert.ok(sample.indexOf("sample-document-summary") > aside);
   assert.ok(sample.indexOf("sample-verification") < aside);
   assert.match(sample.slice(aside), /Open CV PDF[\s\S]*Open letter PDF[\s\S]*Open CV source[\s\S]*Open letter source/);
+  assert.match(sample, /cvPagesOverride/);
+  assert.match(sample, /sampleCvPageWarning/);
+  assert.match(sample, /CV pages must be 1/);
   assert.match(sample, /role="separator"/);
   assert.match(sample, /onPointerDown/);
   assert.match(sample, /ArrowLeft/);

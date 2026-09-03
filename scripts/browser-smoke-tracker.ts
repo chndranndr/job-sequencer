@@ -321,7 +321,7 @@ try {
 
   await openTracker(page, base, `#/sample/${selectedJob.id}`);
   await page.locator(".sample-aside").waitFor();
-  const pageOverride = page.getByLabel("CV pages override");
+  const pageOverride = page.getByLabel("Maximum CV pages");
   await expect(pageOverride).toHaveValue("");
   await expect(page.locator(".sample-page-meta")).toContainText("Inherited from DISK");
   await pageOverride.fill("1");

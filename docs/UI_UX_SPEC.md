@@ -813,8 +813,8 @@ When a built-in source is allowed beyond 45 days and returns dated postings olde
 
 The user can view:
 
-- expected CV page count;
-- expected cover-letter page count;
+- maximum CV page count;
+- maximum cover-letter page count;
 - available CV templates;
 - cover-letter template status;
 - LaTeX/PDF tool availability.

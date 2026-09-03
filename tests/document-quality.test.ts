@@ -269,7 +269,7 @@ test("generation prompt makes cover-letter bullets optional and complementary", 
   assert.match(prompt, /never repeat a paragraph's achievement, metric, or claim/);
 });
 
-test("generation prompt describes complete-profile overflow with the effective page target", () => {
+test("generation prompt describes complete-profile overflow with the page maximum", () => {
   const prompt = buildGenerationPrompt({
     profile: "Java backend profile",
     job: { role: "Backend Engineer" },
@@ -279,7 +279,8 @@ test("generation prompt describes complete-profile overflow with the effective p
     cvPageEstimate: 3,
     direction: { ...defaultGenerationDirection },
   }, "");
-  assert.match(prompt, /complete profile is estimated at 3 CV page\(s\) while the target is 2/);
+  assert.match(prompt, /complete profile is estimated at 3 CV page\(s\) while the maximum is 2/);
+  assert.match(prompt, /at most 2 CV page\(s\) and at most 1 cover-letter page\(s\)/);
   assert.match(prompt, /shorten wording and remove redundant or lower-priority detail/);
 });
 

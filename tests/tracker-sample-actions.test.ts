@@ -30,12 +30,12 @@ test("Selected SAMPLE shows direction controls before generate", () => {
   assert.equal(SAMPLE_DIRECTION_LABELS.cvLength, "CV length");
   assert.equal(SAMPLE_DIRECTION_LABELS.letterMode, "Letter stance");
   assert.equal(SAMPLE_DIRECTION_LABELS.letterNarration, "Narration");
-  assert.equal(SAMPLE_DIRECTION_LABELS.cvPagesOverride, "CV pages override");
+  assert.equal(SAMPLE_DIRECTION_LABELS.cvPagesOverride, "Maximum CV pages");
 });
 
 test("complete CV page warning is advisory and only appears below the profile estimate", () => {
   assert.match(sampleCvPageWarning("complete", 2, 3), /Complete profile is estimated at 3 pages/);
-  assert.match(sampleCvPageWarning("complete", 2, 3), /2-page target/);
+  assert.match(sampleCvPageWarning("complete", 2, 3), /2-page maximum/);
   assert.equal(sampleCvPageWarning("complete", 3, 3), "");
   assert.equal(sampleCvPageWarning("short", 2, 3), "");
   assert.equal(sampleCvPageWarning("complete", null, 3), "");

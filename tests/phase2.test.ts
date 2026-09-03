@@ -112,18 +112,17 @@ test("generation Pi session exposes no tools", async () => {
   try { assert.deepEqual(session.getActiveToolNames(), []); } finally { session.dispose(); }
 });
 
-test("document verification requires exact target pages", async () => {
+test("document verification treats configured pages as maximums", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-doc-"));
   try {
     await writeFile(join(dir, "cv.tex"), "x");
     await writeFile(join(dir, "cover-letter.tex"), "x");
-    const result = await compileAndVerify({ currentDir: dir, cvPages: 2, coverLetterPages: 1, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner });
+    const result = await compileAndVerify({ currentDir: dir, cvPages: 3, coverLetterPages: 2, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner });
     assert.equal(result.success, true);
     assert.equal(result.cvPages, 2);
     assert.equal(result.coverLetterPages, 1);
-    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 3, coverLetterPages: 2, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /CV must be exactly 3 pages/);
-    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 1, coverLetterPages: 1, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /CV must be exactly 1 page/);
-    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 2, coverLetterPages: 0, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /Cover letter must be exactly 0 pages/);
+    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 1, coverLetterPages: 1, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /CV must be at most 1 page/);
+    await assert.rejects(() => compileAndVerify({ currentDir: dir, cvPages: 2, coverLetterPages: 0, email: "person@example.test", phone: "+62 812 3456 7890", runner: fakeRunner }), /Cover letter must be at most 0 pages/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

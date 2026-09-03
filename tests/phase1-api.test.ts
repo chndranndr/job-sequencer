@@ -32,6 +32,15 @@ test("available model endpoint returns provider-authenticated Pi model options",
   finally { await app.close(); db.close(); }
 });
 
+test("profile API exposes the deterministic CV page estimate", async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"pjs-profile-estimate-")); const db=openDatabase(":memory:"); const app=await buildServer({dataDir:dir,db});
+  try {
+    const saved=await app.inject({method:"PUT",url:"/api/profile",payload:{profile:createEmptyProfile()}});
+    assert.equal(saved.statusCode,200); assert.equal(saved.json().cvPageEstimate,1);
+    const response=await app.inject({url:"/api/profile"}); assert.equal(response.statusCode,200); assert.equal(response.json().cvPageEstimate,1);
+  } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
+});
+
 test("profile import enqueues a run and returns the draft in the run summary", async()=>{
   const dir=await mkdtemp(join(tmpdir(),"pjs-import-")); const db=openDatabase(":memory:");
   const parsed=createEmptyProfile(); parsed.identity.firstName="Candidate";

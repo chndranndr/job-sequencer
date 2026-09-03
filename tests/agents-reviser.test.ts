@@ -72,6 +72,7 @@ test("reviser prompt carries findings, protects posting, and omits the profile",
   assert.match(prompt, /FACTUAL AUDIT FINDINGS/);
   assert.match(prompt, /VISUAL QA FINDINGS/);
   assert.match(prompt, /crowded footer/);
+  assert.match(prompt, /at most 2 CV page\(s\) and at most 1 cover-letter page\(s\)/);
   assert.match(prompt, /technologiesUsed only when relevant technology evidence is tied to that same experience/);
   assert.match(prompt, /omit the field entirely for companies without such evidence/);
 });

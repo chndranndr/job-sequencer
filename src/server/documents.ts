@@ -114,8 +114,8 @@ export async function compileAndVerify(options:{currentDir:string;cvPages:number
   const cvText=(await checked(runner,"pdftotext",["cv.pdf","-"],options.currentDir,options.signal)).stdout.trim();
   const letterText=(await checked(runner,"pdftotext",["cover-letter.pdf","-"],options.currentDir,options.signal)).stdout.trim();
   const cvCount=pageCount(cvInfo.stdout),letterCount=pageCount(letterInfo.stdout);
-  if(cvCount!==options.cvPages)throw new Error(`CV must be exactly ${options.cvPages} pages.`);
-  if(letterCount!==options.coverLetterPages)throw new Error(`Cover letter must be exactly ${options.coverLetterPages} pages.`);
+  if(cvCount>options.cvPages)throw new Error(`CV must be at most ${options.cvPages} pages.`);
+  if(letterCount>options.coverLetterPages)throw new Error(`Cover letter must be at most ${options.coverLetterPages} pages.`);
   if(!cvText||!letterText)throw new Error("Generated PDF text is empty.");
   if(!cvText.includes(options.email)||!cvText.includes(options.phone)||!letterText.includes(options.email)||!letterText.includes(options.phone))throw new Error("Each generated PDF must contain the profile email and phone.");
   const ats=deterministicAtsChecks({ cvText, coverLetterText: letterText, profile: options.profile });

@@ -481,7 +481,7 @@ Rules:
 
 The Jobs page includes **Generate CV & Cover Letter** for selected jobs.
 
-SAMPLE collects `GenerationDirection` before generate. CV length is `short` or `complete`. Letter stance is `standard` or `exploratory`. Narration is optional. `short` still means two pages. ORDER Accept · generate uses the stored direction. It does not show a second length or stance form.
+SAMPLE collects `GenerationDirection` before generate. CV length is `short` or `complete`. Letter stance is `standard` or `exploratory`. Narration is optional. The configured CV and cover-letter page values are maximums, so generated documents may be shorter; `short` still means denser copy within the configured CV page maximum, which defaults to two pages. ORDER Accept · generate uses the stored direction. It does not show a second length or stance form.
 
 Revise writes `revisionNotes` then POSTs regenerate. Manual revises have no fixed cap. Ready revise returns the job to Drafting. Keep only the three most recent prior document versions in history. Approve remains the only path to Ready.
 
@@ -580,8 +580,8 @@ Required checks:
 
 - compiler exits successfully;
 - expected PDF exists;
-- CV is exactly two pages;
-- cover letter is exactly one page;
+- CV does not exceed the configured CV page maximum (two pages by default);
+- cover letter does not exceed the configured cover-letter page maximum (one page by default);
 - extracted text is non-empty;
 - email and phone are present as literal text;
 - generated paths remain inside the job application directory.
@@ -1126,7 +1126,7 @@ Exit:
 
 - [x] only Selected jobs generate documents.
 - [~] one real job produces truthful CV and cover letter; deterministic fixture generation is verified, but no provider-backed personal document sample is recorded and the configured CV template is fixture-labeled.
-- [~] CV is two pages and letter one page; the verification gate and deterministic document tests enforce this, but a real provider-generated sample is not recorded.
+- [~] CV is at most the configured maximum and letter is at most the configured maximum; the verification gate and deterministic document tests enforce this, but a real provider-generated sample is not recorded.
 - [x] contact details extract correctly.
 - [x] failures remain Drafting.
 - [x] human approval is required for Ready.
@@ -1176,7 +1176,7 @@ Exit:
 | Unknown tool result ID | Reject entire scrape output |
 | Duplicate URL | Update score/posting; preserve advanced stage |
 | Document compile failure | Keep Drafting |
-| Wrong page count | Keep Drafting |
+| Configured page maximum exceeded | Keep Drafting |
 | Empty ATS text | Keep Drafting |
 | Database failure | Roll back transaction |
 | Server restart during run | Mark stale run failed; user retries |

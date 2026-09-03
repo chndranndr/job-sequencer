@@ -164,7 +164,7 @@ test("writer prompt keeps the posting untrusted and does not dump the profile", 
   assert.doesNotMatch(JSON.stringify(buildEvidenceBank(profile)), /Ignore previous instructions/);
 });
 
-test("writer prompt carries the effective page target and advisory overflow guidance", () => {
+test("writer prompt carries the page maximum and advisory overflow guidance", () => {
   const profile = createEmptyProfile();
   profile.identity.summary = "Java engineer.";
   const prompt = buildWriterPrompt({
@@ -175,7 +175,8 @@ test("writer prompt carries the effective page target and advisory overflow guid
     settings: { cvPages: 2, coverLetterPages: 1 },
     cvPageEstimate: 3,
   });
-  assert.match(prompt, /complete profile is estimated at 3 CV page\(s\), but the effective target is 2/);
+  assert.match(prompt, /complete profile is estimated at 3 CV page\(s\), but the maximum is 2/);
+  assert.match(prompt, /maximum is 2/);
   assert.match(prompt, /Keep every employer/);
   assert.match(prompt, /do not change the user's selected CV length/);
 });

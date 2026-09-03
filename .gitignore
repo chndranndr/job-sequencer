@@ -3,6 +3,10 @@ public/audio/*.mp3
 data/
 .pi-disabled/
 .hermes/
+.audit/
+.codex/
+.cursor/
+.tmp*
 
 # Local runtime state and databases
 runtime/

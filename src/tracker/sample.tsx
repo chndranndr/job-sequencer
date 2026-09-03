@@ -44,7 +44,7 @@ export function sampleStageActions(stage: JobStage): SampleAction[] {
 
 export const SAMPLE_DIRECTION_LABELS = {
   cvLength: "CV length",
-  cvPagesOverride: "CV pages override",
+  cvPagesOverride: "Maximum CV pages",
   letterMode: "Letter stance",
   letterNarration: "Narration",
   revisionNotes: "Correction",
@@ -56,7 +56,7 @@ export type SampleDirectionField = "cvLength" | "letterMode" | "letterNarration"
 
 export function sampleCvPageWarning(cvLength: GenerationDirection["cvLength"], effectivePages: number | null, estimate: number | null) {
   if (cvLength !== "complete" || effectivePages === null || estimate === null || effectivePages < 1 || effectivePages >= estimate) return "";
-  return `Complete profile is estimated at ${estimate} page${estimate === 1 ? "" : "s"}. With a ${effectivePages}-page target, the AI Agent may shorten the CV to fit.`;
+  return `Complete profile is estimated at ${estimate} page${estimate === 1 ? "" : "s"}. With a ${effectivePages}-page maximum, the AI Agent may shorten the CV to fit.`;
 }
 
 export function sampleDirectionControls(stage: JobStage): SampleDirectionField[] {
@@ -406,7 +406,7 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
         {sampleDirectionControls(job.stage).length > 0 && <>
           <label className="field">{SAMPLE_DIRECTION_LABELS.cvLength}<select value={cvLength} disabled={busyAction !== null || runStarting !== null} onChange={(event) => { const next = event.target.value === "short" ? "short" : "complete"; setCvLength(next); void persistDirection({ cvLength: next }); }}><option value="complete">Complete</option><option value="short">Short</option></select></label>
           <label className="field">{SAMPLE_DIRECTION_LABELS.cvPagesOverride}<input type="number" min={1} max={10} value={cvPagesOverride ?? ""} placeholder={settings ? String(settings.cvPages) : ""} disabled={busyAction !== null || runStarting !== null} onChange={(event) => { const value = event.target.value; setCvPagesOverride(value === "" ? null : Number(value)); }} onBlur={() => { if (cvPagesOverride !== null && (!Number.isInteger(cvPagesOverride) || cvPagesOverride < 1 || cvPagesOverride > 10)) { setCvPagesOverride(job.generation_direction?.cvPagesOverride ?? null); toast("CV pages must be 1–10 or blank."); return; } void persistDirection({ cvPagesOverride }); }} /></label>
-          <p className="sample-page-meta">{cvPagesOverride === null ? `Inherited from DISK · DISK default: ${diskDefault}` : `Override: ${cvPagesOverride} · DISK default: ${diskDefault}`}{cvPageEstimate === null ? " · profile estimate unavailable" : ` · profile estimate ${cvPageEstimate} page${cvPageEstimate === 1 ? "" : "s"}`}{effectivePages === null ? "" : ` · target ${effectivePages}`}</p>
+          <p className="sample-page-meta">{cvPagesOverride === null ? `Inherited from DISK · DISK default: ${diskDefault}` : `Override: ${cvPagesOverride} · DISK default: ${diskDefault}`}{cvPageEstimate === null ? " · profile estimate unavailable" : ` · profile estimate ${cvPageEstimate} page${cvPageEstimate === 1 ? "" : "s"}`}{effectivePages === null ? "" : ` · maximum ${effectivePages}`}</p>
           {pageWarning && <p className="sample-page-warning" role="status">{pageWarning}</p>}
           <label className="field">{SAMPLE_DIRECTION_LABELS.letterMode}<select value={letterMode} disabled={busyAction !== null || runStarting !== null} onChange={(event) => { const next = event.target.value === "exploratory" ? "exploratory" : "standard"; setLetterMode(next); void persistDirection({ letterMode: next }); }}><option value="standard">Standard</option><option value="exploratory">Exploratory</option></select></label>
           <label className="field">{SAMPLE_DIRECTION_LABELS.letterNarration}<textarea maxLength={500} value={letterNarration} disabled={busyAction !== null || runStarting !== null} onChange={(event) => setLetterNarration(event.target.value)} onBlur={() => void persistDirection({ letterNarration })} placeholder="Optional notes for the letter." /></label>
