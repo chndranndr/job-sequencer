@@ -20,6 +20,7 @@
     "gc": "node --import=tsx scripts/harness.ts gc",
     "smoke": "node --import=tsx scripts/smoke.ts",
     "smoke:latex": "node --import=tsx scripts/latex-smoke.ts",
+    "debug:cv": "node --import=tsx scripts/debug-cv-extract.ts",
     "smoke:browser": "node --import=tsx scripts/browser-smoke-tracker.ts",
     "smoke:browser:tracker": "node --import=tsx scripts/browser-smoke-tracker.ts",
     "test:vendor:freehire": "bun test --timeout 30000 vendor/ai-job-search-skills/freehire-search/cli/tests",

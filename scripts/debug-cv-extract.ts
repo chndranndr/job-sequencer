@@ -1,9 +1,23 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { extractProfileText } from "../src/server/profile-import.js";
 
-const pdfPath = process.argv[2] ?? "H:/work/ai-job-search/cv/pdf/cv_chandra_complete.pdf";
-const buf = readFileSync(pdfPath);
-const { text, format } = await extractProfileText({ filename: "cv.pdf", mimetype: "application/pdf", buffer: buf });
-const out = "H:/work/greenfield/.audit/cv-extract.txt";
-writeFileSync(out, text, "utf8");
-console.log(JSON.stringify({ format, length: text.length, out }, null, 2));
+async function main() {
+  const input = process.argv[2];
+  if (!input) throw new Error("Usage: npm run debug:cv -- <path-to-cv>");
+
+  const path = resolve(input);
+  const { format, text } = await extractProfileText({
+    filename: basename(path),
+    mimetype: "application/octet-stream",
+    buffer: await readFile(path),
+  });
+
+  process.stderr.write(`${JSON.stringify({ input: path, format, textLength: text.length })}\n`);
+  process.stdout.write(`${text}\n`);
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});
