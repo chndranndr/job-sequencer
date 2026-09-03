@@ -16,13 +16,9 @@ This index points to maintained evidence. Code and executable configuration desc
 - Runtime state and generated personal artifacts stay in ignored local directories.
 - The deterministic boundary check is `npm run harness:check`.
 
-## Plans and execution state
+## Planning artifacts
 
-- [AI harness upgrade plan](../harnes-upgrade-plan.md).
-- [Agent-native CV plan](agent-native-cv-generation-plan.md) and [execution record](agent-native-cv-generation-execution.md).
-- [Generation direction plan](generation-direction-plan.md).
-
-Plans are not proof of completion. Confirm current code, tests, and the active worktree before reporting an item complete.
+Working plans and execution records are intentionally local-only. They are not required application source and are not tracked in the repository.
 
 ## Quality, evaluation, and reliability
 
