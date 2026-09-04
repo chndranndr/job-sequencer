@@ -202,7 +202,10 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
       if (!assistantText && typeof output === "string") assistantText = output;
       tools.state.assertFinished();
       const result = validateScrapeResult(parseAgentResult(assistantText), tools.provenance, maxJobs, undefined, sourceConfigs.map((source) => source.key));
-      if (!result.jobs.length) throw new AllSourcesFailedError(tools.state.errors.length ? tools.state.errors : ["Adaptive search finished without valid results."], tools.warnings);
+      const completedSearch = tools.state.attempts.some(attempt => attempt.operation === "search" && attempt.status === "completed");
+      if (!result.jobs.length && !completedSearch) {
+        throw new AllSourcesFailedError(tools.state.errors.length ? tools.state.errors : ["Adaptive search finished without a completed search."], tools.warnings);
+      }
       tasks.complete("scrape:agent:run", `${result.jobs.length} result(s) selected`);
       return { result: hydrateScrapeResult(result, tools.detailDescriptions), provenance: tools.provenance, errors: tools.errors, warnings: tools.warnings };
     } catch (error) {
