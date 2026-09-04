@@ -316,7 +316,7 @@ export function createScrapeTools(options: { source?: JobSource; customSource?: 
 
 export function hydrateScrapeResult(result: ScrapeResult, detailDescriptions: ReadonlyMap<string, string>): ScrapeResult {
   return { jobs: result.jobs.map((job) => {
-    const description = detailDescriptions.get(job.sourceId);
+    const description = detailDescriptions.get(provenanceKey(job.source, job.sourceId)) ?? detailDescriptions.get(job.sourceId);
     return description?.trim() ? { ...job, posting: description } : job;
   }) };
 }

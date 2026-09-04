@@ -55,6 +55,16 @@ export function isJobSource(value: unknown): value is BuiltInJobSource {
   return typeof value === "string" && (jobSourceKeys as readonly string[]).includes(value);
 }
 
+export type SearchHit = {
+  source: JobSource;
+  sourceId: string;
+  url: string;
+  title: string;
+  company?: string;
+  location?: string;
+  postedAt?: string;
+};
+
 export type CustomJsonParser = {
   format: "json";
   search: {
@@ -98,6 +108,18 @@ export type Criteria = {
   employmentTypes: string[];
   maxJobsPerRun: number;
 };
+
+export type SearchGoal = {
+  criteria: Criteria;
+  enabledSources: JobSource[];
+};
+
+export type SearchBudget = Readonly<{
+  maxSearchCalls: number;
+  maxDetailCalls: number;
+  maxTotalResults: number;
+  maxRunDurationMs: number;
+}>;
 
 export type Settings = {
   provider: string;
