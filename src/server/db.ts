@@ -182,9 +182,10 @@ export function persistScrape(db: DatabaseSync, result: ScrapeResult, threshold 
   const urls = new Set<string>();
   for (const job of result.jobs) {
     const url = normalizeUrl(job.url);
-    if (sourceIds.has(job.sourceId)) throw new Error(`duplicate source ID ${job.sourceId}`);
+    const sourceKey = `${job.source}\u0000${job.sourceId}`;
+    if (sourceIds.has(sourceKey)) throw new Error(`duplicate source ID ${job.sourceId}`);
     if (urls.has(url)) throw new Error(`duplicate normalized URL ${url}`);
-    sourceIds.add(job.sourceId);
+    sourceIds.add(sourceKey);
     urls.add(url);
   }
   db.exec("BEGIN IMMEDIATE");
