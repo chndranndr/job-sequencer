@@ -420,6 +420,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
           const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
           if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
         },
+        onAssistantText: value => { text = value; },
       }),
       onError: () => ({ error: "Provider test failed." }),
     });

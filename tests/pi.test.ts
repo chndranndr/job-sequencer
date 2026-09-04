@@ -331,6 +331,18 @@ test("Pi flushes assistant state on message_end, agent_end, and failure", async 
   }
 });
 
+test("Pi exposes the final assistant text when only message_end has content", async () => {
+  let text = "";
+  const message = { role: "assistant", timestamp: 8, content: [{ type: "text", text: "{\"value\":\"ok\"}" }] };
+  await runBoundedPi({
+    prompt: "structured",
+    timeoutMs: 1_000,
+    onAssistantText: value => { text = value; },
+    createSession: async () => new FakeSession("ok", [{ type: "message_end", message }]),
+  });
+  assert.equal(text, '{"value":"ok"}');
+});
+
 test("Pi extracts provider usage and leaves missing usage null", async () => {
   const usage = {
     input: 3,
@@ -379,6 +391,9 @@ test("Pi classifies bounded and provider errors without confusing rejection with
   assert.equal(classifyPiError(new Error("ENOTFOUND api.example.test")), "network");
   assert.equal(classifyPiError(new Error("context length overflow")), "context_overflow");
   assert.equal(classifyPiError(new Error("empty response")), "empty_response");
+  const structured = new Error("Structured output failed after 2 attempts.");
+  structured.name = "StructuredOutputError";
+  assert.equal(classifyPiError(structured), "structured_output");
   assert.equal(classifyPiError(new Error("provider rejected request")), "provider");
   assert.equal(classifyPiError("not an Error"), "unknown");
 });

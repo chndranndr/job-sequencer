@@ -45,6 +45,7 @@ function liveExecute(input: RunCriticInput): StructuredRunOptions<Critique>["exe
         const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
         if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
       },
+      onAssistantText: value => { text = value; },
     });
     return text;
   };

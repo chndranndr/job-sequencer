@@ -254,6 +254,14 @@ test("validateCVDocument throws on an unknown EvidenceRef", () => {
   assert.throws(() => validateCVDocument(document, profile, buildEvidenceBank(profile)), /Unknown EvidenceRef: skill:not-in-bank/);
 });
 
+test("validateCVDocument canonicalizes an unambiguous skill-name EvidenceRef", () => {
+  const profile = sampleProfile();
+  const document = validDocument(profile);
+  document.summary.evidenceRefs = [evidenceRef("skill: Java")];
+  const normalized = validateCVDocument(document, profile, buildEvidenceBank(profile));
+  assert.deepEqual(normalized.summary.evidenceRefs, [evidenceRef("skill:skill-java")]);
+});
+
 test("candidate claims require provenance while cover-letter context may omit it", () => {
   const profile = sampleProfile();
   const bank = buildEvidenceBank(profile);
@@ -357,4 +365,8 @@ test("validateApplicationStrategy enforces fit refs and ignores rank", () => {
     }, bank),
     /Unknown EvidenceRef: skill:missing/,
   );
+
+  const alias = validStrategy([evidenceRef("skill: Java")]);
+  const normalized = validateApplicationStrategy(alias, bank);
+  assert.deepEqual(normalized.primarySellingPoints[0]?.evidenceRefs, [javaRef]);
 });

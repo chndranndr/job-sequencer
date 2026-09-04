@@ -4,6 +4,7 @@ import type { Settings } from "../../config.js";
 import type { AgentCandidateContext, ApplicationStrategy, AtsReview, CVDocument, Critique, FactualAudit } from "../types.js";
 import type { CompanyResearch } from "../research.js";
 import type { VisualReview } from "../../visual.js";
+import { evidenceRefCatalog } from "../evidence.js";
 
 const cvDocumentShape = "{\"summary\":{\"text\":\"\",\"evidenceRefs\":[\"\"]},\"experiences\":[{\"experienceId\":\"\",\"technologiesUsed\":[{\"name\":\"\",\"evidenceRefs\":[\"\"]}],\"bullets\":[{\"text\":\"\",\"evidenceRefs\":[\"\"],\"transformation\":\"rewrite|compress|combine\"}]}],\"skillIds\":[\"\"],\"projects\":[{\"projectId\":\"\",\"bullets\":[{\"text\":\"\",\"evidenceRefs\":[\"\"]}]}],\"coverLetter\":{\"subject\":\"\",\"paragraphs\":[{\"text\":\"\",\"evidenceRefs\":[\"\"]}]}}";
 
@@ -33,10 +34,10 @@ export function buildReviserPrompt(input: {
       "For each experience, include technologiesUsed only when relevant technology evidence is tied to that same experience; omit the field entirely for companies without such evidence. Each technology entry needs its own concise name and only evidenceRefs from that experience.",
       "Raise relevance, specificity, clarity, ordering, and letter quality using APPLICATION STRATEGY. Remove or narrow unsupported claims instead of inventing facts.",
       "Revision notes are operator instructions. Never copy numbers, tokens, or claims from them unless they already appear in the evidence bank. Never mention a rejected claim.",
-      "Use only EvidenceRef values from the evidence bank. Unknown ids fail validation. Never invent refs.",
+      "EvidenceRefs are opaque IDs. Copy the ref string exactly from the evidence bank; a skill name such as Java is not an EvidenceRef. Use only EvidenceRef values from the evidence bank. Unknown ids fail validation. Never invent refs.",
       compactComplete ? `The complete profile is estimated at ${input.cvPageEstimate} CV page(s), but the maximum is ${cvPages}. Produce at most ${cvPages} CV page(s) and at most ${settings.coverLetterPages} cover-letter page(s). Keep every employer and the strongest grounded evidence, then shorten wording and remove redundant or lower-priority detail to fit. Do not change the user's selected CV length.` : `Produce at most ${cvPages} CV page(s) and at most ${settings.coverLetterPages} cover-letter page(s).`,
     ].join(" ")),
-    trustedSection("EVIDENCE BANK", JSON.stringify(projectPromptContext(input.context.evidenceBank))),
+    trustedSection("EVIDENCE BANK", JSON.stringify(evidenceRefCatalog(input.context.evidenceBank))),
     trustedSection("APPLICATION STRATEGY", JSON.stringify(projectPromptContext(input.strategy))),
     trustedSection("CURRENT CV DOCUMENT", JSON.stringify(projectPromptContext(input.document))),
     trustedSection("FACTUAL AUDIT FINDINGS", JSON.stringify(projectPromptContext(input.audit))),

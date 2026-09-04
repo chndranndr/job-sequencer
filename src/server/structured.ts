@@ -43,15 +43,116 @@ export function stripJsonCodeFence(value: string) {
   return (match?.[1] ?? trimmed).trim();
 }
 
+const validJsonEscapes = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+
+// ponytail: repair only unambiguous LLM syntax slips; schema and business validation remain the gate.
+function repairJsonStringLiterals(value: string) {
+  let repaired = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (!inString) {
+      repaired += character;
+      if (character === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      repaired += character;
+      escaped = false;
+      continue;
+    }
+    if (character === '"') {
+      const next = value.slice(index + 1).match(/\S/)?.[0];
+      if (next && ![",", "}", "]", ":"].includes(next) && next !== '"') {
+        repaired += '\\"';
+        continue;
+      }
+      repaired += character;
+      inString = false;
+      continue;
+    }
+    if (character === "\\") {
+      const next = value[index + 1];
+      if (next === undefined) {
+        repaired += "\\\\";
+        continue;
+      }
+      if (next === "u" && /^[0-9a-fA-F]{4}$/.test(value.slice(index + 2, index + 6))) {
+        repaired += `\\u${value.slice(index + 2, index + 6)}`;
+        index += 5;
+        continue;
+      }
+      if (validJsonEscapes.has(next)) {
+        repaired += `\\${next}`;
+        index += 1;
+        continue;
+      }
+      repaired += "\\\\";
+      continue;
+    }
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && codePoint <= 0x1f) {
+      const escapedControl = { "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t" }[character];
+      repaired += escapedControl ?? `\\u${codePoint.toString(16).padStart(4, "0")}`;
+      continue;
+    }
+    repaired += character;
+  }
+  return repaired;
+}
+
+function repairMissingJsonCommas(value: string) {
+  let repaired = "";
+  let inString = false;
+  let escaped = false;
+  let lastSignificant = "";
+  const containers: string[] = [];
+  for (const character of value) {
+    if (inString) {
+      repaired += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') {
+        inString = false;
+        lastSignificant = '"';
+      }
+      continue;
+    }
+    if (character === '"') {
+      const parent = containers.at(-1);
+      if ((parent === "{" || parent === "[") && /["\]}0-9eln]/i.test(lastSignificant)) repaired += ",";
+      inString = true;
+      repaired += character;
+      continue;
+    }
+    if (character === "{" || character === "[") containers.push(character);
+    else if (character === "}" || character === "]") containers.pop();
+    repaired += character;
+    if (!/\s/.test(character)) lastSignificant = character;
+  }
+  return repaired;
+}
+
+function parseJsonCandidate(value: string) {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch (directError) {
+    const repaired = repairMissingJsonCommas(repairJsonStringLiterals(value));
+    if (repaired !== value) return JSON.parse(repaired) as unknown;
+    throw directError;
+  }
+}
+
 export function parseModelJson(value: string): unknown {
   const fenced = stripJsonCodeFence(value);
   try {
-    return JSON.parse(fenced) as unknown;
+    return parseJsonCandidate(fenced);
   } catch (directError) {
     const start = fenced.indexOf("{");
     const end = fenced.lastIndexOf("}");
     if (start < 0 || end <= start) throw directError instanceof SyntaxError ? directError : new SyntaxError("Model output contained no JSON object.");
-    return JSON.parse(fenced.slice(start, end + 1)) as unknown;
+    return parseJsonCandidate(fenced.slice(start, end + 1));
   }
 }
 
@@ -92,6 +193,7 @@ export async function runStructured<T>(options: StructuredRunOptions<T>): Promis
     throwIfAborted(options.signal);
 
     try {
+      if (!raw.trim()) throw new Error("Model returned an empty response.");
       const parsed: unknown = parseModelJson(raw);
       let value = parseWithSchema(options.schema, parsed);
       const next = options.validateBusiness?.(value);

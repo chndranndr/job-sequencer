@@ -2,6 +2,7 @@ import type { StructuredProfile, TrajectoryRecorder } from "../../shared.js";
 import type { Settings } from "../config.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "../pi.js";
 import type { StructuredRunOptions } from "../structured.js";
+import { normalizeEvidenceRefs } from "./evidence.js";
 import { buildAuditorPrompt } from "./prompts/auditor.js";
 import { runAgentStructured } from "./runtime.js";
 import {
@@ -46,6 +47,7 @@ function liveExecute(input: RunFactualAuditorInput): StructuredRunOptions<Factua
         const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
         if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
       },
+      onAssistantText: value => { text = value; },
     });
     return text;
   };
@@ -53,12 +55,13 @@ function liveExecute(input: RunFactualAuditorInput): StructuredRunOptions<Factua
 
 function assertAuditRefsInBank(audit: FactualAudit, bank: EvidenceBank): FactualAudit {
   const known = new Set(bank.items.map(item => item.ref));
-  for (const issue of audit.issues) {
+  const issues = audit.issues.map(issue => ({ ...issue, evidenceRefs: normalizeEvidenceRefs(issue.evidenceRefs, bank) }));
+  for (const issue of issues) {
     for (const ref of issue.evidenceRefs) {
       if (!known.has(ref)) throw new Error(`Unknown EvidenceRef: ${ref}`);
     }
   }
-  return audit;
+  return issues.every((issue, index) => issue.evidenceRefs === audit.issues[index]?.evidenceRefs) ? audit : { ...audit, issues };
 }
 
 export function failClosedOnCriticalFactualAudit(audit: FactualAudit) {

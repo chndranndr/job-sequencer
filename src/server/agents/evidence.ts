@@ -112,6 +112,25 @@ export function buildEvidenceBank(profile: StructuredProfile): EvidenceBank {
   return { items };
 }
 
+export function evidenceRefCatalog(bank: EvidenceBank) {
+  return bank.items.map(item => ({ ref: item.ref, kind: item.kind, text: item.text }));
+}
+
+function normalizedEvidenceLabel(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export function normalizeEvidenceRefs(refs: readonly EvidenceRef[], bank: EvidenceBank): EvidenceRef[] {
+  const normalized = refs.map(ref => {
+    if (bank.items.some(item => item.ref === ref)) return ref;
+    if (!/^skill:/i.test(ref)) return ref;
+    const label = normalizedEvidenceLabel(ref.slice("skill:".length));
+    const matches = bank.items.filter(item => item.kind === "skill" && normalizedEvidenceLabel(item.text) === label);
+    return matches.length === 1 ? matches[0]!.ref : ref;
+  });
+  return normalized.every((ref, index) => ref === refs[index]) ? refs as EvidenceRef[] : normalized;
+}
+
 function assertRefsInBank(refs: readonly EvidenceRef[], bank: EvidenceBank) {
   const known = new Set(bank.items.map(item => item.ref));
   for (const ref of refs) {
@@ -149,7 +168,51 @@ export function validateCVDocument(document: CVDocument, profile: StructuredProf
   const projectIds = idSet(profile.projects);
   const skillIds = idSet(profile.skills);
   const normalizedSkillIds = canonicalSkillIds(document.skillIds, skillIds);
-  const normalizedDocument = normalizedSkillIds === document.skillIds ? document : { ...document, skillIds: normalizedSkillIds };
+  let changed = normalizedSkillIds !== document.skillIds;
+  const summaryRefs = normalizeEvidenceRefs(document.summary.evidenceRefs, bank);
+  changed ||= summaryRefs !== document.summary.evidenceRefs;
+  const experiences = document.experiences.map(experience => {
+    let experienceChanged = false;
+    const technologiesUsed = experience.technologiesUsed?.map(technology => {
+      const evidenceRefs = normalizeEvidenceRefs(technology.evidenceRefs, bank);
+      experienceChanged ||= evidenceRefs !== technology.evidenceRefs;
+      return evidenceRefs === technology.evidenceRefs ? technology : { ...technology, evidenceRefs };
+    });
+    const bullets = experience.bullets.map(bullet => {
+      const evidenceRefs = normalizeEvidenceRefs(bullet.evidenceRefs, bank);
+      experienceChanged ||= evidenceRefs !== bullet.evidenceRefs;
+      return evidenceRefs === bullet.evidenceRefs ? bullet : { ...bullet, evidenceRefs };
+    });
+    changed ||= experienceChanged;
+    return experienceChanged ? { ...experience, technologiesUsed, bullets } : experience;
+  });
+  const projects = document.projects.map(project => {
+    let projectChanged = false;
+    const bullets = project.bullets?.map(bullet => {
+      const evidenceRefs = normalizeEvidenceRefs(bullet.evidenceRefs, bank);
+      projectChanged ||= evidenceRefs !== bullet.evidenceRefs;
+      return evidenceRefs === bullet.evidenceRefs ? bullet : { ...bullet, evidenceRefs };
+    });
+    changed ||= projectChanged;
+    return projectChanged ? { ...project, bullets } : project;
+  });
+  const paragraphs = document.coverLetter.paragraphs.map(paragraph => {
+    const evidenceRefs = normalizeEvidenceRefs(paragraph.evidenceRefs, bank);
+    changed ||= evidenceRefs !== paragraph.evidenceRefs;
+    return evidenceRefs === paragraph.evidenceRefs ? paragraph : { ...paragraph, evidenceRefs };
+  });
+  const normalizedDocument = changed
+    ? {
+      ...document,
+      summary: summaryRefs === document.summary.evidenceRefs ? document.summary : { ...document.summary, evidenceRefs: summaryRefs },
+      experiences,
+      skillIds: normalizedSkillIds,
+      projects,
+      coverLetter: paragraphs.every((paragraph, index) => paragraph === document.coverLetter.paragraphs[index])
+        ? document.coverLetter
+        : { ...document.coverLetter, paragraphs },
+    }
+    : document;
   for (const experience of normalizedDocument.experiences) {
     if (!experienceIds.has(experience.experienceId)) throw new Error(`Unknown experienceId: ${experience.experienceId}`);
   }
@@ -173,16 +236,22 @@ export function validateCVDocument(document: CVDocument, profile: StructuredProf
 }
 
 export function validateApplicationStrategy(strategy: ApplicationStrategy, bank: EvidenceBank): ApplicationStrategy {
+  const primarySellingPoints = strategy.primarySellingPoints.map(point => ({ ...point, evidenceRefs: normalizeEvidenceRefs(point.evidenceRefs, bank) }));
+  const requirements = strategy.requirements.map(requirement => ({ ...requirement, evidenceRefs: normalizeEvidenceRefs(requirement.evidenceRefs, bank) }));
+  const normalizedStrategy = primarySellingPoints.every((point, index) => point.evidenceRefs === strategy.primarySellingPoints[index]?.evidenceRefs)
+    && requirements.every((requirement, index) => requirement.evidenceRefs === strategy.requirements[index]?.evidenceRefs)
+    ? strategy
+    : { ...strategy, primarySellingPoints, requirements };
   assertRefsInBank([
-    ...strategy.primarySellingPoints.flatMap(point => point.evidenceRefs),
-    ...strategy.requirements.flatMap(requirement => requirement.evidenceRefs),
+    ...normalizedStrategy.primarySellingPoints.flatMap(point => point.evidenceRefs),
+    ...normalizedStrategy.requirements.flatMap(requirement => requirement.evidenceRefs),
   ], bank);
-  for (const requirement of strategy.requirements) {
+  for (const requirement of normalizedStrategy.requirements) {
     if (requirement.candidateFit === "gap") {
       if (requirement.evidenceRefs.length > 0) throw new Error("Gap fit requires empty evidenceRefs.");
     } else if (requirement.evidenceRefs.length === 0) {
       throw new Error("Strong or partial fit requires at least one EvidenceRef.");
     }
   }
-  return strategy;
+  return normalizedStrategy;
 }
