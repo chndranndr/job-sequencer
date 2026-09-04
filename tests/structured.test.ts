@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import { projectPromptContext } from "../src/server/context.js";
-import { runStructured } from "../src/server/structured.js";
+import { parseModelJson, runStructured } from "../src/server/structured.js";
 
 const OutputSchema = z.object({ value: z.string().min(1) }).strict();
 
@@ -36,6 +36,10 @@ test("JSON wrapped in model prose is extracted before validation", async () => {
   assert.deepEqual(result, { value: "extracted" });
 });
 
+test("common model JSON syntax slips are repaired before validation", () => {
+  assert.deepEqual(parseModelJson('{"a":"line\nbreak" "b":"ok"}'), { a: "line\nbreak", b: "ok" });
+});
+
 test("prose wrapping on the first attempt still repairs when the extract is invalid", async () => {
   const prompts: string[] = [];
   const result = await runStructured({
@@ -59,6 +63,18 @@ test("malformed JSON triggers a repair attempt with the prior output", async () 
   assert.equal(prompts.length, 2);
   assert.match(prompts[1]!, /prior output failed validation/i);
   assert.match(prompts[1]!, /not JSON/);
+});
+
+test("empty model output gets an actionable repair prompt", async () => {
+  const prompts: string[] = [];
+  const result = await runStructured({
+    prompt: "Return a value.",
+    schema: OutputSchema,
+    execute: queuedExecutor(["", '{"value":"repaired"}'], prompts),
+  });
+
+  assert.deepEqual(result, { value: "repaired" });
+  assert.match(prompts[1]!, /Model returned an empty response/);
 });
 
 test("schema errors are included in the repair context", async () => {

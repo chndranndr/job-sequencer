@@ -4,6 +4,7 @@ import { effectiveCvPages } from "../../../shared.js";
 import type { Settings } from "../../config.js";
 import type { AgentCandidateContext, ApplicationStrategy } from "../types.js";
 import type { CompanyResearch } from "../research.js";
+import { evidenceRefCatalog } from "../evidence.js";
 
 const cvDocumentShape = "{\"summary\":{\"text\":\"\",\"evidenceRefs\":[\"\"]},\"experiences\":[{\"experienceId\":\"\",\"technologiesUsed\":[{\"name\":\"\",\"evidenceRefs\":[\"\"]}],\"bullets\":[{\"text\":\"\",\"evidenceRefs\":[\"\"],\"transformation\":\"rewrite|compress|combine\"}]}],\"skillIds\":[\"\"],\"projects\":[{\"projectId\":\"\",\"bullets\":[{\"text\":\"\",\"evidenceRefs\":[\"\"]}]}],\"coverLetter\":{\"subject\":\"\",\"paragraphs\":[{\"text\":\"\",\"evidenceRefs\":[\"\"]}]}}";
 
@@ -37,9 +38,9 @@ export function buildWriterPrompt(input: {
       `ID namespaces are strict: experienceId, projectId, and each skillIds entry are raw profile IDs with no namespace prefix. Allowed raw skillIds are ${JSON.stringify(skillIds)}. Only evidenceRefs use namespaced values such as skill:<id>; never put skill:<id> inside skillIds.`,
       "Do not invent employers, metrics, technologies, or contact details. Do not emit company, title, dates, location, or contact; those stay on the profile.",
       "Copy every percentage, multiplier, duration, or other number exactly from an EvidenceRef attached to that same field. If the cited evidence does not contain the number, remove the metric instead of changing or guessing it. Never copy numbers from the posting.",
-      "Use only EvidenceRef values from the evidence bank. Unknown ids fail validation. Never invent refs.",
+      "EvidenceRefs are opaque IDs. Copy the ref string exactly from the evidence bank; a skill name such as Java is not an EvidenceRef. Use only EvidenceRef values from the evidence bank. Unknown ids fail validation. Never invent refs.",
     ].join(" ")),
-    trustedSection("EVIDENCE BANK", JSON.stringify(projectPromptContext(input.context.evidenceBank))),
+    trustedSection("EVIDENCE BANK", JSON.stringify(evidenceRefCatalog(input.context.evidenceBank))),
     trustedSection("APPLICATION STRATEGY", JSON.stringify(projectPromptContext(input.strategy))),
     trustedSection("WRITING STYLE", input.context.writingStyle),
     trustedSection("USER DIRECTION", JSON.stringify(projectPromptContext({

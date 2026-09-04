@@ -51,6 +51,7 @@ export type PiErrorCode =
   | "context_overflow"
   | "provider"
   | "empty_response"
+  | "structured_output"
   | "unknown";
 
 export type PiRunUsage = {
@@ -196,6 +197,7 @@ export function classifyPiError(error: unknown): PiErrorCode {
   if (/econnreset|fetch failed|enotfound/i.test(message)) return "network";
   if (/context.{0,40}(length|window|overflow)|(length|window).{0,40}context|\boverflow\b/i.test(message)) return "context_overflow";
   if (/empty response/i.test(message)) return "empty_response";
+  if (error instanceof Error && (error.name === "StructuredOutputError" || /structured output failed after/i.test(error.message))) return "structured_output";
   return error instanceof Error ? "provider" : "unknown";
 }
 
@@ -258,6 +260,7 @@ export async function runBoundedPi<T = void>(options: {
   signal?: AbortSignal;
   createSession: () => Promise<PiSessionLike>;
   onEvent?: (event: unknown) => void;
+  onAssistantText?: (text: string) => void;
   onActivity?: () => void;
   onUsage?: (usage: PiRunUsage) => void;
   guidance?: string;
@@ -333,6 +336,9 @@ export async function runBoundedPi<T = void>(options: {
       usage: state.usage ?? null,
     } : { usage: state.usage ?? null };
     if (state.usage) reportUsage(key, state.usage);
+    if (state.text) {
+      try { options.onAssistantText?.(state.text); } catch { /* output capture is deliberately non-fatal */ }
+    }
     if (state.text) record({ kind: "assistant", type: "assistant_message", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.text), ...metadata }, redactTelemetryText) });
     if (state.thinking) record({ kind: "thinking", type: "assistant_thinking", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.thinking), ...metadata }, redactTelemetryText) });
     assistantStates.delete(key);

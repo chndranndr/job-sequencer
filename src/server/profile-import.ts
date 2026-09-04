@@ -467,6 +467,7 @@ async function runProfilePi(prompt: string, settings: Settings, systemPrompt: st
             const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
             if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") response += value.assistantMessageEvent.delta ?? "";
           },
+          onAssistantText: value => { response = value; },
         });
         return response;
       },

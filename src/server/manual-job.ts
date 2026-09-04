@@ -482,6 +482,7 @@ export async function parseManualJobText(value: string, settings: Settings, opti
             const current = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
             if (current.type === "message_update" && current.assistantMessageEvent?.type === "text_delta") response += current.assistantMessageEvent.delta ?? "";
           },
+          onAssistantText: value => { response = value; },
         });
         return response;
       },

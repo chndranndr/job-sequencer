@@ -315,6 +315,7 @@ export class InterviewSessionPool {
           text += delta;
           try { input.onDelta?.(text); } catch { /* streaming is deliberately non-fatal */ }
         },
+        onAssistantText: value => { text = value; },
       });
       if (controller.signal.aborted) throw new PiRunCancelledError();
       const result = text.trim();

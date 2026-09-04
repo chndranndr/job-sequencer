@@ -75,6 +75,7 @@ async function runTextSession(prompt: string, settings: Settings, signal: AbortS
         try { onDelta?.(text); } catch { /* streaming is deliberately non-fatal */ }
       }
     },
+    onAssistantText: value => { text = value; },
   });
   if (!text.trim()) throw new Error("Provider returned an empty response.");
   return text.trim();

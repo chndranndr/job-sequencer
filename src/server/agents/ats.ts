@@ -2,6 +2,7 @@ import type { StructuredProfile, TrajectoryRecorder } from "../../shared.js";
 import type { Settings } from "../config.js";
 import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "../pi.js";
 import type { StructuredRunOptions } from "../structured.js";
+import { normalizeEvidenceRefs } from "./evidence.js";
 import { buildAtsPrompt } from "./prompts/ats.js";
 import { runAgentStructured } from "./runtime.js";
 import { AtsReviewSchema, type AgentCandidateContext, type ApplicationStrategy, type AtsReview, type CVDocument, type EvidenceBank } from "./types.js";
@@ -38,6 +39,7 @@ function liveExecute(input: RunAtsReviewerInput): StructuredRunOptions<AtsReview
         const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string } };
         if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") text += value.assistantMessageEvent.delta ?? "";
       },
+      onAssistantText: value => { text = value; },
     });
     return text;
   };
@@ -45,12 +47,13 @@ function liveExecute(input: RunAtsReviewerInput): StructuredRunOptions<AtsReview
 
 function validateAtsRefs(review: AtsReview, bank: EvidenceBank) {
   const known = new Set(bank.items.map(item => item.ref));
-  for (const issue of review.issues) {
+  const issues = review.issues.map(issue => ({ ...issue, evidenceRefs: normalizeEvidenceRefs(issue.evidenceRefs, bank) }));
+  for (const issue of issues) {
     if (issue.kind === "genuine_gap" && issue.evidenceRefs.length) throw new Error("genuine_gap cannot cite EvidenceRefs.");
     if (issue.kind === "missing_but_supported" && !issue.evidenceRefs.length) throw new Error("missing_but_supported requires EvidenceRefs.");
     for (const ref of issue.evidenceRefs) if (!known.has(ref)) throw new Error(`Unknown EvidenceRef: ${ref}`);
   }
-  return review;
+  return issues.every((issue, index) => issue.evidenceRefs === review.issues[index]?.evidenceRefs) ? review : { ...review, issues };
 }
 
 export async function runAtsReviewer(input: RunAtsReviewerInput): Promise<AtsReview> {

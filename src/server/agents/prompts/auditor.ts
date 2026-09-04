@@ -1,5 +1,6 @@
 import { projectPromptContext, trustedSection, untrustedSection } from "../../context.js";
 import type { AgentCandidateContext, ApplicationStrategy, CVDocument } from "../types.js";
+import { evidenceRefCatalog } from "../evidence.js";
 
 const factualAuditShape = "{\"issues\":[{\"kind\":\"semantic_overclaim|scope_inflation|role_inflation\",\"severity\":\"critical|high|medium|low\",\"claim\":\"\",\"evidenceRefs\":[\"\"],\"note\":\"\"}]}";
 
@@ -17,9 +18,9 @@ export function buildAuditorPrompt(input: {
       "Classify only semantic_overclaim, scope_inflation, or role_inflation.",
       "Severity is critical when the claim is false or a local or scoped fact is stated as org-wide or global.",
       "Return empty issues if the rewrite stays inside the evidence.",
-      "Use only EvidenceRef values from the evidence bank. Unknown ids fail validation. Never invent refs.",
+      "EvidenceRefs are opaque IDs. Copy the ref string exactly from the evidence bank; a skill name such as Java is not an EvidenceRef. Use only EvidenceRef values from the evidence bank. Unknown ids fail validation. Never invent refs.",
     ].join(" ")),
-    trustedSection("EVIDENCE BANK", JSON.stringify(projectPromptContext(input.context.evidenceBank))),
+    trustedSection("EVIDENCE BANK", JSON.stringify(evidenceRefCatalog(input.context.evidenceBank))),
     trustedSection("CV DOCUMENT", JSON.stringify(projectPromptContext(input.document))),
     trustedSection("APPLICATION STRATEGY", JSON.stringify(projectPromptContext(input.strategy))),
     untrustedSection("EXTERNAL JOB POSTING", input.posting),

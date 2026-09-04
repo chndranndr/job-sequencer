@@ -487,7 +487,7 @@ export class RunManager {
 function summarize(result:ScrapeResult,threshold:number,duplicates:number,errors:string[],warnings:string[]){ const recommended=result.jobs.filter(j=>j.score>threshold).length; return {jobsFound:result.jobs.length,recommended,discarded:result.jobs.length-recommended,duplicatesSkipped:duplicates,errors,warnings}; }
 
 class GenerationRunFailedError extends Error {
-  constructor(public readonly summary: { results: Array<{ jobId: string; status: string; error?: string }> }) {
+  constructor(public readonly summary: { results: Array<{ jobId: string; status: string; error?: string }> }, public readonly errorCode: string | null) {
     super("Document generation failed.");
     this.name = "GenerationRunFailedError";
   }
@@ -513,7 +513,7 @@ export class GenerationRunManager {
       onError: (error, { signal }) => ({
         summary: error instanceof GenerationRunFailedError ? error.summary : null,
         error: signal.aborted || error instanceof PiRunCancelledError ? "Generation cancelled." : "Document generation failed.",
-        errorCode: classifyPiError(error),
+        errorCode: error instanceof GenerationRunFailedError ? error.errorCode : classifyPiError(error),
       }),
     });
   }
@@ -522,6 +522,7 @@ export class GenerationRunManager {
 
   private async work(id: string, signal: AbortSignal, jobIds: string[], context: { profile: string; settings: Settings }, allowDrafting: boolean, onUsage: (usage: PiRunUsage) => void) {
     const results: Array<{ jobId: string; status: string; error?: string }> = [];
+    let failureCode: string | null = null;
     try {
       for (const jobId of jobIds) {
         if (signal.aborted) throw new PiRunCancelledError();
@@ -531,16 +532,18 @@ export class GenerationRunManager {
           results.push({ jobId, status: "succeeded" });
         } catch (error) {
           if (signal.aborted || error instanceof PiRunCancelledError) throw error;
+          failureCode ??= classifyPiError(error);
           results.push({ jobId, status: "failed", error: "Document generation failed." });
         }
       }
       const failed = results.filter((value) => value.status === "failed").length;
-      if (failed === results.length) throw new GenerationRunFailedError({ results });
+      if (failed === results.length) throw new GenerationRunFailedError({ results }, failureCode);
       return { results };
     } catch (error) {
       if (error instanceof GenerationRunFailedError) throw error;
       if (signal.aborted || error instanceof PiRunCancelledError) throw error;
-      throw new GenerationRunFailedError({ results });
+      failureCode ??= classifyPiError(error);
+      throw new GenerationRunFailedError({ results }, failureCode);
     }
   }
 }
