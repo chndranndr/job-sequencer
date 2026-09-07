@@ -212,6 +212,82 @@ test("unicode criteria keep punctuation and reject empty normalized criteria", (
   assert.equal(snapshot.coverage["keyword:日本語"], "unknown");
   assert.equal(snapshot.coverage["keyword:c"], undefined);
 });
+test("criterion matching respects token boundaries and technology punctuation", () => {
+  assert.equal(includesCriterion("Django Developer", "Go"), false);
+  assert.equal(includesCriterion("JavaScript Engineer", "Java"), false);
+  assert.equal(includesCriterion("Retail Platform", "AI"), false);
+  assert.equal(includesCriterion("C++ Engineer", "C++"), true);
+  assert.equal(includesCriterion("C# Engineer", "C#"), true);
+  assert.equal(includesCriterion("Node.js Engineer", "Node.js"), true);
+  assert.equal(includesCriterion(".NET Engineer", ".NET"), true);
+});
+
+test("structured role and location coverage ignores posting narrative", () => {
+  const state = new AgentSearchState({
+    goal: {
+      criteria: { ...defaultCriteria, roles: ["Backend Engineer"], locations: ["Japan"] },
+      enabledSources: ["freehire"],
+    },
+  });
+  const reservation = state.reserveSearch({ source: "freehire", query: "role", location: "Singapore", limit: 1 });
+  state.completeSearch(reservation, [{
+    source: "freehire",
+    sourceId: "product-1",
+    title: "Product Manager",
+    location: "Singapore",
+    url: "https://jobs.example.test/product-1",
+  }]);
+  const detailReservation = state.reserveDetail({ source: "freehire", resultId: "product-1" });
+  state.completeDetail(detailReservation, "Backend Engineer collaboration across Japan.");
+  const snapshot = state.snapshot();
+  assert.equal(snapshot.coverage["role:backend engineer"], "weak");
+  assert.equal(snapshot.coverage["location:japan"], "weak");
+  assert.equal(snapshot.coverageSufficient, false);
+  assert.equal(snapshot.sourceStats.freehire.promisingJobs, 0);
+});
+
+test("long detail evidence remains searchable beyond the criterion bound", () => {
+  const state = new AgentSearchState({
+    goal: {
+      criteria: { ...defaultCriteria, roles: ["Backend Engineer"], keywords: ["Java"] },
+      enabledSources: ["freehire"],
+    },
+  });
+  const reservation = state.reserveSearch({ source: "freehire", query: "backend", location: "", limit: 1 });
+  state.completeSearch(reservation, [{
+    source: "freehire",
+    sourceId: "long-1",
+    title: "Backend Engineer",
+    location: "Remote",
+    url: "https://jobs.example.test/long-1",
+  }]);
+  const detailReservation = state.reserveDetail({ source: "freehire", resultId: "long-1" });
+  state.completeDetail(detailReservation, `${"x".repeat(500)} Java Spring Boot Kubernetes`);
+  const snapshot = state.snapshot();
+  assert.equal(snapshot.coverage["keyword:java"], "medium");
+  assert.equal(snapshot.coverageSufficient, true);
+});
+
+test("keyword coverage stays unknown until every promising candidate has detail", () => {
+  const state = new AgentSearchState({
+    goal: {
+      criteria: { ...defaultCriteria, roles: ["Backend Engineer"], keywords: ["Java"] },
+      enabledSources: ["freehire"],
+    },
+  });
+  const reservation = state.reserveSearch({ source: "freehire", query: "backend", location: "", limit: 2 });
+  state.completeSearch(reservation, [
+    { source: "freehire", sourceId: "partial-1", title: "Backend Engineer", location: "Remote", url: "https://jobs.example.test/partial-1" },
+    { source: "freehire", sourceId: "partial-2", title: "Backend Engineer", location: "Remote", url: "https://jobs.example.test/partial-2" },
+  ]);
+  const firstDetail = state.reserveDetail({ source: "freehire", resultId: "partial-1" });
+  state.completeDetail(firstDetail, "Backend Engineer using Go.");
+  assert.equal(state.snapshot().coverage["keyword:java"], "unknown");
+  const secondDetail = state.reserveDetail({ source: "freehire", resultId: "partial-2" });
+  state.completeDetail(secondDetail, "Backend Engineer using Go.");
+  assert.equal(state.snapshot().coverage["keyword:java"], "weak");
+});
+
 
 test("detail evidence drives keyword relevance and refreshes promising yields", () => {
   const state = new AgentSearchState({
