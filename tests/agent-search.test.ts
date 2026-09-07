@@ -470,6 +470,7 @@ test("agent executor uses one Pi session and rejects a missing finishSearch", as
   assert.equal(sessionCount, 1);
   assert.doesNotMatch(prompt, /fetch every returned/i);
   assert.ok(prompt.includes(`Return only JSON matching ${JSON.stringify({ jobs: [{ sourceId: "", source: "", url: "", company: "", role: "", location: "", posting: "", score: 0, reason: "", strengths: [], gaps: [] }] })}. Maximum jobs: 1. Use only source IDs and URLs returned by the tools.`));
+  assert.match(prompt, /keyword coverage remains unknown until every promising candidate has detail/i);
   assert.equal((output.result as { jobs: Array<{ posting: string }> }).jobs[0]?.posting, "Full posting for the selected job.");
 
   const missingFinish = createAgentSearchExecutor({

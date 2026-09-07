@@ -206,6 +206,14 @@ function text(value: unknown, limit: number) {
   return String(value ?? "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, limit);
 }
 
+const maxCriterionLength = 240;
+// ponytail: cap evidence at 32k; raise only if longer postings are observed.
+const maxEvidenceLength = 32_000;
+
+function normalizedText(value: unknown, limit: number) {
+  return String(value ?? "").slice(0, limit).normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}+#]+/gu, " ").trim();
+}
+
 function safeError(value: unknown) {
   return text(value instanceof Error ? value.message : value, 320)
     .replace(/(https?:\/\/)([^/\s:@]+)(?::[^/\s@]*)?@/gi, "$1[redacted]@")
@@ -226,25 +234,34 @@ function copyTermination(value: SearchTermination | null): SearchTermination | n
   return value ? { ...value, unresolvedGoals: [...value.unresolvedGoals] } : null;
 }
 function normalized(value: unknown) {
-  return text(value, 240).normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}+#]+/gu, " ").trim();
+  return normalizedText(value, maxCriterionLength);
+}
+
+function normalizedEvidence(value: unknown) {
+  return normalizedText(value, maxEvidenceLength);
+}
+
+function evidence(values: readonly unknown[]) {
+  return normalizedEvidence(values.filter(Boolean).join(" "));
 }
 
 export function includesCriterion(value: string, criterion: string) {
   const needle = normalized(criterion);
-  return needle.length > 0 && normalized(value).includes(needle);
-}
-
-function hitText(hit: SearchHit, posting?: string) {
-  return normalized([hit.title, hit.company, hit.location, posting].filter(Boolean).join(" "));
+  if (!needle) return false;
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}+#])${escaped}(?=$|[^\\p{L}\\p{N}+#])`, "u").test(normalizedEvidence(value));
 }
 
 function isPromising(hit: SearchHit, criteria: Criteria, posting?: string) {
-  const evidence = hitText(hit, posting);
-  if (criteria.excludeKeywords.some(keyword => includesCriterion(evidence, keyword))) return false;
-  if (criteria.roles.length && !criteria.roles.some(role => includesCriterion(evidence, role))) return false;
-  if (criteria.locations.length && !criteria.locations.some(location => includesCriterion(evidence, location))) return false;
-  if (criteria.remoteOnly && !/(remote|work from home|wfh|telecommute)/i.test(evidence)) return false;
-  return posting === undefined || !criteria.keywords.length || criteria.keywords.some(keyword => includesCriterion(evidence, keyword));
+  const roleEvidence = normalizedEvidence(hit.title);
+  const locationEvidence = normalizedEvidence(hit.location);
+  const exclusionEvidence = evidence([hit.title, hit.company, posting]);
+  const keywordEvidence = evidence([hit.title, posting]);
+  if (criteria.excludeKeywords.some(keyword => includesCriterion(exclusionEvidence, keyword))) return false;
+  if (criteria.roles.length && !criteria.roles.some(role => includesCriterion(roleEvidence, role))) return false;
+  if (criteria.locations.length && !criteria.locations.some(location => includesCriterion(locationEvidence, location))) return false;
+  if (criteria.remoteOnly && !/(remote|work from home|wfh|telecommute)/i.test(locationEvidence)) return false;
+  return posting === undefined || !criteria.keywords.length || criteria.keywords.some(keyword => includesCriterion(keywordEvidence, keyword));
 }
 
 
@@ -589,18 +606,25 @@ export class AgentSearchState {
     ];
     let allMatched = true;
     for (const [key, criterion, kind] of dimensions) {
-      const hasEvidence = kind !== "keyword" || hits.some(hit => this.detailDescriptions.has(searchProvenanceKey(hit.source, hit.sourceId)));
-      if (!hasEvidence) {
+      const candidateHits = kind === "keyword" ? hits.filter(hit => isPromising(hit, criteria)) : hits;
+      const inspectedCount = kind === "keyword"
+        ? candidateHits.filter(hit => this.detailDescriptions.has(searchProvenanceKey(hit.source, hit.sourceId))).length
+        : hits.length;
+      const matches = candidateHits.filter(hit => {
+        const posting = this.detailDescriptions.get(searchProvenanceKey(hit.source, hit.sourceId));
+        if (kind === "keyword" && posting === undefined) return false;
+        const value = kind === "role"
+          ? normalizedEvidence(hit.title)
+          : kind === "location"
+            ? normalizedEvidence(hit.location)
+            : evidence([hit.title, posting]);
+        return includesCriterion(value, criterion);
+      }).length;
+      if (kind === "keyword" && (candidateHits.length === 0 || inspectedCount < candidateHits.length)) {
         coverage[key] = "unknown";
         allMatched = false;
         continue;
       }
-      const matches = hits.filter(hit => {
-        const posting = this.detailDescriptions.get(searchProvenanceKey(hit.source, hit.sourceId));
-        if (kind === "keyword" && posting === undefined) return false;
-        const value = kind === "location" ? normalized([hit.location, posting].filter(Boolean).join(" ")) : hitText(hit, posting);
-        return includesCriterion(value, criterion);
-      }).length;
       coverage[key] = coverageLevel(matches);
       if (coverage[key] === "weak") allMatched = false;
     }
