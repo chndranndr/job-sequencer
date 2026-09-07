@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRestrictedScrapeSession } from "../src/server/pi.js";
+import { createRestrictedScrapeSession, resolveLiveScrapeSession } from "../src/server/pi.js";
+import { defaultSettings } from "../src/server/config.js";
+import { createSourceRegistry, type JobSourcePlugin } from "../src/server/source-plugins.js";
 
 test("restricted scrape Pi session has exactly the four bounded search tools", async () => {
   const session = await createRestrictedScrapeSession();
@@ -10,4 +12,22 @@ test("restricted scrape Pi session has exactly the four bounded search tools", a
   } finally {
     session.dispose();
   }
+});
+test("live session resolver uses an injected fixture-only source registry", () => {
+  const plugin: JobSourcePlugin = {
+    manifest: {
+      id: "fixture",
+      label: "Fixture",
+      version: "1.0.0",
+      capabilities: { search: true, detail: false, pagination: false, location: true, freshness: false, remote: true, activeStatus: false },
+      policy: { maxRequestsPerRun: 2, maxConcurrentRequests: 1, timeoutMs: 1_000, minimumDelayMs: 0 },
+      guidance: { strengths: ["Fixture source."], caveats: ["Fixture data is local."], query: "Use the fixture query." },
+    },
+    search: async () => ({ meta: { count: 0 }, results: [] }),
+  };
+  const registry = createSourceRegistry([plugin]);
+  const resolved = resolveLiveScrapeSession({ ...defaultSettings, enabledSources: ["fixture"] }, undefined, "fixture", registry);
+  assert.equal(resolved.source, "fixture");
+  assert.equal(resolved.plugin.manifest.id, "fixture");
+  assert.equal(resolved.toolSet.searchJobs.name, "searchJobs");
 });
