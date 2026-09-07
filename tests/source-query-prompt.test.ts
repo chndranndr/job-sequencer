@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createLiveSourceScrapeExecutor, createMultiSourceScrapeExecutor, RunManager, sourceQueryRule, type ScrapeContext } from "../src/server/runs.js";
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
-import { createSourceRegistry } from "../src/server/source-plugins.js";
+import { createSourceRegistry, type JobSourcePlugin } from "../src/server/source-plugins.js";
 import { createScrapeTools, type CliRunner } from "../src/server/scrape.js";
 import { openDatabase } from "../src/server/db.js";
 import { defaultSourceMaxAgeDays, type JobSource } from "../src/shared.js";
@@ -210,6 +210,64 @@ test("failed final source output does not persist preflight jobs", async () => {
     }
     assert.equal(run?.status, "failed");
     assert.equal((db.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count, 0);
+  } finally {
+    db.close();
+  }
+});
+test("RunManager preserves custom source registries through final validation", async () => {
+  const fixtureJob = {
+    id: "fixture-one",
+    title: "Backend Developer",
+    company: "Fixture Co",
+    location: "Remote",
+    url: "https://fixture.example/jobs/fixture-one",
+  };
+  const plugin: JobSourcePlugin = {
+    manifest: {
+      id: "fixture",
+      label: "Fixture",
+      version: "1.0.0",
+      capabilities: { search: true, detail: false, pagination: false, location: true, freshness: false, remote: true, activeStatus: false },
+      policy: { maxRequestsPerRun: 10, maxConcurrentRequests: 1, timeoutMs: 1_000, minimumDelayMs: 0 },
+      guidance: { strengths: ["Fixture source."], caveats: ["Fixture data is local."], query: "Use the fixture query." },
+    },
+    search: async (_request, context) => context.request(async () => ({ meta: { count: 1 }, results: [fixtureJob] })),
+  };
+  const registry = createSourceRegistry([plugin]);
+  const context: Omit<ScrapeContext, "signal"> = {
+    profile: "Backend engineer with TypeScript experience.",
+    criteria: { ...defaultCriteria, roles: ["Backend Developer"], locations: ["Remote"], maxJobsPerRun: 1 },
+    settings: { ...defaultSettings, source: "freehire", enabledSources: ["fixture"] },
+  };
+  const execute = createLiveSourceScrapeExecutor({
+    sourceRegistry: registry,
+    loadGuidance: async () => "test guidance",
+    createSession: async (_settings, tools) => new FauxSourceSession(scoredOutput("fixture", fixtureJob), async () => {
+      await tools.searchJobs.execute("fixture-search", { query: "Backend Developer", location: "Remote", limit: 1 }, undefined, undefined, undefined as never);
+    }),
+  });
+  const db = openDatabase(":memory:");
+  try {
+    const manager = new RunManager(db, createMultiSourceScrapeExecutor(execute, registry), async () => context);
+    const runId = await manager.start();
+    const readRun = () => {
+      const value = manager.get(runId);
+      if (!value || typeof value !== "object") return undefined;
+      const status = "status" in value && typeof value.status === "string" ? value.status : undefined;
+      const summary = "summary" in value && value.summary && typeof value.summary === "object" ? value.summary : undefined;
+      const jobsFound = summary && "jobsFound" in summary && typeof summary.jobsFound === "number" ? summary.jobsFound : undefined;
+      return { status, jobsFound };
+    };
+    let run = readRun();
+    for (let attempt = 0; attempt < 100 && run?.status === "running"; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+      run = readRun();
+    }
+    assert.equal(run?.status, "succeeded");
+    assert.equal(run?.jobsFound, 1);
+    const row = db.prepare("SELECT COUNT(*) AS count FROM jobs").get();
+    if (!row || typeof row !== "object" || !("count" in row) || typeof row.count !== "number") throw new Error("job count query returned an invalid row");
+    assert.equal(row.count, 1);
   } finally {
     db.close();
   }

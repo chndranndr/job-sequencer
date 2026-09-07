@@ -201,7 +201,7 @@ type Waiter = {
 export class SourcePolicyLedger {
   private requests = 0;
   private active = 0;
-  private lastStartedAt = 0;
+  private nextStartAt = 0;
   private readonly waiters: Waiter[] = [];
 
   constructor(private readonly label: string, private readonly policy: SourcePolicy) {}
@@ -284,9 +284,10 @@ export class SourcePolicyLedger {
       else signal.addEventListener("abort", onAbort, { once: true });
     }
     try {
-      const delay = Math.max(0, this.lastStartedAt + this.policy.minimumDelayMs - Date.now());
-      await waitForDelay(delay, signal);
-      this.lastStartedAt = Date.now();
+      const now = Date.now();
+      const startAt = Math.max(now, this.nextStartAt);
+      this.nextStartAt = startAt + this.policy.minimumDelayMs;
+      await waitForDelay(startAt - now, signal);
       timer = setTimeout(() => {
         timedOut = true;
         const error = new Error(`${this.label} request timed out`);

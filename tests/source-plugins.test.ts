@@ -135,6 +135,16 @@ test("source policy keeps timed-out permits until operations settle", async () =
   await second;
   assert.equal(secondStarted, true);
 });
+test("source policy spaces concurrent starts by the minimum delay", async () => {
+  const ledger = new SourcePolicyLedger("Fixture", { maxRequestsPerRun: 2, maxConcurrentRequests: 2, timeoutMs: 1_000, minimumDelayMs: 50 });
+  const starts: number[] = [];
+  await Promise.all([
+    ledger.run(undefined, async () => { starts.push(Date.now()); }),
+    ledger.run(undefined, async () => { starts.push(Date.now()); }),
+  ]);
+  assert.equal(starts.length, 2);
+  assert.ok(starts[1] - starts[0] >= 45, `starts were ${starts[1] - starts[0]}ms apart`);
+});
 test("all built-in plugins preserve their fixture transport contracts", async () => {
   for (const plugin of builtInSourcePlugins) {
     const source = plugin.manifest.id;
@@ -167,7 +177,7 @@ test("agent inspection exposes enabled source capabilities and policy", async ()
   const plugin = fixturePlugin();
   const registry = createSourceRegistry([plugin]);
   const tools = createAgentSearchTools({
-    sources: [{ key: "fixture", manifest: plugin.manifest, registry }],
+    sources: [{ key: "fixture", registry }],
     goal: { criteria: defaultCriteria, enabledSources: ["fixture"] },
   });
   const output = await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never);

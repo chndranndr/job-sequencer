@@ -65,9 +65,12 @@ function appendSourceMessages(target: string[], label: string, values: readonly 
   }
 }
 
+function configuredSourceKeys(settings: Settings) {
+  return settings.enabledSources?.length ? settings.enabledSources : [settings.source];
+}
+
 function configuredSources(settings: Settings, registry: SourceRegistry = defaultSourceRegistry): ResolvedSource[] {
-  const keys = settings.enabledSources?.length ? settings.enabledSources : [settings.source];
-  return registry.resolveEnabled(keys, settings.customSources ?? []);
+  return registry.resolveEnabled(configuredSourceKeys(settings), settings.customSources ?? []);
 }
 
 function sourceMaxAge(source: ResolvedSource, settings: Settings) {
@@ -137,7 +140,6 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
     const sourceConfigs: AgentSearchSource[] = sources.map(source => ({
       key: source.key,
       custom: source.custom,
-      manifest: source.plugin.manifest,
       registry: sourceRegistry,
       maxAgeDays: sourceMaxAge(source, context.settings),
     }));
@@ -379,7 +381,8 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
   };
 }
 export const liveSourceScrapeExecutor: SourceScrapeExecutor = createLiveSourceScrapeExecutor();
-export function createMultiSourceScrapeExecutor(sourceExecutor: SourceScrapeExecutor = liveSourceScrapeExecutor, sourceRegistry: SourceRegistry = defaultSourceRegistry): ScrapeExecutor {
+export function createMultiSourceScrapeExecutor(sourceExecutor?: SourceScrapeExecutor, sourceRegistry: SourceRegistry = defaultSourceRegistry): ScrapeExecutor {
+  const executeSource = sourceExecutor ?? createLiveSourceScrapeExecutor({ sourceRegistry });
   return async (context) => {
     const sources = configuredSources(context.settings, sourceRegistry);
     const tasks = createTaskReporter(context.trajectory, context.runId);
@@ -393,7 +396,7 @@ export function createMultiSourceScrapeExecutor(sourceExecutor: SourceScrapeExec
       const taskId = `scrape:search:${key}`;
       tasks.start({ taskId, label: `Search ${label}`, detail: label });
       try {
-        const output = await sourceExecutor(context, key, custom);
+        const output = await executeSource(context, key, custom);
         const validated = validateScrapeResult(output.result, output.provenance, context.criteria.maxJobsPerRun, key);
         if (!validated.jobs.length && !output.errors?.length) appendSourceMessages(errors, label, ["no valid results from source query."]);
         const remaining = context.criteria.maxJobsPerRun - jobs.length;
@@ -458,7 +461,7 @@ export class RunManager {
     try {
       const output = await this.execute({ ...context, signal, runId: id, trajectory: this.trajectory, onUsage });
       if (signal.aborted) throw new PiRunCancelledError();
-      const enabled = configuredSources(context.settings).map((source) => source.key);
+      const enabled = configuredSourceKeys(context.settings);
       tasks.start({ taskId: "scrape:validate", label: "Validate and score results" });
       let result: ScrapeResult;
       try {

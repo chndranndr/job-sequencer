@@ -32,7 +32,7 @@ test("live session resolver uses an injected fixture-only source registry", () =
   assert.equal(resolved.plugin?.manifest.id, "fixture");
   assert.equal(resolved.toolSet.searchJobs.name, "searchJobs");
   const adaptiveTools = createAgentSearchTools({
-    sources: [{ key: "fixture", manifest: plugin.manifest, registry }],
+    sources: [{ key: "fixture", registry }],
     goal: { criteria: defaultCriteria, enabledSources: ["fixture"] },
   });
   const supplied = resolveLiveScrapeSession({ ...defaultSettings, enabledSources: ["fixture"] }, adaptiveTools, "freehire", registry);

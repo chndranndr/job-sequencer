@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { createScrapeTools } from "../scrape.js";
 import { defaultCriteria } from "../config.js";
 import type { CustomJobSource, JobSource, SearchBudget, SearchGoal, SearchHit, TrajectoryRecorder } from "../../shared.js";
-import type { SourceManifest, SourceRegistry } from "../source-plugins.js";
+import type { SourceRegistry } from "../source-plugins.js";
 import { AgentSearchState, resolveSearchBudget, type DetailReservation } from "./state.js";
 
 type SourceTools = ReturnType<typeof createScrapeTools>;
@@ -13,7 +13,6 @@ export type AgentSearchSourceTools = ReadonlyMap<JobSource, SourceTools> | Reado
 export type AgentSearchSource = {
   key: JobSource;
   custom?: CustomJobSource;
-  manifest?: SourceManifest;
   registry?: SourceRegistry;
   maxAgeDays?: number;
   fallbackQueries?: string[];
@@ -183,19 +182,19 @@ function toolsFromOptions(options: AgentSearchToolsOptions) {
     maxAgeDays: source.maxAgeDays,
     fallbackQueries: source.fallbackQueries,
   }));
-  const sourceManifests = options.sources.flatMap(source => source.manifest ? [source.manifest] : []);
-  return { state, sourceTools, sourceManifests };
+  return { state, sourceTools };
 }
 
 export function createAgentSearchTools(options: AgentSearchToolsOptions): AgentSearchTools;
 export function createAgentSearchTools(options: AgentSearchToolOptions): AgentSearchTools;
 export function createAgentSearchTools(state: AgentSearchState, sourceTools: AgentSearchSourceTools): AgentSearchTools;
 export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSearchToolOptions | AgentSearchState, second?: AgentSearchSourceTools): AgentSearchTools {
-  const { state, sourceTools, sourceManifests } = first instanceof AgentSearchState
-    ? { state: first, sourceTools: second!, sourceManifests: [] as SourceManifest[] }
+  const { state, sourceTools } = first instanceof AgentSearchState
+    ? { state: first, sourceTools: second! }
     : "state" in first
-      ? { ...first, sourceManifests: [] as SourceManifest[] }
+      ? first
       : toolsFromOptions(first);
+  const sourceManifests = sourceEntries(sourceTools).map(([, tools]) => tools.manifest);
   const toolsBySource = sourceMap(sourceTools);
 
   const searchJobs = defineTool({
