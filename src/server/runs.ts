@@ -268,8 +268,8 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
     const fallbackQueries = resolved.fallbackQueries?.(context.criteria.roles);
     const toolOptions = { source, customSource, maxAgeDays, fallbackQueries, registry: sourceRegistry };
     const preflightEnabled = Boolean(resolved.manifest.preflight && fallbackQueries?.[0]);
-    let sharedTools: SourceTools | undefined;
-    try { sharedTools = preflightEnabled ? makeTools(toolOptions) : undefined; }
+    let sharedTools: SourceTools;
+    try { sharedTools = makeTools(toolOptions); }
     catch (error) { tasks.failActive("Search tools could not be prepared."); throw error; }
     try {
       const provenance = new Map<string, string>();
@@ -278,7 +278,7 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
       const errors: string[] = [];
       let preflightJson = "";
       let preflightHasJobs = false;
-      if (sharedTools && fallbackQueries?.[0]) {
+      if (preflightEnabled && fallbackQueries?.[0]) {
         if (context.signal.aborted) throw new PiRunCancelledError();
         try {
           const preflight = await sharedTools.searchJobs.execute("preflight", { query: fallbackQueries[0], location: "", limit: Math.min(5, context.criteria.maxJobsPerRun) }, context.signal, undefined, undefined as never);
@@ -326,7 +326,7 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
         runId: context.runId,
         trajectory: context.trajectory,
         execute: async attemptPrompt => {
-          const tools = sharedTools ?? makeTools(toolOptions);
+          const tools = sharedTools;
           let text = "";
           const fetchTaskIds = new Map<string, string>();
           try {

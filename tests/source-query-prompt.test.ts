@@ -91,6 +91,50 @@ function testExecutor(options: { source?: JapanBoardSource; roles?: string[]; ou
   })(sourceContext(source, options.roles), source);
 }
 
+test("non-preflight structured retries share the source search budget", async () => {
+  const calls: string[][] = [];
+  const job = {
+    id: "freehire-one",
+    title: "Backend Developer",
+    company: "FreeHire Example",
+    location: "Remote",
+    url: "https://freehire.example/jobs/freehire-one",
+  };
+  const validJob = { sourceId: job.id, source: "freehire", url: job.url, company: job.company, role: job.title, location: job.location, posting: "Build reliable APIs.", score: 82, reason: "Strong backend fit.", strengths: ["APIs"], gaps: [] };
+  const outputs = [
+    JSON.stringify({ jobs: [{ ...validJob, sourceId: "" }] }),
+    JSON.stringify({ jobs: [validJob] }),
+  ];
+  let toolSetCount = 0;
+  const runCli: CliRunner = async args => {
+    calls.push(args);
+    if (args[0] === "search") return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 1 }, results: [job] }) };
+    return { code: 0, stderr: "", stdout: JSON.stringify({ id: job.id, title: job.title, url: job.url, description: "Build reliable APIs." }) };
+  };
+  const execute = createLiveSourceScrapeExecutor({
+    loadGuidance: async () => "test guidance",
+    createTools: toolsOptions => {
+      toolSetCount++;
+      return createScrapeTools({ ...toolsOptions, runCli });
+    },
+    createSession: async (_settings, tools) => new FauxSourceSession(outputs.shift() ?? JSON.stringify({ jobs: [] }), async () => {
+      for (let index = 0; index < 5; index++) {
+        await tools.searchJobs.execute(`search-${index}`, { query: `backend-${index}`, location: "Remote", limit: 1 }, undefined, undefined, undefined as never);
+      }
+    }),
+  });
+  const context: ScrapeContext = {
+    profile: "Backend engineer with TypeScript experience.",
+    criteria: { ...defaultCriteria, locations: ["Remote"], maxJobsPerRun: 1 },
+    settings: { ...defaultSettings, source: "freehire", enabledSources: ["freehire"], sourceMaxAgeDays: { ...defaultSourceMaxAgeDays, freehire: 99 } },
+    signal: new AbortController().signal,
+  };
+
+  await assert.rejects(() => execute(context, "freehire"), /at most five times/i);
+  assert.equal(toolSetCount, 1);
+  assert.equal(calls.filter(args => args[0] === "search").length, 5);
+});
+
 test("Japan-board preflight results are included as untrusted source prompt data", async () => {
   const calls: string[][] = [];
   const prompts: string[] = [];
