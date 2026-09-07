@@ -32,16 +32,44 @@ export function resolveSearchBudget(value: Partial<SearchBudget> | SearchBudget 
   return createSearchBudget({ maxDetailCalls: boundedMaxJobs, maxTotalResults: boundedMaxJobs, ...value });
 }
 
+export type CoverageLevel = "weak" | "medium" | "good";
+
+export type SearchCoverage = Record<string, CoverageLevel>;
+
+export type SearchMarginalUtility = {
+  score: number;
+  recentSearches: number;
+  recentUniqueJobs: number;
+  recentPromisingJobs: number;
+  repeatedZeroYieldSearches: number;
+  status: "unmeasured" | "high" | "medium" | "low" | "exhausted";
+  recommendation: string;
+};
+
+export type SearchTerminationReasonCategory =
+  | "coverage_sufficient"
+  | "marginal_utility_low"
+  | "candidates_sufficient"
+  | "budget_exhausted"
+  | "no_results"
+  | "other";
+
 export type SearchAttempt = {
+  id: string;
   operation: "search" | "detail";
   status: "started" | "completed" | "failed" | "rejected";
   source: JobSource;
   query?: string;
   location?: string;
+  intent?: string;
   resultId?: string;
   requestedLimit?: number;
   resultCount?: number;
   uniqueResultCount?: number;
+  duplicateCount?: number;
+  promisingResultCount?: number;
+  latencyMs?: number;
+  repeatCount?: number;
   cached?: boolean;
   error?: string;
   startedAt: string;
@@ -49,10 +77,16 @@ export type SearchAttempt = {
 };
 
 export type SearchSourceStats = {
+  calls: number;
   searchCalls: number;
   detailCalls: number;
   discoveredCount: number;
+  rawHits: number;
   uniqueCount: number;
+  uniqueJobs: number;
+  duplicateCount: number;
+  duplicateRate: number;
+  promisingJobs: number;
   enrichedCount: number;
   errors: number;
 };
@@ -66,6 +100,7 @@ export type SearchBudgetRemaining = {
 
 export type SearchTermination = {
   reason: string;
+  reasonCategory: SearchTerminationReasonCategory;
   unresolvedGoals: string[];
   finishedAt: string;
 };
@@ -88,6 +123,9 @@ export type AgentSearchSnapshot = {
   remainingTimeMs: number;
   provenanceCount: number;
   termination: SearchTermination | null;
+  coverage: SearchCoverage;
+  coverageSufficient: boolean;
+  marginalUtility: SearchMarginalUtility;
 };
 
 export type SearchStateOptions = {
@@ -187,7 +225,41 @@ function copyAttempt(attempt: SearchAttempt): SearchAttempt {
 function copyTermination(value: SearchTermination | null): SearchTermination | null {
   return value ? { ...value, unresolvedGoals: [...value.unresolvedGoals] } : null;
 }
+function normalized(value: unknown) {
+  return text(value, 240).toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
 
+function includesCriterion(value: string, criterion: string) {
+  const needle = normalized(criterion);
+  return !needle || value.includes(needle);
+}
+
+function hitText(hit: SearchHit) {
+  return normalized([hit.title, hit.company, hit.location].filter(Boolean).join(" "));
+}
+
+function isPromising(hit: SearchHit, criteria: Criteria) {
+  const value = hitText(hit);
+  if (criteria.excludeKeywords.some(keyword => includesCriterion(value, keyword))) return false;
+  if (criteria.roles.length && !criteria.roles.some(role => includesCriterion(value, role))) return false;
+  if (criteria.keywords.length && !criteria.keywords.some(keyword => includesCriterion(value, keyword))) return false;
+  if (criteria.remoteOnly && !/(remote|work from home|wfh|telecommute)/i.test(hit.location ?? "")) return false;
+  return true;
+}
+
+function coverageLevel(matches: number): CoverageLevel {
+  return matches <= 0 ? "weak" : matches === 1 ? "medium" : "good";
+}
+
+function inferReasonCategory(reason: string): SearchTerminationReasonCategory {
+  const value = normalized(reason);
+  if (/(budget|limit|exhaust|remaining calls)/.test(value)) return "budget_exhausted";
+  if (/(coverage|covered|role|location|keyword).*(sufficient|complete|met)|sufficient coverage/.test(value)) return "coverage_sufficient";
+  if (/(marginal|repeat|yield|not useful|no improvement|low utility)/.test(value)) return "marginal_utility_low";
+  if (/(candidate|match|enough|sufficient).*(enough|sufficient|found|selected)|enough candidates/.test(value)) return "candidates_sufficient";
+  if (/(no result|no relevant|no usable|no source|none found|failed|unavailable)/.test(value)) return "no_results";
+  return "other";
+}
 export class AgentSearchState {
   readonly goal: SearchGoal;
   readonly budget: SearchBudget;
@@ -204,6 +276,7 @@ export class AgentSearchState {
   private readonly startedAtMs: number;
   private readonly now: () => number;
   private nextToken = 1;
+  private nextAttemptId = 1;
   private searchCallCount = 0;
   private detailCallCount = 0;
   private discoveredCountValue = 0;
@@ -226,7 +299,7 @@ export class AgentSearchState {
     this.startedAtMs = this.now();
     this.runId = config.runId;
     this.trajectory = config.trajectory;
-    for (const source of this.goal.enabledSources) this.sourceStatsByKey.set(source, { searchCalls: 0, detailCalls: 0, discoveredCount: 0, uniqueCount: 0, enrichedCount: 0, errors: 0 });
+    for (const source of this.goal.enabledSources) this.sourceStatsByKey.set(source, { calls: 0, searchCalls: 0, detailCalls: 0, discoveredCount: 0, rawHits: 0, uniqueCount: 0, uniqueJobs: 0, duplicateCount: 0, duplicateRate: 0, promisingJobs: 0, enrichedCount: 0, errors: 0 });
   }
 
   get attempts(): SearchAttempt[] { return this.attemptList.map(copyAttempt); }
@@ -247,7 +320,19 @@ export class AgentSearchState {
     if (!this.runId || !this.trajectory) return;
     try { this.trajectory(this.runId, { kind, type, payload }); } catch {}
   }
+  private attemptId(operation: "search" | "detail") {
+    return `${operation}-${this.nextAttemptId++}`;
+  }
+  private repeatCount(source: JobSource, query: string, location: string) {
+    const queryKey = normalized(query);
+    const locationKey = normalized(location);
+    return this.attemptList.filter(attempt => attempt.operation === "search" && attempt.source === source && normalized(attempt.query) === queryKey && normalized(attempt.location) === locationKey).length;
+  }
 
+  private latency(attempt: SearchAttempt) {
+    const started = Date.parse(attempt.startedAt);
+    return Math.max(0, this.now() - (Number.isNaN(started) ? this.now() : started));
+  }
   private source(source: unknown, operation: "search" | "detail"): JobSource {
     if (typeof source === "string" && this.goal.enabledSources.includes(source)) return source;
     const value = typeof source === "string" ? source : "(missing)";
@@ -276,14 +361,15 @@ export class AgentSearchState {
 
   private open(operation: "search" | "detail", source: JobSource, metadata: Partial<SearchAttempt>) {
     if (!this.terminationValue) return;
-    this.attemptList.push({ operation, status: "rejected", source, startedAt: isoTime(this.now()), endedAt: isoTime(this.now()), ...metadata });
+    const startedAt = isoTime(this.now());
+    this.attemptList.push({ id: this.attemptId(operation), operation, status: "rejected", source, startedAt, endedAt: startedAt, latencyMs: 0, ...metadata });
     this.record(`${operation}_rejected`, { operation, source, reason: "search_finished" }, "error");
     throw new Error("Search is already finished.");
   }
 
   private rejectBudget(operation: "search" | "detail", source: JobSource, reason: SearchBudgetExceededError["reason"], metadata: Partial<SearchAttempt>): never {
     const startedAt = isoTime(this.now());
-    this.attemptList.push({ operation, status: "rejected", source, startedAt, endedAt: startedAt, ...metadata });
+    this.attemptList.push({ id: this.attemptId(operation), operation, status: "rejected", source, startedAt, endedAt: startedAt, latencyMs: 0, ...metadata });
     this.record("search_budget_rejected", {
       operation,
       source,
@@ -297,7 +383,7 @@ export class AgentSearchState {
 
   private rejectProvenance(source: JobSource, resultId: string): never {
     const startedAt = isoTime(this.now());
-    this.attemptList.push({ operation: "detail", status: "rejected", source, resultId: text(resultId, 200), startedAt, endedAt: startedAt });
+    this.attemptList.push({ id: this.attemptId("detail"), operation: "detail", status: "rejected", source, resultId: text(resultId, 200), startedAt, endedAt: startedAt, latencyMs: 0 });
     this.record("detail_provenance_rejected", { source, resultIdLength: resultId.length }, "error");
     throw new SearchProvenanceError(source, resultId);
   }
@@ -309,6 +395,7 @@ export class AgentSearchState {
       attempt.status = "rejected";
       attempt.error = "maxRunDurationMs";
       attempt.endedAt = isoTime(this.now());
+      attempt.latencyMs = this.latency(attempt);
     }
     this.record("search_budget_rejected", {
       operation,
@@ -323,22 +410,25 @@ export class AgentSearchState {
 
   reserveSearch(input: { source?: unknown; query: string; location: string; limit: number }): SearchReservation {
     const source = this.resolveSource(input.source, "search");
-    this.open("search", source, { query: text(input.query, 200), location: text(input.location, 120), requestedLimit: input.limit });
+    const query = text(input.query, 200);
+    const location = text(input.location, 120);
+    this.open("search", source, { query, location, requestedLimit: input.limit });
     const remaining = this.remainingBudgets();
-    const metadata = { query: text(input.query, 200), location: text(input.location, 120), requestedLimit: input.limit };
+    const metadata = { query, location, requestedLimit: input.limit };
     if (remaining.maxSearchCalls <= 0) this.rejectBudget("search", source, "maxSearchCalls", metadata);
     if (remaining.maxRunDurationMs <= 0) this.rejectBudget("search", source, "maxRunDurationMs", metadata);
     if (remaining.maxTotalResults <= 0) this.rejectBudget("search", source, "maxTotalResults", metadata);
     const startedAt = isoTime(this.now());
-    const attempt: SearchAttempt = { operation: "search", status: "started", source, query: metadata.query, location: metadata.location, requestedLimit: Math.min(input.limit, remaining.maxTotalResults), startedAt };
+    const attempt: SearchAttempt = { id: this.attemptId("search"), operation: "search", status: "started", source, query, location, requestedLimit: Math.min(input.limit, remaining.maxTotalResults), repeatCount: this.repeatCount(source, query, location), startedAt };
     const attemptIndex = this.attemptList.push(attempt) - 1;
     const token = this.nextToken++;
     this.pending.set(token, attempt);
     this.searchCallCount += 1;
     const stats = this.sourceStatsByKey.get(source)!;
+    stats.calls += 1;
     stats.searchCalls += 1;
     this.record("search_started", { source, searchCall: this.searchCallCount, requestedLimit: attempt.requestedLimit, remaining: this.remainingBudgets() });
-    return { token, source, query: metadata.query, location: metadata.location, limit: attempt.requestedLimit!, attemptIndex };
+    return { token, source, query, location, limit: attempt.requestedLimit!, attemptIndex };
   }
 
   completeSearch(reservation: SearchReservation, hits: SearchHit[]) {
@@ -347,28 +437,42 @@ export class AgentSearchState {
     if (this.remainingBudgets().maxRunDurationMs <= 0) this.rejectExpired("search", reservation);
     this.pending.delete(reservation.token);
     const added: SearchHit[] = [];
+    let duplicateCount = 0;
+    let promisingResultCount = 0;
     for (const hit of hits) {
       if (hit.source !== reservation.source) throw new Error("Search result source does not match the enabled source.");
       if (this.discoveredCountValue >= this.budget.maxTotalResults) break;
       this.discoveredCountValue += 1;
       const key = searchProvenanceKey(hit.source, hit.sourceId);
       const normalizedUrl = normalizeUrl(hit.url);
-      if (this.provenance.has(key) || this.urlKeys.has(normalizedUrl)) continue;
+      if (this.provenance.has(key) || this.urlKeys.has(normalizedUrl)) {
+        duplicateCount += 1;
+        continue;
+      }
       this.provenance.set(key, hit.url);
       this.urlKeys.set(normalizedUrl, key);
       this.discoveredHits.push(copyHit(hit));
       added.push(copyHit(hit));
       this.uniqueCountValue += 1;
+      if (isPromising(hit, this.goal.criteria)) promisingResultCount += 1;
     }
     const endedAt = isoTime(this.now());
     attempt.status = "completed";
     attempt.resultCount = hits.length;
     attempt.uniqueResultCount = added.length;
+    attempt.duplicateCount = duplicateCount;
+    attempt.promisingResultCount = promisingResultCount;
+    attempt.latencyMs = this.latency(attempt);
     attempt.endedAt = endedAt;
     const stats = this.sourceStatsByKey.get(reservation.source)!;
     stats.discoveredCount += hits.length;
+    stats.rawHits += hits.length;
     stats.uniqueCount += added.length;
-    this.record("search_completed", { source: reservation.source, resultCount: hits.length, uniqueResultCount: added.length, counts: { unique: this.uniqueCountValue, discovered: this.discoveredCountValue }, remaining: this.remainingBudgets() });
+    stats.uniqueJobs += added.length;
+    stats.duplicateCount += duplicateCount;
+    stats.promisingJobs += promisingResultCount;
+    stats.duplicateRate = stats.rawHits ? stats.duplicateCount / stats.rawHits : 0;
+    this.record("search_completed", { source: reservation.source, resultCount: hits.length, uniqueResultCount: added.length, duplicateCount, promisingResultCount, counts: { unique: this.uniqueCountValue, discovered: this.discoveredCountValue }, remaining: this.remainingBudgets() });
     return added;
   }
 
@@ -380,6 +484,7 @@ export class AgentSearchState {
     attempt.status = "failed";
     attempt.error = message;
     attempt.endedAt = isoTime(this.now());
+    attempt.latencyMs = this.latency(attempt);
     this.errors.push(`${reservation.source}: ${message}`);
     this.sourceStatsByKey.get(reservation.source)!.errors += 1;
     this.record("search_failed", { source: reservation.source, error: message }, "error");
@@ -406,12 +511,13 @@ export class AgentSearchState {
     if (remaining.maxDetailCalls <= 0) this.rejectBudget("detail", source, "maxDetailCalls", metadata);
     if (remaining.maxRunDurationMs <= 0) this.rejectBudget("detail", source, "maxRunDurationMs", metadata);
     const startedAt = isoTime(this.now());
-    const attempt: SearchAttempt = { operation: "detail", status: "started", source, resultId, startedAt };
+    const attempt: SearchAttempt = { id: this.attemptId("detail"), operation: "detail", status: "started", source, resultId, cached: false, startedAt };
     const attemptIndex = this.attemptList.push(attempt) - 1;
     const token = this.nextToken++;
     this.pending.set(token, attempt);
     this.detailCallCount += 1;
-    this.sourceStatsByKey.get(source)!.detailCalls += 1;
+    const stats = this.sourceStatsByKey.get(source)!;
+    stats.detailCalls += 1;
     this.record("detail_started", { source, sourceId: hit.sourceId, detailCall: this.detailCallCount, remaining: this.remainingBudgets() });
     return { token, source, sourceId: hit.sourceId, resultId, hit: copyHit(hit), cached: false, attemptIndex };
   }
@@ -427,6 +533,7 @@ export class AgentSearchState {
     this.enrichedKeys.add(key);
     attempt.status = "completed";
     attempt.endedAt = isoTime(this.now());
+    attempt.latencyMs = this.latency(attempt);
     const stats = this.sourceStatsByKey.get(reservation.source)!;
     if (!alreadyEnriched) stats.enrichedCount += 1;
     this.record("detail_completed", { source: reservation.source, sourceId: reservation.sourceId, postingLength: posting.length, enrichedCount: this.enrichedKeys.size, remaining: this.remainingBudgets() });
@@ -440,6 +547,7 @@ export class AgentSearchState {
     attempt.status = "failed";
     attempt.error = message;
     attempt.endedAt = isoTime(this.now());
+    attempt.latencyMs = this.latency(attempt);
     this.errors.push(`${reservation.source}: ${message}`);
     this.sourceStatsByKey.get(reservation.source)!.errors += 1;
     this.record("detail_failed", { source: reservation.source, sourceId: reservation.sourceId, error: message }, "error");
@@ -458,13 +566,51 @@ export class AgentSearchState {
     for (const value of values) if (typeof value === "string" && value.trim() && !this.warnings.includes(value)) this.warnings.push(text(value, 320));
   }
 
-  finish(reason: string, unresolvedGoals: readonly string[] = []) {
+  private coverageDetails() {
+    const criteria = this.goal.criteria;
+    const hits = this.discoveredHits;
+    const coverage: SearchCoverage = {};
+    const dimensions: Array<[string, string, (hit: SearchHit) => string]> = [
+      ...criteria.roles.map(role => [`role:${normalized(role)}`, role, hit => hitText(hit)] as [string, string, (hit: SearchHit) => string]),
+      ...criteria.locations.map(location => [`location:${normalized(location)}`, location, hit => normalized(hit.location)] as [string, string, (hit: SearchHit) => string]),
+      ...criteria.keywords.map(keyword => [`keyword:${normalized(keyword)}`, keyword, hit => hitText(hit)] as [string, string, (hit: SearchHit) => string]),
+    ];
+    let allMatched = true;
+    for (const [key, criterion, value] of dimensions) {
+      const matches = hits.filter(hit => includesCriterion(value(hit), criterion)).length;
+      coverage[key] = coverageLevel(matches);
+      if (!matches) allMatched = false;
+    }
+    const promisingJobs = hits.filter(hit => isPromising(hit, criteria)).length;
+    coverage.overall = coverageLevel(promisingJobs);
+    return { coverage, coverageSufficient: allMatched && promisingJobs > 0 };
+  }
+
+  private marginalUtility(): SearchMarginalUtility {
+    const recent = this.attemptList.filter(attempt => attempt.operation === "search" && attempt.status === "completed").slice(-5);
+    if (!recent.length) return { score: 0, recentSearches: 0, recentUniqueJobs: 0, recentPromisingJobs: 0, repeatedZeroYieldSearches: 0, status: "unmeasured", recommendation: "Run a search before judging marginal utility." };
+    const recentUniqueJobs = recent.reduce((sum, attempt) => sum + (attempt.uniqueResultCount ?? 0), 0);
+    const recentPromisingJobs = recent.reduce((sum, attempt) => sum + (attempt.promisingResultCount ?? 0), 0);
+    const repeatedZeroYieldSearches = recent.filter(attempt => (attempt.uniqueResultCount ?? 0) === 0 && (attempt.repeatCount ?? 0) > 0).length;
+    const score = recentUniqueJobs / recent.length;
+    const status = this.remainingBudgets().maxSearchCalls <= 0 ? "exhausted" : score >= 2 ? "high" : score >= 1 ? "medium" : "low";
+    const recommendation = status === "exhausted"
+      ? "Search budget is exhausted; finish with the evidence collected."
+      : repeatedZeroYieldSearches >= 2
+        ? "Avoid repeating the same ineffective source, query, and location; vary the query or switch source."
+        : status === "low"
+          ? "Yield is weak; vary role phrasing, keywords, or location before another search."
+          : "Continue only when another search is likely to add distinct promising jobs.";
+    return { score, recentSearches: recent.length, recentUniqueJobs, recentPromisingJobs, repeatedZeroYieldSearches, status, recommendation };
+  }
+
+  finish(reason: string, unresolvedGoals: readonly string[] = [], reasonCategory?: SearchTerminationReasonCategory) {
     if (this.terminationValue) return this.termination;
     const normalizedReason = text(reason, 500);
     if (!normalizedReason) throw new Error("finishSearch requires a reason.");
     const goals = [...new Set(unresolvedGoals.map((value) => text(value, 240)).filter(Boolean))].slice(0, 20);
-    this.terminationValue = { reason: normalizedReason, unresolvedGoals: goals, finishedAt: isoTime(this.now()) };
-    this.record("search_finished", { reason: normalizedReason, unresolvedGoals: goals, counts: { unique: this.uniqueCountValue, discovered: this.discoveredCountValue, enriched: this.enrichedCount }, remaining: this.remainingBudgets() });
+    this.terminationValue = { reason: normalizedReason, reasonCategory: reasonCategory ?? inferReasonCategory(normalizedReason), unresolvedGoals: goals, finishedAt: isoTime(this.now()) };
+    this.record("search_finished", { reason: normalizedReason, reasonCategory: this.terminationValue.reasonCategory, unresolvedGoals: goals, counts: { unique: this.uniqueCountValue, discovered: this.discoveredCountValue, enriched: this.enrichedKeys.size }, remaining: this.remainingBudgets() });
     return this.termination;
   }
 
@@ -482,6 +628,7 @@ export class AgentSearchState {
   snapshot(): AgentSearchSnapshot {
     const remaining = this.remainingBudgets();
     const sourceStats = Object.fromEntries([...this.sourceStatsByKey.entries()].map(([source, stats]) => [source, { ...stats }])) as Record<string, SearchSourceStats>;
+    const { coverage, coverageSufficient } = this.coverageDetails();
     return {
       goal: { criteria: copyCriteria(this.goal.criteria), enabledSources: [...this.goal.enabledSources] },
       attempts: this.attempts,
@@ -500,6 +647,9 @@ export class AgentSearchState {
       remainingTimeMs: remaining.maxRunDurationMs,
       provenanceCount: this.provenance.size,
       termination: this.termination,
+      coverage,
+      coverageSufficient,
+      marginalUtility: this.marginalUtility(),
     };
   }
 }
