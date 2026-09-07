@@ -69,6 +69,35 @@ test("registered plugins expose bounded manifests and preserve provenance", asyn
   assert.deepEqual(manifest?.capabilities, { search: true, detail: true, pagination: false, location: true, freshness: false, remote: true, activeStatus: false });
   assert.ok(manifest?.policy.maxRequestsPerRun <= 100);
 });
+test("registry rejects capability declarations that do not match plugin implementations", () => {
+  const base = fixturePlugin();
+  const { details: _details, ...withoutDetails } = base;
+  assert.throws(() => createSourceRegistry([{
+    ...withoutDetails,
+    manifest: base.manifest,
+  }]), /detail capability/i);
+  assert.throws(() => createSourceRegistry([{
+    ...base,
+    manifest: { ...base.manifest, capabilities: { ...base.manifest.capabilities, detail: false } },
+  }]), /detail capability/i);
+  assert.throws(() => createSourceRegistry([{
+    ...base,
+    manifest: { ...base.manifest, capabilities: { ...base.manifest.capabilities, search: false } },
+  }]), /search capability/i);
+  assert.throws(() => createScrapeTools({
+    source: "fixture",
+    plugin: { ...withoutDetails, manifest: base.manifest },
+  }), /detail capability/i);
+});
+test("source URL contracts reject non-HTTP schemes and credentials", async () => {
+  for (const url of ["ftp://fixture.example/jobs/1", "https://user:pass@fixture.example/jobs/1"]) {
+    const tools = fixtureTools({ search: async () => ({ meta: { count: 1 }, results: [{ ...hit, url }] }) });
+    await assert.rejects(() => callSearch(tools), /HTTP\(S\)|credentials/i);
+    assert.throws(() => validateScrapeResult({
+      jobs: [{ sourceId: hit.id, source: "fixture", url, company: hit.company, role: hit.title, location: hit.location, posting: detail.description, score: 80, reason: "fixture", strengths: [], gaps: [] }],
+    }, new Map()), /HTTP\(S\)|credentials/i);
+  }
+});
 
 test("search contract rejects malformed responses and removes duplicates", async () => {
   const tools = fixtureTools({

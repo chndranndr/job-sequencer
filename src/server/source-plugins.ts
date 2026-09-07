@@ -141,6 +141,10 @@ const manifestSchema = z.object({
   defaults: z.object({ maxAgeDays: z.number().int().min(1).max(9_999).optional() }).strict().optional(),
   preflight: z.boolean().optional(),
 }).strict();
+export const sourceUrlSchema = z.string().url().refine(value => {
+  const parsed = new URL(value);
+  return (parsed.protocol === "http:" || parsed.protocol === "https:") && !parsed.username && !parsed.password;
+}, "URL must use HTTP(S) without credentials");
 
 function freezeManifest(value: SourceManifest): SourceManifest {
   const parsed = manifestSchema.parse(value) as SourceManifest;
@@ -159,6 +163,14 @@ function freezeManifest(value: SourceManifest): SourceManifest {
 
 export function validateSourceManifest(value: unknown): SourceManifest {
   return freezeManifest(value as SourceManifest);
+}
+
+export function validateSourcePlugin(plugin: JobSourcePlugin): JobSourcePlugin {
+  const manifest = validateSourceManifest(plugin.manifest);
+  if (!manifest.capabilities.search) throw new Error(`Source plugin ${manifest.id} must declare search capability.`);
+  if (typeof plugin.search !== "function") throw new Error(`Source plugin ${manifest.id} must implement search.`);
+  if (manifest.capabilities.detail !== Boolean(plugin.details)) throw new Error(`Source plugin ${manifest.id} detail capability does not match implementation.`);
+  return { ...plugin, manifest };
 }
 
 function manifest(value: Omit<SourceManifest, "capabilities" | "policy"> & {
@@ -374,7 +386,7 @@ const searchJobSchema = z.object({
   title: z.string(),
   company: z.string().nullable(),
   location: z.string().nullable(),
-  url: z.string().url(),
+  url: sourceUrlSchema,
   postedAt: z.string().optional(),
   postedDate: z.string().optional(),
   posted_at: z.string().optional(),
@@ -384,8 +396,8 @@ const searchJobSchema = z.object({
 }).passthrough();
 const searchResultSchema = z.object({ meta: z.object({ count: z.number().int().nonnegative() }).passthrough(), results: z.array(searchJobSchema) });
 const japanSearchResultSchema = z.object({ count: z.number().int().nonnegative(), results: z.array(searchJobSchema) }).passthrough();
-const detailSchema = z.object({ id: z.string().min(1), title: z.string(), url: z.string().url(), description: z.string().nullable() }).passthrough();
-const japanDetailSchema = z.object({ url: z.string().url(), title: z.string(), text: z.string() }).passthrough();
+const detailSchema = z.object({ id: z.string().min(1), title: z.string(), url: sourceUrlSchema, description: z.string().nullable() }).passthrough();
+const japanDetailSchema = z.object({ url: sourceUrlSchema, title: z.string(), text: z.string() }).passthrough();
 
 function toSearchResponse(results: z.infer<typeof searchJobSchema>[], count = results.length): SourceSearchResponse {
   return {
@@ -678,7 +690,6 @@ export type ResolvedSource = Readonly<{
   plugin: JobSourcePlugin;
   custom?: CustomJobSource;
 }>;
-
 export class SourceRegistry {
   private readonly plugins = new Map<JobSource, JobSourcePlugin>();
 
@@ -687,10 +698,9 @@ export class SourceRegistry {
   }
 
   register(plugin: JobSourcePlugin) {
-    const validated = validateSourceManifest(plugin.manifest);
-    if (typeof plugin.search !== "function") throw new Error(`Source plugin ${validated.id} must implement search.`);
-    if (this.plugins.has(validated.id)) throw new Error(`Source plugin ${validated.id} is already registered.`);
-    this.plugins.set(validated.id, { ...plugin, manifest: validated });
+    const validated = validateSourcePlugin(plugin);
+    if (this.plugins.has(validated.manifest.id)) throw new Error(`Source plugin ${validated.manifest.id} is already registered.`);
+    this.plugins.set(validated.manifest.id, validated);
     return this;
   }
 

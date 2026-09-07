@@ -11,6 +11,8 @@ import {
   SourcePolicyLedger,
   sourceDetailUrlMatches,
   sourcePostedTimestamp,
+  sourceUrlSchema,
+  validateSourcePlugin,
   type CliRunner,
   type CustomSourceFetch,
   type SourcePolicySnapshot,
@@ -40,7 +42,7 @@ const SearchResponseSchema = z.object({
   results: z.array(z.object({
     id: z.string().trim().min(1).max(200).refine(value => !/[\\/\0\r\n]/.test(value) && !value.startsWith("-"), "invalid result ID"),
     title: z.string().trim().min(1).max(500),
-    url: z.string().url(),
+    url: sourceUrlSchema,
     company: z.string().nullable(),
     location: z.string().nullable(),
     postedAt: z.string().optional(),
@@ -49,7 +51,7 @@ const SearchResponseSchema = z.object({
 
 export const ScrapeResultSchema = z.object({
   jobs: z.array(z.object({
-    sourceId: z.string().min(1), source: z.string().min(1), url: z.string().url(),
+    sourceId: z.string().min(1), source: z.string().min(1), url: sourceUrlSchema,
     company: z.string(), role: z.string(), location: z.string(), posting: z.string(),
     score: z.number().int().min(0).max(100), reason: z.string(),
     strengths: z.array(z.string()), gaps: z.array(z.string()),
@@ -86,7 +88,7 @@ export type ScrapeToolsOptions = {
 export function createScrapeTools(options: ScrapeToolsOptions = {}) {
   const source = sourceFrom(options.source ?? "freehire");
   const registry = options.registry ?? defaultSourceRegistry;
-  const plugin = options.plugin ?? registry.resolve(source, options.customSource?.key === source ? options.customSource : undefined);
+  const plugin = validateSourcePlugin(options.plugin ?? registry.resolve(source, options.customSource?.key === source ? options.customSource : undefined));
   const runCli = options.runCli ?? runBunCli;
   if (plugin.manifest.id !== source) throw new Error(`Source plugin ${plugin.manifest.id} does not match ${source}.`);
   const maxAgeDays = options.maxAgeDays === undefined ? undefined : z.number().int().min(1).max(9_999).parse(options.maxAgeDays);
