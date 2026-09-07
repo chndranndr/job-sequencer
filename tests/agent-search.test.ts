@@ -4,7 +4,7 @@ import { AllSourcesFailedError, createAgentSearchExecutor, type ScrapeContext } 
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createScrapeTools } from "../src/server/scrape.js";
 import { createAgentSearchTools, type AgentSearchTools } from "../src/server/search/tools.js";
-import { AgentSearchState, SearchBudgetExceededError, SearchNotFinishedError } from "../src/server/search/state.js";
+import { AgentSearchState, SearchBudgetExceededError, SearchNotFinishedError, includesCriterion } from "../src/server/search/state.js";
 import type { PiSessionLike } from "../src/server/pi.js";
 import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -162,7 +162,12 @@ test("search state records adaptive yield, duplicate provenance, coverage, and t
   }
   const useful = state.reserveSearch({ source: "linkedin", query: "backend typescript", location: "Remote", limit: 1 });
   now += 10;
-  state.completeSearch(useful, [{ source: "linkedin", sourceId: "ts-1", title: "Backend Engineer TypeScript", company: "Example", location: "Remote", url: "https://jobs.example.test/ts-1" }]);
+  state.completeSearch(useful, [{ source: "linkedin", sourceId: "ts-1", title: "Backend Engineer", company: "Example", location: "Remote", url: "https://jobs.example.test/ts-1" }]);
+  const beforeDetail = state.snapshot();
+  assert.equal(beforeDetail.coverage["keyword:typescript"], "unknown");
+  const usefulDetail = state.reserveDetail({ source: "linkedin", resultId: "ts-1" });
+  now += 10;
+  state.completeDetail(usefulDetail, "Backend Engineer using TypeScript.");
   const snapshot = state.snapshot();
   assert.equal(snapshot.attempts[0]?.id, "search-1");
   assert.equal(snapshot.attempts[1]?.repeatCount, 1);
@@ -183,6 +188,77 @@ test("search state records adaptive yield, duplicate provenance, coverage, and t
   assert.equal(empty.assertFinished()?.reasonCategory, "no_results");
 });
 
+test("unicode criteria keep punctuation and reject empty normalized criteria", () => {
+  assert.equal(includesCriterion("C++ 日本語", "C#"), false);
+  assert.equal(includesCriterion("C++ 日本語", ""), false);
+  const state = new AgentSearchState({
+    goal: {
+      criteria: { ...defaultCriteria, roles: ["Ｃ＋＋"], keywords: ["C#", "日本語"] },
+      enabledSources: ["freehire"],
+    },
+  });
+  const reservation = state.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 1 });
+  state.completeSearch(reservation, [{
+    source: "freehire",
+    sourceId: "cpp-1",
+    title: "C++ Engineer",
+    company: "日本語",
+    location: "東京",
+    url: "https://jobs.example.test/cpp-1",
+  }]);
+  const snapshot = state.snapshot();
+  assert.equal(snapshot.coverage["role:c++"], "medium");
+  assert.equal(snapshot.coverage["keyword:c#"], "unknown");
+  assert.equal(snapshot.coverage["keyword:日本語"], "unknown");
+  assert.equal(snapshot.coverage["keyword:c"], undefined);
+});
+
+test("detail evidence drives keyword relevance and refreshes promising yields", () => {
+  const state = new AgentSearchState({
+    goal: {
+      criteria: { ...defaultCriteria, roles: ["Backend Engineer"], keywords: ["TypeScript"] },
+      enabledSources: ["freehire"],
+    },
+  });
+  const reservation = state.reserveSearch({ source: "freehire", query: "backend", location: "", limit: 1 });
+  state.completeSearch(reservation, [{
+    source: "freehire",
+    sourceId: "backend-1",
+    title: "Backend Engineer",
+    location: "Remote",
+    url: "https://jobs.example.test/backend-1",
+  }]);
+  assert.equal(state.snapshot().attempts[0]?.promisingResultCount, 1);
+  const detailReservation = state.reserveDetail({ source: "freehire", resultId: "backend-1" });
+  state.completeDetail(detailReservation, "Backend Engineer using Go.");
+  assert.equal(state.snapshot().attempts[0]?.promisingResultCount, 0);
+  assert.equal(state.snapshot().sourceStats.freehire.promisingJobs, 0);
+  assert.equal(state.snapshot().coverage["keyword:typescript"], "weak");
+  const refreshedDetail = state.reserveDetail({ source: "freehire", resultId: "backend-1" });
+  state.completeDetail(refreshedDetail, "Backend Engineer using TypeScript.");
+  assert.equal(state.snapshot().attempts[0]?.promisingResultCount, 1);
+  assert.equal(state.snapshot().sourceStats.freehire.promisingJobs, 1);
+  assert.equal(state.snapshot().coverage["keyword:typescript"], "medium");
+  assert.equal(state.snapshot().coverageSufficient, true);
+});
+
+test("marginal utility reports promising yield instead of unique yield", () => {
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria, roles: ["Backend Engineer"] }, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 3, maxTotalResults: 10 },
+  });
+  const reservation = state.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 2 });
+  state.completeSearch(reservation, [
+    { source: "freehire", sourceId: "php-1", title: "PHP Developer", location: "Remote", url: "https://jobs.example.test/php-1" },
+    { source: "freehire", sourceId: "java-1", title: "Java Developer", location: "Remote", url: "https://jobs.example.test/java-1" },
+  ]);
+  const marginal = state.snapshot().marginalUtility;
+  assert.equal(marginal.recentUniqueJobs, 2);
+  assert.equal(marginal.recentPromisingJobs, 0);
+  assert.equal(marginal.score, 0);
+  assert.equal(marginal.status, "low");
+});
+
 test("search tools reject an unconfigured enabled source before adapter execution", async () => {
   const state = new AgentSearchState({ goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire", "linkedin"] } });
   let calls = 0;
@@ -193,6 +269,93 @@ test("search tools reject an unconfigured enabled source before adapter executio
   state.failSearch(failed, new Error("source unavailable"));
   assert.equal(state.snapshot().sourceStats.freehire.errors, 1);
   assert.equal(state.snapshot().sourceStats.linkedin.errors, 0);
+});
+
+test("same goal trajectories choose the next source from inspected state", async () => {
+  class FakeSession implements PiSessionLike {
+    subscribe() { return () => {}; }
+    async prompt() {}
+    async abort() {}
+    dispose() {}
+  }
+
+  let activeRunId = "";
+  let currentTools: AgentSearchTools | undefined;
+  const calls: string[] = [];
+  const createSourceTools = (options: Parameters<typeof createScrapeTools>[0]) => createScrapeTools({
+    ...options,
+    runCli: async args => {
+      if (args[0] !== "search") {
+        return { code: 0, stderr: "", stdout: JSON.stringify(detail("freehire-low", "https://jobs.example.test/freehire-low")) };
+      }
+      const result = options?.source === "linkedin"
+        ? { id: "1234567", title: "Backend Engineer", company: "Example", location: "Remote", url: "https://www.linkedin.com/jobs/view/backend-engineer-1234567/" }
+        : activeRunId === "trajectory-a"
+          ? { id: "freehire-match", title: "Backend Engineer", company: "Example", location: "Remote", url: "https://jobs.example.test/freehire-match" }
+          : { id: "freehire-low", title: "PHP Developer", company: "Legacy", location: "Remote", url: "https://jobs.example.test/freehire-low" };
+      return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 1 }, results: [result] }) };
+    },
+  });
+  const execute = createAgentSearchExecutor({
+    loadGuidance: async () => "bounded guidance",
+    createSourceTools,
+    createSession: async (_settings, tools) => {
+      currentTools = tools;
+      return new FakeSession();
+    },
+    runPi: async options => {
+      await options.createSession();
+      const tools = currentTools!;
+      const call = async (name: string, params: Record<string, string | number>) => {
+        calls.push(`${activeRunId}:${name}:${String(params.source ?? "")}:${String(params.query ?? "")}`);
+        if (name === "searchJobs") return tools.searchJobs.execute(`${activeRunId}-search-${calls.length}`, params, undefined, undefined, undefined as never);
+        if (name === "inspectSearchState") return tools.inspectSearchState.execute(`${activeRunId}-inspect-${calls.length}`, params, undefined, undefined, undefined as never);
+        if (name === "finishSearch") return tools.finishSearch.execute(`${activeRunId}-finish`, params, undefined, undefined, undefined as never);
+        throw new Error(`Unexpected tool ${name}`);
+      };
+      await call("searchJobs", { source: "freehire", query: "backend", location: "", limit: 1 });
+      let inspected = textResult(await call("inspectSearchState", {}));
+      while (!inspected.coverageSufficient) {
+        if (activeRunId === "trajectory-b" && inspected.sourceStats.freehire.duplicateCount > 0) assert.equal(inspected.marginalUtility.status, "low");
+        const source = inspected.marginalUtility.status === "low" && inspected.sourceStats.freehire.duplicateCount > 0 ? "linkedin" : "freehire";
+        const query = "backend alternate";
+        await call("searchJobs", { source, query, location: source === "linkedin" ? "Remote" : "", limit: 1 });
+        inspected = textResult(await call("inspectSearchState", {}));
+      }
+      await call("finishSearch", { reason: "Coverage is sufficient.", reasonCategory: "coverage_sufficient" });
+      const source = activeRunId === "trajectory-a" ? "freehire" : "linkedin";
+      const sourceId = activeRunId === "trajectory-a" ? "freehire-match" : "1234567";
+      const url = activeRunId === "trajectory-a" ? "https://jobs.example.test/freehire-match" : "https://www.linkedin.com/jobs/view/backend-engineer-1234567/";
+      options.onAssistantText?.(JSON.stringify({ jobs: [{ sourceId, source, url, company: "", role: "Backend Engineer", location: "Remote", posting: "metadata", score: 80, reason: "fit", strengths: [], gaps: [] }] }));
+    },
+  });
+  const context = {
+    profile: "Backend engineer",
+    criteria: { ...defaultCriteria, roles: ["Backend Engineer"], locations: ["Remote"], maxJobsPerRun: 1 },
+    settings: { ...defaultSettings, enabledSources: ["freehire", "linkedin"] },
+    searchBudget: { maxSearchCalls: 5, maxTotalResults: 5 },
+    signal: new AbortController().signal,
+  } satisfies ScrapeContext;
+
+  activeRunId = "trajectory-a";
+  await execute({ ...context, runId: activeRunId });
+  activeRunId = "trajectory-b";
+  await execute({ ...context, runId: activeRunId });
+
+  assert.deepEqual(calls.filter(call => call.startsWith("trajectory-a:")).map(call => call.split(":").slice(1, 3)), [
+    ["searchJobs", "freehire"],
+    ["inspectSearchState", ""],
+    ["finishSearch", ""],
+  ]);
+  assert.deepEqual(calls.filter(call => call.startsWith("trajectory-b:")).map(call => call.split(":").slice(1, 3)), [
+    ["searchJobs", "freehire"],
+    ["inspectSearchState", ""],
+    ["searchJobs", "freehire"],
+    ["inspectSearchState", ""],
+    ["searchJobs", "linkedin"],
+    ["inspectSearchState", ""],
+    ["finishSearch", ""],
+  ]);
 });
 
 test("agent executor uses one Pi session and rejects a missing finishSearch", async () => {

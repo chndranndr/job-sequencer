@@ -32,7 +32,7 @@ export function resolveSearchBudget(value: Partial<SearchBudget> | SearchBudget 
   return createSearchBudget({ maxDetailCalls: boundedMaxJobs, maxTotalResults: boundedMaxJobs, ...value });
 }
 
-export type CoverageLevel = "weak" | "medium" | "good";
+export type CoverageLevel = "unknown" | "weak" | "medium" | "good";
 
 export type SearchCoverage = Record<string, CoverageLevel>;
 
@@ -226,26 +226,27 @@ function copyTermination(value: SearchTermination | null): SearchTermination | n
   return value ? { ...value, unresolvedGoals: [...value.unresolvedGoals] } : null;
 }
 function normalized(value: unknown) {
-  return text(value, 240).toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return text(value, 240).normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}+#]+/gu, " ").trim();
 }
 
-function includesCriterion(value: string, criterion: string) {
+export function includesCriterion(value: string, criterion: string) {
   const needle = normalized(criterion);
-  return !needle || value.includes(needle);
+  return needle.length > 0 && normalized(value).includes(needle);
 }
 
-function hitText(hit: SearchHit) {
-  return normalized([hit.title, hit.company, hit.location].filter(Boolean).join(" "));
+function hitText(hit: SearchHit, posting?: string) {
+  return normalized([hit.title, hit.company, hit.location, posting].filter(Boolean).join(" "));
 }
 
-function isPromising(hit: SearchHit, criteria: Criteria) {
-  const value = hitText(hit);
-  if (criteria.excludeKeywords.some(keyword => includesCriterion(value, keyword))) return false;
-  if (criteria.roles.length && !criteria.roles.some(role => includesCriterion(value, role))) return false;
-  if (criteria.keywords.length && !criteria.keywords.some(keyword => includesCriterion(value, keyword))) return false;
-  if (criteria.remoteOnly && !/(remote|work from home|wfh|telecommute)/i.test(hit.location ?? "")) return false;
-  return true;
+function isPromising(hit: SearchHit, criteria: Criteria, posting?: string) {
+  const evidence = hitText(hit, posting);
+  if (criteria.excludeKeywords.some(keyword => includesCriterion(evidence, keyword))) return false;
+  if (criteria.roles.length && !criteria.roles.some(role => includesCriterion(evidence, role))) return false;
+  if (criteria.locations.length && !criteria.locations.some(location => includesCriterion(evidence, location))) return false;
+  if (criteria.remoteOnly && !/(remote|work from home|wfh|telecommute)/i.test(evidence)) return false;
+  return posting === undefined || !criteria.keywords.length || criteria.keywords.some(keyword => includesCriterion(evidence, keyword));
 }
+
 
 function coverageLevel(matches: number): CoverageLevel {
   return matches <= 0 ? "weak" : matches === 1 ? "medium" : "good";
@@ -270,6 +271,7 @@ export class AgentSearchState {
   private readonly discoveredHits: SearchHit[] = [];
   private readonly enrichedKeys = new Set<string>();
   private readonly urlKeys = new Map<string, string>();
+  private readonly hitAttemptByKey = new Map<string, number>();
   readonly errors: string[] = [];
   readonly warnings: string[] = [];
   private readonly pending = new Map<number, SearchAttempt>();
@@ -451,6 +453,7 @@ export class AgentSearchState {
       }
       this.provenance.set(key, hit.url);
       this.urlKeys.set(normalizedUrl, key);
+      this.hitAttemptByKey.set(key, reservation.attemptIndex);
       this.discoveredHits.push(copyHit(hit));
       added.push(copyHit(hit));
       this.uniqueCountValue += 1;
@@ -528,15 +531,24 @@ export class AgentSearchState {
     if (this.remainingBudgets().maxRunDurationMs <= 0) this.rejectExpired("detail", reservation);
     this.pending.delete(reservation.token);
     const key = searchProvenanceKey(reservation.source, reservation.sourceId);
+    const previousPosting = this.detailDescriptions.get(key);
+    const wasPromising = isPromising(reservation.hit, this.goal.criteria, previousPosting);
     const alreadyEnriched = this.enrichedKeys.has(key);
     this.detailDescriptions.set(key, posting);
     this.enrichedKeys.add(key);
+    const isNowPromising = isPromising(reservation.hit, this.goal.criteria, posting);
+    if (wasPromising !== isNowPromising) {
+      const delta = isNowPromising ? 1 : -1;
+      const searchAttempt = this.attemptList[this.hitAttemptByKey.get(key) ?? -1];
+      if (searchAttempt?.operation === "search") searchAttempt.promisingResultCount = (searchAttempt.promisingResultCount ?? 0) + delta;
+      this.sourceStatsByKey.get(reservation.source)!.promisingJobs += delta;
+    }
     attempt.status = "completed";
     attempt.endedAt = isoTime(this.now());
     attempt.latencyMs = this.latency(attempt);
     const stats = this.sourceStatsByKey.get(reservation.source)!;
     if (!alreadyEnriched) stats.enrichedCount += 1;
-    this.record("detail_completed", { source: reservation.source, sourceId: reservation.sourceId, postingLength: posting.length, enrichedCount: this.enrichedKeys.size, remaining: this.remainingBudgets() });
+    this.record("detail_completed", { source: reservation.source, sourceId: reservation.sourceId, postingLength: posting.length, enrichedCount: this.enrichedKeys.size, promising: isNowPromising, remaining: this.remainingBudgets() });
   }
 
   failDetail(reservation: DetailReservation, error: unknown) {
@@ -570,18 +582,29 @@ export class AgentSearchState {
     const criteria = this.goal.criteria;
     const hits = this.discoveredHits;
     const coverage: SearchCoverage = {};
-    const dimensions: Array<[string, string, (hit: SearchHit) => string]> = [
-      ...criteria.roles.map(role => [`role:${normalized(role)}`, role, hit => hitText(hit)] as [string, string, (hit: SearchHit) => string]),
-      ...criteria.locations.map(location => [`location:${normalized(location)}`, location, hit => normalized(hit.location)] as [string, string, (hit: SearchHit) => string]),
-      ...criteria.keywords.map(keyword => [`keyword:${normalized(keyword)}`, keyword, hit => hitText(hit)] as [string, string, (hit: SearchHit) => string]),
+    const dimensions: Array<[string, string, "role" | "location" | "keyword"]> = [
+      ...criteria.roles.map(role => [`role:${normalized(role)}`, role, "role"] as [string, string, "role"]),
+      ...criteria.locations.map(location => [`location:${normalized(location)}`, location, "location"] as [string, string, "location"]),
+      ...criteria.keywords.map(keyword => [`keyword:${normalized(keyword)}`, keyword, "keyword"] as [string, string, "keyword"]),
     ];
     let allMatched = true;
-    for (const [key, criterion, value] of dimensions) {
-      const matches = hits.filter(hit => includesCriterion(value(hit), criterion)).length;
+    for (const [key, criterion, kind] of dimensions) {
+      const hasEvidence = kind !== "keyword" || hits.some(hit => this.detailDescriptions.has(searchProvenanceKey(hit.source, hit.sourceId)));
+      if (!hasEvidence) {
+        coverage[key] = "unknown";
+        allMatched = false;
+        continue;
+      }
+      const matches = hits.filter(hit => {
+        const posting = this.detailDescriptions.get(searchProvenanceKey(hit.source, hit.sourceId));
+        if (kind === "keyword" && posting === undefined) return false;
+        const value = kind === "location" ? normalized([hit.location, posting].filter(Boolean).join(" ")) : hitText(hit, posting);
+        return includesCriterion(value, criterion);
+      }).length;
       coverage[key] = coverageLevel(matches);
-      if (!matches) allMatched = false;
+      if (coverage[key] === "weak") allMatched = false;
     }
-    const promisingJobs = hits.filter(hit => isPromising(hit, criteria)).length;
+    const promisingJobs = hits.filter(hit => isPromising(hit, criteria, this.detailDescriptions.get(searchProvenanceKey(hit.source, hit.sourceId)))).length;
     coverage.overall = coverageLevel(promisingJobs);
     return { coverage, coverageSufficient: allMatched && promisingJobs > 0 };
   }
@@ -592,8 +615,8 @@ export class AgentSearchState {
     const recentUniqueJobs = recent.reduce((sum, attempt) => sum + (attempt.uniqueResultCount ?? 0), 0);
     const recentPromisingJobs = recent.reduce((sum, attempt) => sum + (attempt.promisingResultCount ?? 0), 0);
     const repeatedZeroYieldSearches = recent.filter(attempt => (attempt.uniqueResultCount ?? 0) === 0 && (attempt.repeatCount ?? 0) > 0).length;
-    const score = recentUniqueJobs / recent.length;
-    const status = this.remainingBudgets().maxSearchCalls <= 0 ? "exhausted" : score >= 2 ? "high" : score >= 1 ? "medium" : "low";
+    const score = recentPromisingJobs / recent.length;
+    const status = this.remainingBudgets().maxSearchCalls <= 0 ? "exhausted" : score >= 2 && recentPromisingJobs > 0 ? "high" : score >= 1 ? "medium" : "low";
     const recommendation = status === "exhausted"
       ? "Search budget is exhausted; finish with the evidence collected."
       : repeatedZeroYieldSearches >= 2

@@ -56,7 +56,14 @@ const InspectParameters = Type.Object({});
 const FinishParameters = Type.Object({
   reason: Type.String({ minLength: 1, maxLength: 500 }),
   unresolvedGoals: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 240 }), { maxItems: 20 })),
-  reasonCategory: Type.Optional(Type.String()),
+  reasonCategory: Type.Optional(Type.Union([
+    Type.Literal("coverage_sufficient"),
+    Type.Literal("marginal_utility_low"),
+    Type.Literal("candidates_sufficient"),
+    Type.Literal("budget_exhausted"),
+    Type.Literal("no_results"),
+    Type.Literal("other"),
+  ])),
 });
 
 const SearchInputSchema = z.object({
