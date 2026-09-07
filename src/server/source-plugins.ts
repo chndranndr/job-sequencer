@@ -169,7 +169,7 @@ export function validateSourcePlugin(plugin: JobSourcePlugin): JobSourcePlugin {
   const manifest = validateSourceManifest(plugin.manifest);
   if (!manifest.capabilities.search) throw new Error(`Source plugin ${manifest.id} must declare search capability.`);
   if (typeof plugin.search !== "function") throw new Error(`Source plugin ${manifest.id} must implement search.`);
-  if (manifest.capabilities.detail !== Boolean(plugin.details)) throw new Error(`Source plugin ${manifest.id} detail capability does not match implementation.`);
+  if (manifest.capabilities.detail !== (typeof plugin.details === "function")) throw new Error(`Source plugin ${manifest.id} detail capability does not match implementation.`);
   return { ...plugin, manifest };
 }
 

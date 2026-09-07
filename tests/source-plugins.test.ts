@@ -76,6 +76,9 @@ test("registry rejects capability declarations that do not match plugin implemen
     ...withoutDetails,
     manifest: base.manifest,
   }]), /detail capability/i);
+  const malformedDetails = fixturePlugin();
+  Object.defineProperty(malformedDetails, "details", { value: "not-a-function" });
+  assert.throws(() => createSourceRegistry([malformedDetails]), /detail capability/i);
   assert.throws(() => createSourceRegistry([{
     ...base,
     manifest: { ...base.manifest, capabilities: { ...base.manifest.capabilities, detail: false } },
