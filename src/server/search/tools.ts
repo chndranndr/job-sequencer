@@ -56,6 +56,14 @@ const InspectParameters = Type.Object({});
 const FinishParameters = Type.Object({
   reason: Type.String({ minLength: 1, maxLength: 500 }),
   unresolvedGoals: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 240 }), { maxItems: 20 })),
+  reasonCategory: Type.Optional(Type.Union([
+    Type.Literal("coverage_sufficient"),
+    Type.Literal("marginal_utility_low"),
+    Type.Literal("candidates_sufficient"),
+    Type.Literal("budget_exhausted"),
+    Type.Literal("no_results"),
+    Type.Literal("other"),
+  ])),
 });
 
 const SearchInputSchema = z.object({
@@ -71,6 +79,7 @@ const DetailInputSchema = z.object({
 const FinishInputSchema = z.object({
   reason: z.string().trim().min(1).max(500),
   unresolvedGoals: z.array(z.string().trim().min(1).max(240)).max(20).default([]),
+  reasonCategory: z.enum(["coverage_sufficient", "marginal_utility_low", "candidates_sufficient", "budget_exhausted", "no_results", "other"]).optional(),
 }).strict();
 const SearchEnvelopeSchema = z.object({
   results: z.array(z.object({
@@ -255,13 +264,13 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
   const finishSearch = defineTool({
     name: "finishSearch",
     label: "Finish job search",
-    description: "Finish the search with a reason and optional unresolved goals. This is required before returning final scored JSON.",
+    description: "Finish the search with a reason, optional category, and optional unresolved goals. This is required before returning final scored JSON.",
     parameters: FinishParameters,
     executionMode: "sequential",
     execute: async (_toolCallId, params) => {
       const input = FinishInputSchema.parse(params);
-      const termination = state.finish(input.reason, input.unresolvedGoals);
-      return { content: [{ type: "text", text: JSON.stringify({ finished: true, reason: termination?.reason, unresolvedGoals: termination?.unresolvedGoals, termination, state: state.snapshot() }) }], details: { finished: true } };
+      const termination = state.finish(input.reason, input.unresolvedGoals, input.reasonCategory);
+      return { content: [{ type: "text", text: JSON.stringify({ finished: true, reason: termination?.reason, reasonCategory: termination?.reasonCategory, unresolvedGoals: termination?.unresolvedGoals, termination, state: state.snapshot() }) }], details: { finished: true } };
     },
   });
 
