@@ -252,16 +252,24 @@ export function includesCriterion(value: string, criterion: string) {
   return new RegExp(`(?:^|[^\\p{L}\\p{N}+#])${escaped}(?=$|[^\\p{L}\\p{N}+#])`, "u").test(normalizedEvidence(value));
 }
 
-function isPromising(hit: SearchHit, criteria: Criteria, posting?: string) {
+function isDiscoveryCandidate(hit: SearchHit, criteria: Criteria) {
   const roleEvidence = normalizedEvidence(hit.title);
   const locationEvidence = normalizedEvidence(hit.location);
-  const exclusionEvidence = evidence([hit.title, hit.company, posting]);
-  const keywordEvidence = evidence([hit.title, posting]);
+  const exclusionEvidence = evidence([hit.title, hit.company]);
   if (criteria.excludeKeywords.some(keyword => includesCriterion(exclusionEvidence, keyword))) return false;
   if (criteria.roles.length && !criteria.roles.some(role => includesCriterion(roleEvidence, role))) return false;
   if (criteria.locations.length && !criteria.locations.some(location => includesCriterion(locationEvidence, location))) return false;
   if (criteria.remoteOnly && !/(remote|work from home|wfh|telecommute)/i.test(locationEvidence)) return false;
-  return posting === undefined || !criteria.keywords.length || criteria.keywords.some(keyword => includesCriterion(keywordEvidence, keyword));
+  return true;
+}
+
+function isPromising(hit: SearchHit, criteria: Criteria, posting?: string) {
+  if (!isDiscoveryCandidate(hit, criteria)) return false;
+  if (posting === undefined) return true;
+  const exclusionEvidence = evidence([hit.title, hit.company, posting]);
+  if (criteria.excludeKeywords.some(keyword => includesCriterion(exclusionEvidence, keyword))) return false;
+  const keywordEvidence = evidence([hit.title, posting]);
+  return !criteria.keywords.length || criteria.keywords.some(keyword => includesCriterion(keywordEvidence, keyword));
 }
 
 
@@ -605,12 +613,10 @@ export class AgentSearchState {
       ...criteria.keywords.map(keyword => [`keyword:${normalized(keyword)}`, keyword, "keyword"] as [string, string, "keyword"]),
     ];
     let allMatched = true;
+    const candidates = hits.filter(hit => isDiscoveryCandidate(hit, criteria));
+    const inspectedCandidateCount = candidates.filter(hit => this.detailDescriptions.has(searchProvenanceKey(hit.source, hit.sourceId))).length;
     for (const [key, criterion, kind] of dimensions) {
-      const candidateHits = kind === "keyword" ? hits.filter(hit => isPromising(hit, criteria)) : hits;
-      const inspectedCount = kind === "keyword"
-        ? candidateHits.filter(hit => this.detailDescriptions.has(searchProvenanceKey(hit.source, hit.sourceId))).length
-        : hits.length;
-      const matches = candidateHits.filter(hit => {
+      const matches = candidates.filter(hit => {
         const posting = this.detailDescriptions.get(searchProvenanceKey(hit.source, hit.sourceId));
         if (kind === "keyword" && posting === undefined) return false;
         const value = kind === "role"
@@ -620,7 +626,7 @@ export class AgentSearchState {
             : evidence([hit.title, posting]);
         return includesCriterion(value, criterion);
       }).length;
-      if (kind === "keyword" && (candidateHits.length === 0 || inspectedCount < candidateHits.length)) {
+      if (kind === "keyword" && (candidates.length === 0 || inspectedCandidateCount < candidates.length)) {
         coverage[key] = "unknown";
         allMatched = false;
         continue;
