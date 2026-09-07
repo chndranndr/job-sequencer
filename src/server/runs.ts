@@ -86,7 +86,7 @@ type AgentSearchToolsFactory = (options: AgentSearchToolsOptions) => AgentSearch
 export type LiveAgentScrapeDependencies = {
   createTools?: AgentSearchToolsFactory;
   createSourceTools?: SourceToolsFactory;
-  createSession?: (settings: Settings, tools: AgentSearchTools) => Promise<PiSessionLike>;
+  createSession?: (settings: Settings, tools: AgentSearchTools, sourceRegistry?: SourceRegistry) => Promise<PiSessionLike>;
   runPi?: SourcePiRunner;
   loadGuidance?: typeof loadGuidance;
   sourceRegistry?: SourceRegistry;
@@ -119,7 +119,7 @@ function parseAgentResult(value: string) {
 export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependencies = {}): ScrapeExecutor {
   const makeTools = dependencies.createTools ?? createAgentSearchTools;
   const makeSourceTools = dependencies.createSourceTools ?? createScrapeTools;
-  const makeSession = dependencies.createSession ?? ((settings, tools) => createLiveRestrictedScrapeSession(settings, tools));
+  const makeSession = dependencies.createSession ?? ((settings, tools, registry) => createLiveRestrictedScrapeSession(settings, tools, settings.source, registry));
   const runPi = dependencies.runPi ?? runBoundedPi;
   const getGuidance = dependencies.loadGuidance ?? loadGuidance;
   const sourceRegistry = dependencies.sourceRegistry ?? createSourceRegistry();
@@ -188,7 +188,7 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
         prompt,
         timeoutMs: budget.maxRunDurationMs,
         signal: context.signal,
-        createSession: () => makeSession(context.settings, tools),
+        createSession: () => makeSession(context.settings, tools, sourceRegistry),
         runId: context.runId,
         trajectory: context.trajectory,
         onUsage: context.onUsage,
@@ -231,7 +231,7 @@ type SourcePiRunner = (options: {
 
 export type LiveSourceScrapeDependencies = {
   createTools?: SourceToolsFactory;
-  createSession?: (settings: Settings, tools: SourceTools, source: JobSource) => Promise<PiSessionLike>;
+  createSession?: (settings: Settings, tools: SourceTools, source: JobSource, sourceRegistry?: SourceRegistry) => Promise<PiSessionLike>;
   runPi?: SourcePiRunner;
   loadGuidance?: typeof loadGuidance;
   sourceRegistry?: SourceRegistry;
@@ -249,7 +249,7 @@ function searchToolJson(value: unknown) {
 
 export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDependencies = {}): SourceScrapeExecutor {
   const makeTools = dependencies.createTools ?? createScrapeTools;
-  const makeSession = dependencies.createSession ?? ((settings, tools, source) => createLiveRestrictedScrapeSession(settings, tools, source));
+  const makeSession = dependencies.createSession ?? ((settings, tools, source, registry) => createLiveRestrictedScrapeSession(settings, tools, source, registry));
   const runPi = dependencies.runPi ?? runBoundedPi;
   const getGuidance = dependencies.loadGuidance ?? loadGuidance;
   const sourceRegistry = dependencies.sourceRegistry ?? createSourceRegistry();
@@ -334,7 +334,7 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
               prompt: attemptPrompt,
               timeoutMs: 120_000,
               signal: context.signal,
-              createSession: () => makeSession(context.settings, tools, source),
+              createSession: () => makeSession(context.settings, tools, source, sourceRegistry),
               runId: context.runId,
               trajectory: context.trajectory,
               onUsage: context.onUsage,

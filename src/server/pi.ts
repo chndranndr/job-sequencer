@@ -598,13 +598,12 @@ export async function createRestrictedScrapeSession(scrapeTools?: ScrapeToolSet)
   return session;
 }
 
-export async function createLiveRestrictedScrapeSession(config: Settings, scrapeTools?: ScrapeToolSet, source: JobSource = config.source): Promise<AgentSession> {
+export async function createLiveRestrictedScrapeSession(config: Settings, scrapeTools?: ScrapeToolSet, source: JobSource = config.source, sourceRegistry: SourceRegistry = createSourceRegistry()): Promise<AgentSession> {
   const customSource = config.customSources?.find((item) => item.key === source);
-  const registry = createSourceRegistry();
-  const plugin = registry.resolve(source, customSource);
+  const plugin = sourceRegistry.resolve(source, customSource);
   const configuredAge = config.sourceMaxAgeDays?.[source as keyof NonNullable<Settings["sourceMaxAgeDays"]>];
   const maxAgeDays = configuredAge ?? plugin.manifest.defaults?.maxAgeDays;
-  const toolSet = scrapeTools ?? defaultAgentSearchTools(source, customSource, maxAgeDays, registry);
+  const toolSet = scrapeTools ?? defaultAgentSearchTools(source, customSource, maxAgeDays, sourceRegistry);
   const cwd = process.cwd();
   const runtime = await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false });
   const model = selectConfiguredModel(runtime, config);

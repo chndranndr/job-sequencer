@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createLiveSourceScrapeExecutor, createMultiSourceScrapeExecutor, RunManager, sourceQueryRule, type ScrapeContext } from "../src/server/runs.js";
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
+import { createSourceRegistry } from "../src/server/source-plugins.js";
 import { createScrapeTools, type CliRunner } from "../src/server/scrape.js";
 import { openDatabase } from "../src/server/db.js";
 import { defaultSourceMaxAgeDays, type JobSource } from "../src/shared.js";
@@ -93,6 +94,7 @@ function testExecutor(options: { source?: JapanBoardSource; roles?: string[]; ou
 
 test("non-preflight structured retries share the source search budget", async () => {
   const calls: string[][] = [];
+  const sourceRegistry = createSourceRegistry();
   const job = {
     id: "freehire-one",
     title: "Backend Developer",
@@ -113,11 +115,13 @@ test("non-preflight structured retries share the source search budget", async ()
   };
   const execute = createLiveSourceScrapeExecutor({
     loadGuidance: async () => "test guidance",
+    sourceRegistry,
     createTools: toolsOptions => {
       toolSetCount++;
       return createScrapeTools({ ...toolsOptions, runCli });
     },
-    createSession: async (_settings, tools) => new FauxSourceSession(outputs.shift() ?? JSON.stringify({ jobs: [] }), async () => {
+    createSession: async (_settings, tools, _source, receivedRegistry) => new FauxSourceSession(outputs.shift() ?? JSON.stringify({ jobs: [] }), async () => {
+      assert.equal(receivedRegistry, sourceRegistry);
       for (let index = 0; index < 5; index++) {
         await tools.searchJobs.execute(`search-${index}`, { query: `backend-${index}`, location: "Remote", limit: 1 }, undefined, undefined, undefined as never);
       }
