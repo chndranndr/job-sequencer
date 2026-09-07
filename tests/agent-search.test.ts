@@ -288,6 +288,31 @@ test("keyword coverage stays unknown until every promising candidate has detail"
   assert.equal(state.snapshot().coverage["keyword:java"], "weak");
 });
 
+test("coverage requires each dimension to be satisfied by discovery candidates", () => {
+  const state = new AgentSearchState({
+    goal: {
+      criteria: {
+        ...defaultCriteria,
+        roles: ["Backend Engineer", "Platform Engineer"],
+        locations: ["Japan", "Singapore"],
+      },
+      enabledSources: ["freehire"],
+    },
+  });
+  const reservation = state.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 3 });
+  state.completeSearch(reservation, [
+    { source: "freehire", sourceId: "a", title: "Backend Engineer", location: "Berlin", url: "https://jobs.example.test/a" },
+    { source: "freehire", sourceId: "b", title: "Product Manager", location: "Japan", url: "https://jobs.example.test/b" },
+    { source: "freehire", sourceId: "c", title: "Platform Engineer", location: "Singapore", url: "https://jobs.example.test/c" },
+  ]);
+  const snapshot = state.snapshot();
+  assert.equal(snapshot.coverage["role:backend engineer"], "weak");
+  assert.equal(snapshot.coverage["role:platform engineer"], "medium");
+  assert.equal(snapshot.coverage["location:japan"], "weak");
+  assert.equal(snapshot.coverage["location:singapore"], "medium");
+  assert.equal(snapshot.coverageSufficient, false);
+});
+
 
 test("detail evidence drives keyword relevance and refreshes promising yields", () => {
   const state = new AgentSearchState({
