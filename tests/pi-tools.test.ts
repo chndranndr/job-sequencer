@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRestrictedScrapeSession, resolveLiveScrapeSession } from "../src/server/pi.js";
-import { defaultSettings } from "../src/server/config.js";
+import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createSourceRegistry, type JobSourcePlugin } from "../src/server/source-plugins.js";
+import { createAgentSearchTools } from "../src/server/search/tools.js";
 
 test("restricted scrape Pi session has exactly the four bounded search tools", async () => {
   const session = await createRestrictedScrapeSession();
@@ -28,6 +29,12 @@ test("live session resolver uses an injected fixture-only source registry", () =
   const registry = createSourceRegistry([plugin]);
   const resolved = resolveLiveScrapeSession({ ...defaultSettings, enabledSources: ["fixture"] }, undefined, "fixture", registry);
   assert.equal(resolved.source, "fixture");
-  assert.equal(resolved.plugin.manifest.id, "fixture");
+  assert.equal(resolved.plugin?.manifest.id, "fixture");
   assert.equal(resolved.toolSet.searchJobs.name, "searchJobs");
+  const adaptiveTools = createAgentSearchTools({
+    sources: [{ key: "fixture", manifest: plugin.manifest, registry }],
+    goal: { criteria: defaultCriteria, enabledSources: ["fixture"] },
+  });
+  const supplied = resolveLiveScrapeSession({ ...defaultSettings, enabledSources: ["fixture"] }, adaptiveTools, "freehire", registry);
+  assert.equal(supplied.toolSet, adaptiveTools);
 });

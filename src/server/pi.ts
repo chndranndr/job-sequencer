@@ -600,10 +600,11 @@ export async function createRestrictedScrapeSession(scrapeTools?: ScrapeToolSet)
 
 export function resolveLiveScrapeSession(config: Settings, scrapeTools?: ScrapeToolSet, source: JobSource = config.source, sourceRegistry: SourceRegistry = createSourceRegistry()) {
   const customSource = config.customSources?.find((item) => item.key === source);
+  if (scrapeTools) return { source, customSource, plugin: undefined, maxAgeDays: undefined, toolSet: scrapeTools };
   const plugin = sourceRegistry.resolve(source, customSource);
   const configuredAge = config.sourceMaxAgeDays?.[source as keyof NonNullable<Settings["sourceMaxAgeDays"]>];
   const maxAgeDays = configuredAge ?? plugin.manifest.defaults?.maxAgeDays;
-  const toolSet = scrapeTools ?? defaultAgentSearchTools(source, customSource, maxAgeDays, sourceRegistry);
+  const toolSet = defaultAgentSearchTools(source, customSource, maxAgeDays, sourceRegistry);
   return { source, customSource, plugin, maxAgeDays, toolSet };
 }
 
