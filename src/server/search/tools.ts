@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { createScrapeTools } from "../scrape.js";
 import { defaultCriteria } from "../config.js";
 import type { CustomJobSource, JobSource, SearchBudget, SearchGoal, SearchHit, TrajectoryRecorder } from "../../shared.js";
+import type { SourceManifest, SourceRegistry } from "../source-plugins.js";
 import { AgentSearchState, resolveSearchBudget, type DetailReservation } from "./state.js";
 
 type SourceTools = ReturnType<typeof createScrapeTools>;
@@ -12,6 +13,8 @@ export type AgentSearchSourceTools = ReadonlyMap<JobSource, SourceTools> | Reado
 export type AgentSearchSource = {
   key: JobSource;
   custom?: CustomJobSource;
+  manifest?: SourceManifest;
+  registry?: SourceRegistry;
   maxAgeDays?: number;
   fallbackQueries?: string[];
 };
@@ -176,20 +179,22 @@ function toolsFromOptions(options: AgentSearchToolsOptions) {
   for (const source of options.sources) sourceTools.set(source.key, makeSourceTools({
     source: source.key,
     customSource: source.custom,
+    registry: source.registry,
     maxAgeDays: source.maxAgeDays,
     fallbackQueries: source.fallbackQueries,
   }));
-  return { state, sourceTools };
+  const sourceManifests = options.sources.flatMap(source => source.manifest ? [source.manifest] : []);
+  return { state, sourceTools, sourceManifests };
 }
 
 export function createAgentSearchTools(options: AgentSearchToolsOptions): AgentSearchTools;
 export function createAgentSearchTools(options: AgentSearchToolOptions): AgentSearchTools;
 export function createAgentSearchTools(state: AgentSearchState, sourceTools: AgentSearchSourceTools): AgentSearchTools;
 export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSearchToolOptions | AgentSearchState, second?: AgentSearchSourceTools): AgentSearchTools {
-  const { state, sourceTools } = first instanceof AgentSearchState
-    ? { state: first, sourceTools: second! }
+  const { state, sourceTools, sourceManifests } = first instanceof AgentSearchState
+    ? { state: first, sourceTools: second!, sourceManifests: [] as SourceManifest[] }
     : "state" in first
-      ? first
+      ? { ...first, sourceManifests: [] as SourceManifest[] }
       : toolsFromOptions(first);
   const toolsBySource = sourceMap(sourceTools);
 
@@ -258,7 +263,7 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
     description: "Inspect bounded search progress, discovery hits, source statistics, enriched IDs, and remaining budgets.",
     parameters: InspectParameters,
     executionMode: "sequential",
-    execute: async () => ({ content: [{ type: "text", text: JSON.stringify(state.inspect()) }], details: { finished: Boolean(state.termination) } }),
+    execute: async () => ({ content: [{ type: "text", text: JSON.stringify({ ...state.inspect(), sources: sourceManifests }) }], details: { finished: Boolean(state.termination) } }),
   });
 
   const finishSearch = defineTool({

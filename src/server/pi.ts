@@ -12,8 +12,9 @@ import {
 import { fauxAssistantMessage, fauxProvider, type ImageContent } from "@earendil-works/pi-ai";
 import { createAgentSearchTools, type AgentSearchTools } from "./search/tools.js";
 import { createScrapeTools } from "./scrape.js";
+import { createSourceRegistry, type SourceRegistry } from "./source-plugins.js";
 import type { Settings } from "./config.js";
-import { isJobSource, jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
+import { jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
 import { telemetryAssistantPayload, telemetryPromptPayload, telemetrySystemPromptPayload, telemetryToolPayload } from "./telemetry.js";
 
 export interface PiSessionLike {
@@ -567,8 +568,8 @@ export async function createFauxRestrictedGenerationSession():Promise<AgentSessi
 
 type ScrapeToolSet = ReturnType<typeof createScrapeTools> | ReturnType<typeof createAgentSearchTools>;
 
-function defaultAgentSearchTools(source: JobSource, customSource?: CustomJobSource, maxAgeDays?: number) {
-  return createAgentSearchTools({ sources: [{ key: source, custom: customSource, maxAgeDays }] });
+function defaultAgentSearchTools(source: JobSource, customSource?: CustomJobSource, maxAgeDays?: number, registry?: SourceRegistry) {
+  return createAgentSearchTools({ sources: [{ key: source, custom: customSource, maxAgeDays, registry }] });
 }
 
 function scrapeToolCatalog(scrapeTools: ScrapeToolSet) {
@@ -599,7 +600,11 @@ export async function createRestrictedScrapeSession(scrapeTools?: ScrapeToolSet)
 
 export async function createLiveRestrictedScrapeSession(config: Settings, scrapeTools?: ScrapeToolSet, source: JobSource = config.source): Promise<AgentSession> {
   const customSource = config.customSources?.find((item) => item.key === source);
-  const toolSet = scrapeTools ?? defaultAgentSearchTools(source, customSource, isJobSource(source) ? config.sourceMaxAgeDays?.[source] : undefined);
+  const registry = createSourceRegistry();
+  const plugin = registry.resolve(source, customSource);
+  const configuredAge = config.sourceMaxAgeDays?.[source as keyof NonNullable<Settings["sourceMaxAgeDays"]>];
+  const maxAgeDays = configuredAge ?? plugin.manifest.defaults?.maxAgeDays;
+  const toolSet = scrapeTools ?? defaultAgentSearchTools(source, customSource, maxAgeDays, registry);
   const cwd = process.cwd();
   const runtime = await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false });
   const model = selectConfiguredModel(runtime, config);
