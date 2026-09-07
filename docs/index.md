@@ -15,6 +15,7 @@ This index points to maintained evidence. Code and executable configuration desc
 - The API uses `src/server` plus `src/shared.ts`; it must not import tracker components.
 - Runtime state and generated personal artifacts stay in ignored local directories.
 - The deterministic boundary check is `npm run harness:check`.
+- Job-source adapters, manifests, policy ledgers, and declarative custom-source resolution live in `src/server/source-plugins.ts`; orchestration consumes the registry contract.
 
 ## Planning artifacts
 
