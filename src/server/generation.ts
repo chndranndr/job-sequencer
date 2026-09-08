@@ -12,7 +12,7 @@ import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from
 import { buildAgentCandidateContext } from "./agents/context.js";
 import { validateClaims } from "./agents/claim-validator.js";
 import { splitDescriptionIntoBullets, validateApplicationStrategy } from "./agents/evidence.js";
-import { renderCVDocument } from "./rendering/cv.js";
+import { parseRevisionDirectives, renderCVDocument, type CVRenderOptions } from "./rendering/cv.js";
 import { coverLetterClosing, renderCoverLetter } from "./rendering/cover-letter.js";
 import { runCritic, type CriticFn } from "./agents/critic.js";
 import { failClosedOnCriticalFactualAudit, runFactualAuditor, type FactualAuditorFn } from "./agents/factual-auditor.js";
@@ -394,11 +394,11 @@ export function selectRelevantProjects(projects: StructuredProfile["projects"], 
   return relevant.slice(0, 4).map(item => item.entry);
 }
 
-function headerCommands(profile: StructuredProfile | null, email = "", phone = "") {
+function headerCommands(profile: StructuredProfile | null, email = "", phone = "", headlineOverride?: string) {
   const identity = profile?.identity;
   const firstName = identity?.firstName.trim() ?? "";
   const lastName = identity?.lastName.trim() ?? "";
-  const headline = identity?.headline.trim() ?? "";
+  const headline = (headlineOverride ?? identity?.headline ?? "").trim();
   const location = [identity?.city ?? "", identity?.country ?? ""].filter(value => value.trim()).join(", ");
   const emailValue = email || identity?.email || "";
   const phoneValue = phone || identity?.phone || "";
@@ -459,10 +459,23 @@ function assignCvEdits(experiences: StructuredProfile["experience"], edits: read
   return { assigned, leftover };
 }
 
-export function renderStructuredProfile(profile: StructuredProfile, jobText = "", roleEmphasis: readonly string[] = [], cvEdits: readonly string[] = [], cvLength: GenerationDirection["cvLength"] = "complete") {
+export function renderStructuredProfile(
+  profile: StructuredProfile,
+  jobText = "",
+  roleEmphasis: readonly string[] = [],
+  cvEdits: readonly string[] = [],
+  cvLength: GenerationDirection["cvLength"] = "complete",
+  options: CVRenderOptions = {},
+) {
+  const directives = {
+    ...parseRevisionDirectives(options.revisionNotes),
+    ...options,
+  };
   const experiences = profile.experience.filter(entry => entry.title.trim() || entry.company.trim() || entry.description.trim());
-  const skills = selectRelevantSkills(profile.skills, jobText, roleEmphasis).map(entry => latex(entry.name.trim())).join(", ");
-  const projects = selectRelevantProjects(profile.projects, jobText, roleEmphasis);
+  const skills = directives.skills
+    ? directives.skills.split(/[,;|]\s*/).map(s => s.trim()).filter(Boolean).map(name => latex(name)).join(", ")
+    : selectRelevantSkills(profile.skills, jobText, roleEmphasis).map(entry => latex(entry.name.trim())).join(", ");
+  const projects = directives.omitProjects ? [] : selectRelevantProjects(profile.projects, jobText, roleEmphasis);
   const groundedEdits = keepGrounded(cvEdits, `${JSON.stringify(profile)}\n${jobText}`).filter((edit) => !isInstructionShapedModelCopy(edit));
   const { assigned, leftover } = assignCvEdits(experiences, groundedEdits);
   const experienceBody = [
@@ -470,7 +483,7 @@ export function renderStructuredProfile(profile: StructuredProfile, jobText = ""
     leftover.map((edit) => `\\cvitem{}{${latex(edit)}}`).join("\n"),
   ].filter(Boolean).join("\n");
   return {
-    ...headerCommands(profile),
+    ...headerCommands(profile, "", "", directives.headline),
     SUMMARY_SECTION: cvSection("Professional Summary", latex(profile.identity.summary)),
     SKILLS_SECTION: cvSection("Core Skills", skills ? `\\cvitem{}{${skills}}` : ""),
     EXPERIENCE: experienceBody,
@@ -967,7 +980,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
       visualDocument = renderable;
       revisionArtifact = renderable;
       output = generationOutputFromDocument(renderable, parsedStrategy, cvTemplate, context.evidenceBank);
-      profileReplacements = renderCVDocument(structured, renderable);
+      profileReplacements = renderCVDocument(structured, renderable, { revisionNotes: direction.revisionNotes });
       const letter = renderCoverLetter(renderable, role, company);
       paragraphs = letter.paragraphs;
       coverLetterSubject = letter.subject;

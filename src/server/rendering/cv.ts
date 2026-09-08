@@ -26,11 +26,39 @@ function cvBullets(items: string[]) {
   return items.length ? `\\begin{itemize}[leftmargin=*,labelindent=0pt,labelsep=0.4em,itemindent=0pt,itemsep=0pt,topsep=1pt,parsep=0pt,partopsep=0pt]\n${items.map(item => `\\item ${latex(item)}`).join("\n")}\n\\end{itemize}` : "";
 }
 
-function headerCommands(profile: StructuredProfile) {
+export type CVRenderOptions = {
+  headline?: string;
+  skills?: string;
+  omitProjects?: boolean;
+  revisionNotes?: string;
+};
+
+export function parseRevisionDirectives(notes?: string): CVRenderOptions {
+  if (!notes || !notes.trim()) return {};
+  const result: CVRenderOptions = {};
+
+  const headlineMatch = notes.match(/(?:change|set)?\s*headline\s*(?:to|:)\s*["“']?([^"”'\n\r]+)["”']?/i);
+  if (headlineMatch?.[1]?.trim()) {
+    result.headline = headlineMatch[1].trim();
+  }
+
+  const skillsMatch = notes.match(/(?:change|set)?\s*(?:core\s+)?skills\s*(?:to|:)\s*["“']?([^"”'\n\r]+)["”']?/i);
+  if (skillsMatch?.[1]?.trim()) {
+    result.skills = skillsMatch[1].trim();
+  }
+
+  if (/(?:remove|omit|delete|hide|drop|no)\s+(?:selected\s+)?projects?/i.test(notes)) {
+    result.omitProjects = true;
+  }
+
+  return result;
+}
+
+function headerCommands(profile: StructuredProfile, headlineOverride?: string) {
   const identity = profile.identity;
   const firstName = identity.firstName.trim();
   const lastName = identity.lastName.trim();
-  const headline = identity.headline.trim();
+  const headline = (headlineOverride ?? identity.headline).trim();
   const location = [identity.city, identity.country].filter(value => value.trim()).join(", ");
   const links = ([
     ["Website", identity.website],
@@ -99,7 +127,11 @@ function projectEntry(entry: ProjectEntry, bullets: string[]) {
   ].join("\n");
 }
 
-export function renderCVDocument(profile: StructuredProfile, document: CVDocument) {
+export function renderCVDocument(profile: StructuredProfile, document: CVDocument, options: CVRenderOptions = {}) {
+  const directives = {
+    ...parseRevisionDirectives(options.revisionNotes),
+    ...options,
+  };
   const experiences = new Map(profile.experience.map(entry => [entry.id, entry]));
   const skills = new Map(profile.skills.map(entry => [entry.id, entry]));
   const projects = new Map(profile.projects.map(entry => [entry.id, entry]));
@@ -108,15 +140,19 @@ export function renderCVDocument(profile: StructuredProfile, document: CVDocumen
     if (!entry) return "";
     return experienceEntry(entry, item.bullets.map(bullet => bullet.text), (item.technologiesUsed ?? []).map(technology => technology.name.trim()).filter(Boolean));
   }).filter(Boolean).join("\n");
-  const skillNames = document.skillIds.map(id => skills.get(id)?.name.trim() ?? "").filter(Boolean).map(name => latex(name)).join(", ");
-  const projectBody = document.projects.map(item => {
-    const entry = projects.get(item.projectId);
-    if (!entry) return "";
-    const bullets = item.bullets ? item.bullets.map(bullet => bullet.text) : splitDescriptionIntoBullets(entry.description);
-    return projectEntry(entry, bullets);
-  }).filter(Boolean).join("\n");
+  const skillNames = directives.skills
+    ? directives.skills.split(/[,;|]\s*/).map(s => s.trim()).filter(Boolean).map(name => latex(name)).join(", ")
+    : document.skillIds.map(id => skills.get(id)?.name.trim() ?? "").filter(Boolean).map(name => latex(name)).join(", ");
+  const projectBody = directives.omitProjects
+    ? ""
+    : document.projects.map(item => {
+        const entry = projects.get(item.projectId);
+        if (!entry) return "";
+        const bullets = item.bullets ? item.bullets.map(bullet => bullet.text) : splitDescriptionIntoBullets(entry.description);
+        return projectEntry(entry, bullets);
+      }).filter(Boolean).join("\n");
   return {
-    ...headerCommands(profile),
+    ...headerCommands(profile, directives.headline),
     SUMMARY_SECTION: cvSection("Professional Summary", latex(document.summary.text)),
     SKILLS_SECTION: cvSection("Core Skills", skillNames ? `\\cvitem{}{${skillNames}}` : ""),
     EXPERIENCE: experienceBody,

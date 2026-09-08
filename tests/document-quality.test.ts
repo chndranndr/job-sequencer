@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createEmptyProfile, defaultGenerationDirection, type ProjectEntry, type SkillEntry } from "../src/shared.js";
-import { renderCVDocument } from "../src/server/rendering/cv.js";
+import { parseRevisionDirectives, renderCVDocument } from "../src/server/rendering/cv.js";
 import { evidenceRef, type CVDocument } from "../src/server/agents/types.js";
 import { buildGenerationPrompt, estimateCvPages, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
 import { coverLetterClosing } from "../src/server/rendering/cover-letter.js";
@@ -471,4 +471,40 @@ test("instruction-shaped cvEdits fail generation validation so Pi can repair", (
     cvEdits: ["Prioritize overlapping industry and keep every employer."],
     gaps: [],
   }, profile, ["backend_java_spring"], []), /internal or generic phrase/);
+});
+
+test("revisionNotes directives apply headline, core skills, and project removal", () => {
+  const profile = createEmptyProfile();
+  profile.identity.firstName = "John";
+  profile.identity.lastName = "Doe";
+  profile.identity.headline = "Original Headline";
+  profile.skills = [skill("Java"), skill("Go")];
+  profile.projects = [project("Old Project", "Engineer", "Legacy project.")];
+
+  const notes = `change headline to "Senior Java & Platform Engineer"\n\nchange core skills to "Java, Spring Boot, Linux, Kubernetes, Docker, Helm, Ansible, Jenkins, CI/CD, Grafana, Datadog, Kibana, Kafka, Redis, PostgreSQL, AWS, Alibaba Cloud, Python, VPC & Networking, Distributed Systems, Performance Optimization"\n\nremove selected project`;
+
+  const directives = parseRevisionDirectives(notes);
+  assert.equal(directives.headline, "Senior Java & Platform Engineer");
+  assert.match(directives.skills ?? "", /Spring Boot/);
+  assert.equal(directives.omitProjects, true);
+
+  const document: CVDocument = {
+    summary: { text: "Summary text", evidenceRefs: [evidenceRef("skill:java")] },
+    experiences: [],
+    skillIds: ["java"],
+    projects: [{ projectId: "old-project" }],
+    coverLetter: { subject: "Subject", paragraphs: [{ text: "Para", evidenceRefs: [evidenceRef("skill:java")] }] },
+  };
+
+  const renderedCv = renderCVDocument(profile, document, { revisionNotes: notes });
+  assert.match(renderedCv.HEADLINE_BLOCK, /Senior Java \\& Platform Engineer/);
+  assert.doesNotMatch(renderedCv.HEADLINE_BLOCK, /Original Headline/);
+  assert.match(renderedCv.SKILLS_SECTION, /Kubernetes/);
+  assert.match(renderedCv.SKILLS_SECTION, /Alibaba Cloud/);
+  assert.equal(renderedCv.PROJECTS_SECTION, "");
+
+  const renderedProfile = renderStructuredProfile(profile, "Java", ["Java"], [], "complete", { revisionNotes: notes });
+  assert.match(renderedProfile.HEADLINE_BLOCK, /Senior Java \\& Platform Engineer/);
+  assert.match(renderedProfile.SKILLS_SECTION, /Kubernetes/);
+  assert.equal(renderedProfile.PROJECTS_SECTION, "");
 });
