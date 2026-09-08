@@ -102,7 +102,7 @@ export function resolveRevisionDirectives(profile: StructuredProfile, options: C
       const name = entry.name.trim();
       if (name) resolved.push(name);
     }
-    skills = resolved;
+    skills = resolved.length > 0 ? resolved : undefined;
   }
   return { headline, skills, omitProjects: options.omitProjects !== undefined ? options.omitProjects : Boolean(parsed.omitProjects) };
 }

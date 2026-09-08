@@ -13,6 +13,14 @@ function normalizeHistoricalValue(value: unknown, maxLength: number) {
     .trim();
   return normalized.slice(0, maxLength);
 }
+function historicalSourceFilter(enabledSources: readonly JobSource[] | undefined): { sql: string; values: string[] } {
+  if (enabledSources === undefined) return { sql: "", values: [] };
+  const values = [...new Set(enabledSources.map(source => String(source)))];
+  return values.length
+    ? { sql: `WHERE source IN (${values.map(() => "?").join(",")})`, values }
+    : { sql: "WHERE 1 = 0", values: [] };
+}
+
 
 export interface HistoricalSearchSignal {
   pattern: string;
@@ -64,13 +72,15 @@ export function aggregateSourcePerformance(
   options: { maxRecentAttempts?: number; enabledSources?: JobSource[] } = {},
 ): SourcePerformanceSummary[] {
   const limit = Math.max(1, Math.min(options.maxRecentAttempts ?? 100, 500));
+  const sourceFilter = historicalSourceFilter(options.enabledSources);
   const rows = db.prepare(`
     SELECT source, status, unique_result_count, promising_result_count,
            duplicate_count, result_count, created_at
     FROM search_attempts
+    ${sourceFilter.sql}
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(limit) as Array<Record<string, unknown>>;
+  `).all(...sourceFilter.values, limit) as Array<Record<string, unknown>>;
   const enabledSet = options.enabledSources ? new Set(options.enabledSources) : null;
   const summaries = new Map<string, {
     attempts: number;
@@ -112,18 +122,20 @@ export function aggregateSourcePerformance(
 
 export function deriveHistoricalSearchSignals(
   db: DatabaseSync,
-  options: { maxRecentAttempts?: number; maxSignals?: number } = {},
+  options: { maxRecentAttempts?: number; maxSignals?: number; enabledSources?: readonly JobSource[] } = {},
 ): HistoricalSearchSignal[] {
   const limit = Math.max(1, Math.min(options.maxRecentAttempts ?? 100, 500));
   const maxSignals = Math.max(1, Math.min(options.maxSignals ?? 6, 20));
+  const sourceFilter = historicalSourceFilter(options.enabledSources);
 
   const rows = db.prepare(`
     SELECT source, query, location, status, unique_result_count,
            promising_result_count, duplicate_count, result_count, created_at
     FROM search_attempts
+    ${sourceFilter.sql}
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(limit) as Array<Record<string, unknown>>;
+  `).all(...sourceFilter.values, limit) as Array<Record<string, unknown>>;
   const aggregates = new Map<string, {
     source: string;
     query: string;
@@ -294,6 +306,7 @@ export function compileSearchMemory(
   const historicalSearchSignals = deriveHistoricalSearchSignals(db, {
     maxRecentAttempts: options.maxRecentAttempts,
     maxSignals: options.maxSignals,
+    enabledSources: options.enabledSources,
   });
 
   const preferenceSignals = derivePreferenceSignals(db, {

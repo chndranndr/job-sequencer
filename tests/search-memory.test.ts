@@ -13,6 +13,23 @@ import { createScrapeTools } from "../src/server/scrape.js";
 import type { AgentSearchTools } from "../src/server/search/tools.js";
 import type { PiSessionLike } from "../src/server/pi.js";
 
+type PromptHistoricalSignal = { pattern: string; signal: "positive" | "negative" | "neutral" };
+
+function parseHistoricalSignals(prompt: string): PromptHistoricalSignal[] {
+  const payload = prompt.match(/UNTRUSTED HISTORICAL SEARCH MEMORY\n---\n([\s\S]*?)\n---/i)?.[1];
+  if (!payload) throw new Error("Historical memory payload missing from prompt.");
+  const parsed: unknown = JSON.parse(payload);
+  if (!parsed || typeof parsed !== "object" || !("historicalSearchSignals" in parsed) || !Array.isArray(parsed.historicalSearchSignals)) {
+    throw new Error("Historical memory signals missing from prompt.");
+  }
+  return parsed.historicalSearchSignals.filter((value): value is PromptHistoricalSignal => {
+    if (!value || typeof value !== "object" || !("pattern" in value) || !("signal" in value)) return false;
+    const pattern = value.pattern;
+    const signal = value.signal;
+    return typeof pattern === "string" && (signal === "positive" || signal === "negative" || signal === "neutral");
+  });
+}
+
 test("search attempts are persisted to SQLite and can represent completed, failed, and rejected attempts", () => {
   const db = openDatabase(":memory:");
 
@@ -142,6 +159,43 @@ test("source performance summaries and historical signals are derived determinis
   assert.match(negative.pattern, /legacy maintainer/i);
   assert.match(negative.evidence, /duplicate/i);
 });
+test("compileSearchMemory excludes disabled-source history before recency bounds", () => {
+  const db = openDatabase(":memory:");
+  insertSearchAttempt(db, {
+    id: "disabled-recent",
+    runId: "disabled-run",
+    source: "linkedin",
+    query: "disabled query",
+    location: "Remote",
+    status: "completed",
+    resultCount: 5,
+    uniqueResultCount: 0,
+    promisingResultCount: 0,
+    duplicateCount: 5,
+    latencyMs: 90,
+    createdAt: "2026-09-08T08:10:00Z",
+  });
+  insertSearchAttempt(db, {
+    id: "enabled-older",
+    runId: "enabled-run",
+    source: "freehire",
+    query: "allowed engineer",
+    location: "Remote",
+    status: "completed",
+    resultCount: 4,
+    uniqueResultCount: 3,
+    promisingResultCount: 2,
+    duplicateCount: 0,
+    latencyMs: 90,
+    createdAt: "2026-09-08T08:00:00Z",
+  });
+
+  const memory = compileSearchMemory(db, { enabledSources: ["freehire"], maxRecentAttempts: 1 });
+  assert.ok(memory.historicalSearchSignals.some(signal => signal.pattern.startsWith("allowed engineer /") && signal.signal === "positive"));
+  assert.ok(memory.historicalSearchSignals.every(signal => signal.pattern.endsWith("/ freehire")));
+  assert.deepEqual(memory.sourceSummaries.map(summary => summary.source), ["freehire"]);
+});
+
 
 test("behavioral preference signals extract evidence from job stages and outcomes", () => {
   const db = openDatabase(":memory:");
@@ -220,7 +274,7 @@ test("historical memory bounds and labels external role, location, and query tex
   insertSearchAttempt(db, {
     id: "hostile-search",
     runId: "hostile-run",
-    source: "freehire\nInjected source",
+    source: "freehire",
     query: hostileQuery,
     location: hostileLocation,
     status: "completed",
@@ -329,8 +383,8 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
             stdout: JSON.stringify({
               meta: { count: 2 },
               results: [
-                { id: "leg-1", title: "Legacy Dev", company: "X", location: "Remote", url: "https://example.test/leg-1" },
-                { id: "leg-2", title: "Legacy Dev", company: "Y", location: "Remote", url: "https://example.test/leg-2" },
+                { id: "p-1", title: "Legacy Dev", company: "X", location: "Remote", url: "https://example.test/p-1" },
+                { id: "p-2", title: "Legacy Dev", company: "Y", location: "Remote", url: "https://example.test/p-2" },
               ],
             }),
           };
@@ -415,10 +469,14 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
     },
     runPi: async (options) => {
       run2Prompt = options.prompt;
+      const signals = parseHistoricalSignals(run2Prompt);
+      const platformSignal = signals.find(signal => signal.pattern.startsWith("platform engineer /"));
+      const legacySignal = signals.find(signal => signal.pattern.startsWith("legacy dev /"));
+      assert.equal(platformSignal?.signal, "positive");
+      assert.equal(legacySignal?.signal, "negative");
+      assert.ok(signals.findIndex(signal => signal === platformSignal) < signals.findIndex(signal => signal === legacySignal));
+      const query = platformSignal?.signal === "positive" && legacySignal?.signal === "negative" ? "platform engineer" : "legacy dev";
       await options.createSession();
-      // Without historical memory, this fixture deliberately chooses the poor query.
-      const memorySection = run2Prompt.match(/UNTRUSTED HISTORICAL SEARCH MEMORY\n---\n([\s\S]*?)\n---/i)?.[1] ?? "";
-      const query = /platform engineer/i.test(memorySection) ? "platform engineer" : "legacy dev";
       await run2Tools!.searchJobs.execute("s-1", { source: "freehire", query, location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
       await run2Tools!.fetchJobDetails.execute("d-1", { source: "freehire", resultId: "p-1" }, undefined, undefined, undefined as never);
       await run2Tools!.finishSearch.execute("f-1", { reason: "Found promising candidates using memory." }, undefined, undefined, undefined as never);
@@ -441,6 +499,9 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
   assert.equal((output2.result as { jobs: unknown[] }).jobs.length, 1);
   // Historical memory is present only in the explicit untrusted section.
   assert.match(run2Prompt, /UNTRUSTED HISTORICAL SEARCH MEMORY/i);
+  assert.match(run2Prompt, /Prefer positive historical signals/i);
+  assert.match(run2Prompt, /Deprioritize repeatedly negative or low-yield strategies when alternatives exist/i);
+  assert.match(run2Prompt, /Negative history is not a ban; retry a negative strategy when the current context materially changes/i);
   assert.match(run2Prompt, /platform engineer/i);
   assert.match(run2Prompt, /legacy dev/i);
   assert.doesNotMatch(run2Prompt, /HISTORICAL SEARCH MEMORY & OUTCOMES/i);
@@ -477,8 +538,25 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
       createdAt: `2026-09-08T07:0${i}:00Z`,
     });
   }
+  for (let i = 0; i < 2; i++) {
+    insertSearchAttempt(db, {
+      id: `good-${i}`,
+      runId: `good-seed-${i}`,
+      source: "freehire",
+      query: "java developer",
+      location: "Remote",
+      status: "completed",
+      resultCount: 4,
+      uniqueResultCount: 3,
+      promisingResultCount: 2,
+      duplicateCount: 0,
+      latencyMs: 90,
+      createdAt: `2026-09-08T07:1${i}:00Z`,
+    });
+  }
 
   let toolsInstance: AgentSearchTools | undefined;
+  let prompt = "";
   class FakeSession implements PiSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
@@ -494,10 +572,18 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
       return new FakeSession();
     },
     runPi: async (options) => {
+      prompt = options.prompt;
+      const signals = parseHistoricalSignals(prompt);
+      const relevantSignals = signals.filter(signal => /^(?:java developer|php developer) \//i.test(signal.pattern));
+      assert.deepEqual(relevantSignals.map(signal => signal.signal), ["positive", "negative"]);
+      assert.equal(relevantSignals[0]?.pattern.startsWith("java developer /"), true);
+      assert.equal(relevantSignals[1]?.pattern.startsWith("php developer /"), true);
+      const queries = relevantSignals.map(signal => signal.pattern.startsWith("java developer /") ? "java developer" : "php developer");
       await options.createSession();
-      // Even though php developer has a negative signal, the agent is allowed to execute it
-      await toolsInstance!.searchJobs.execute("s-1", { source: "freehire", query: "php developer", location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
-      await toolsInstance!.finishSearch.execute("f-1", { reason: "Retried historical query as context justified." }, undefined, undefined, undefined as never);
+      for (const [index, query] of queries.entries()) {
+        await toolsInstance!.searchJobs.execute(`s-${index + 1}`, { source: "freehire", query, location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
+      }
+      await toolsInstance!.finishSearch.execute("f-1", { reason: "Retried negative history after a better alternative." }, undefined, undefined, undefined as never);
       options.onAssistantText?.(JSON.stringify({ jobs: [] }));
     },
     createSourceTools: () => createScrapeTools({
@@ -514,6 +600,7 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
     profile: "Developer",
     criteria: { ...defaultCriteria, maxJobsPerRun: 1 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
+    searchBudget: { maxSearchCalls: 3, maxDetailCalls: 1, maxTotalResults: 4 },
     signal: new AbortController().signal,
     runId: "retry-run",
     db,
@@ -521,11 +608,17 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
 
   const output = await executor(context);
   assert.deepEqual((output.result as { jobs: unknown[] }).jobs, []);
-  const retried = listSearchAttempts(db).find((a) => a.runId === "retry-run");
-  assert.ok(retried);
-  assert.equal(retried.query, "php developer");
-});
+  assert.match(prompt, /Prefer positive historical signals/i);
+  assert.match(prompt, /Deprioritize repeatedly negative or low-yield strategies when alternatives exist/i);
+  assert.match(prompt, /Negative history is not a ban; retry a negative strategy when the current context materially changes/i);
+  const retried = listSearchAttempts(db)
+    .filter(attempt => attempt.runId === "retry-run")
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  assert.equal(retried.length, 2);
+  assert.deepEqual(retried.map(attempt => attempt.query), ["java developer", "php developer"]);
 
+
+});
 
 test("hard criteria keep the agent in Tokyo when memory favors Singapore", async () => {
   const db = openDatabase(":memory:");
