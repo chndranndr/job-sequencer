@@ -525,6 +525,10 @@ test("revision notes stay grounded while omitting projects structurally", () => 
   assert.doesNotMatch(unsafeDirect.HEADLINE_BLOCK, /Principal Cloud Architect/);
   assert.match(unsafeDirect.SKILLS_SECTION, /Java/);
   assert.doesNotMatch(unsafeDirect.SKILLS_SECTION, /Kubernetes|Alibaba Cloud/);
+  const unsupportedRevision = renderCVDocument(profile, document, { revisionNotes: `change core skills to "Kubernetes, Alibaba Cloud"` });
+  assert.match(unsupportedRevision.SKILLS_SECTION, /Java/);
+  assert.doesNotMatch(unsupportedRevision.SKILLS_SECTION, /Kubernetes|Alibaba Cloud/);
+
 
   const unsafeHeadline = renderCVDocument(profile, document, { revisionNotes: `change headline to "Principal Cloud Architect"` });
   assert.match(unsafeHeadline.HEADLINE_BLOCK, /Original Headline/);
@@ -540,6 +544,9 @@ test("revision notes stay grounded while omitting projects structurally", () => 
   assert.doesNotMatch(unsafeStructuredProfile.HEADLINE_BLOCK, /Principal Cloud Architect/);
   assert.match(unsafeStructuredProfile.SKILLS_SECTION, /Java/);
   assert.doesNotMatch(unsafeStructuredProfile.SKILLS_SECTION, /Kubernetes|Alibaba Cloud/);
+  const unsupportedStructuredRevision = renderStructuredProfile(profile, "Java", ["Java"], [], "complete", { revisionNotes: `change core skills to "Kubernetes, Alibaba Cloud"` });
+  assert.match(unsupportedStructuredRevision.SKILLS_SECTION, /Java/);
+  assert.doesNotMatch(unsupportedStructuredRevision.SKILLS_SECTION, /Kubernetes|Alibaba Cloud/);
 });
 
 test("generateJob applies revisionNotes to current/cv.tex on revise", async () => {
