@@ -33,7 +33,21 @@ const MAX_REASON_LENGTH = 500;
 const MAX_GOALS = 20;
 const MAX_GOAL_LENGTH = 240;
 
+const protectedTrajectoryEventTypes = new Set(["thinking", "system_prompt", "user_prompt", "assistant_thinking", "assistant_message"]);
 
+function redactTelemetryText(value: string) {
+  return value
+    .replace(/(https?:\/\/)([^/\s:@]+)(?::[^/\s@]*)?@/gi, "$1[redacted]@")
+    .replace(/(authorization\s*[:=]\s*bearer\s+|bearer\s+)[^\s,}]+/gi, "$1[redacted]")
+    .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|access_token)=)[^&\s]*/gi, "$1[redacted]")
+    .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|bearer)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]")
+    .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}\b/gi, "[redacted]")
+    .replace(/\b(?:system|user|assistant)[ _-](?:prompt|message|thinking|content)\s*[:=]\s*[^|;]+/gi, "[redacted]");
+}
+
+export function sanitizeTrajectoryEvent(event: TrajectoryEvent): TrajectoryEvent {
+  return protectedTrajectoryEventTypes.has(event.type) ? { ...event, payload: null } : event;
+}
 
 function record(value: unknown): Payload | null {
   return isJsonRecord(value) ? value : null;
@@ -41,8 +55,9 @@ function record(value: unknown): Payload | null {
 
 function text(value: unknown, limit: number): string | null {
   if (typeof value !== "string") return null;
-  const normalized = value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, limit);
-  return normalized || null;
+  const normalized = value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  const redacted = redactTelemetryText(normalized).slice(0, limit);
+  return redacted || null;
 }
 
 function safeError(value: unknown): string | null {
@@ -615,6 +630,7 @@ export function deriveRunTrajectoryObservability(
     } else if (event.type === "search_state_inspected") {
       const snapshotCounts = parseCounts(payload);
       mergeCounts(counts, snapshotCounts);
+      const snapshotTermination = parseTermination(record(payload?.termination));
       const snapshot: RunTrajectoryStateSnapshot = {
         sequence: eventSequence(event, states.length),
         timestamp: eventTimestamp(event),
@@ -623,7 +639,8 @@ export function deriveRunTrajectoryObservability(
         coverageSufficient: bool(payload?.coverageSufficient),
         marginalUtility: parseMarginalUtility(payload?.marginalUtility),
         remaining: parseBudget(payload?.remaining),
-        unresolvedGoalCount: payloadCount(record(payload?.termination), "unresolvedGoalCount"),
+        termination: snapshotTermination,
+        unresolvedGoalCount: snapshotTermination?.unresolvedGoalCount ?? payloadCount(payload, "unresolvedGoalCount"),
       };
       if (states.length < MAX_STATES) states.push(snapshot);
       mergeStateSourceStats(sources, payload?.sourceStats);
@@ -641,13 +658,16 @@ export function deriveRunTrajectoryObservability(
         coverageSufficient: bool(payload?.coverageSufficient),
         marginalUtility: parseMarginalUtility(payload?.marginalUtility),
         remaining: parseBudget(payload?.remaining),
-        unresolvedGoalCount: payloadCount(record(payload?.termination), "unresolvedGoalCount") ?? payloadCount(payload, "unresolvedGoalCount"),
+        termination,
+        unresolvedGoalCount: termination?.unresolvedGoalCount ?? payloadCount(payload, "unresolvedGoalCount"),
       };
       if (
         terminalSnapshot.remaining !== null ||
         terminalSnapshot.coverage !== null ||
         terminalSnapshot.coverageSufficient !== null ||
         terminalSnapshot.marginalUtility !== null ||
+        terminalSnapshot.termination !== null ||
+        terminalSnapshot.unresolvedGoalCount !== null ||
         terminalSnapshot.counts.discovered !== null ||
         terminalSnapshot.counts.unique !== null ||
         terminalSnapshot.counts.enriched !== null

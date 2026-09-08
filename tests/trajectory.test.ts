@@ -35,6 +35,9 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
   const db = openDatabase(":memory:");
   const runId = insertRun(db, "trajectory-api");
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "run_started", payload: null });
+  appendRunTrajectoryEvent(db, runId, { kind: "user", type: "user_prompt", payload: { text: "apiKey=sk-secret-value" } });
+  appendRunTrajectoryEvent(db, runId, { kind: "assistant", type: "assistant_message", payload: { text: "private answer", usage: { totalTokens: 3 } } });
+  appendRunTrajectoryEvent(db, runId, { kind: "thinking", type: "assistant_thinking", payload: { text: "private reasoning" } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_started", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 4, maxRunDurationMs: 1000 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_completed", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 0, counts: { discovered: 2, unique: 1 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 900 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_state_inspected", payload: { counts: { discovered: 2, unique: 1, enriched: 0 }, coverage: { "role:backend": "medium" }, coverageSufficient: false, marginalUtility: { status: "low", score: 0, recentSearches: 1, recentUniqueJobs: 1, recentPromisingJobs: 0, repeatedZeroYieldSearches: 0, recommendation: "Vary query." }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 800 }, termination: null } });
@@ -50,6 +53,10 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
     assert.equal(body.observability.states[0].remaining.maxSearchCalls, 1);
     assert.equal(body.observability.termination.reason, "No more useful results.");
     assert.equal(body.events[0].type, "run_started");
+    assert.equal(body.events.find((event: { type: string }) => event.type === "user_prompt")?.payload, null);
+    assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_message")?.payload, null);
+    assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_thinking")?.payload, null);
+    assert.doesNotMatch(JSON.stringify(body), /sk-secret-value|private reasoning|private answer/);
     assert.equal((await app.inject({ url: "/api/runs/missing/trajectory" })).statusCode, 404);
     assert.equal((await app.inject({ url: "/api/runs?limit=1" })).json().runs.length, 1);
 
@@ -81,7 +88,7 @@ test("trajectory observability preserves legacy rows and exposes bounded search 
   });
   const observability = deriveRunTrajectoryObservability(run, [
     event(4, "search_completed", { source: "freehire", resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 1, counts: { discovered: 2, unique: 1 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 4, maxTotalResults: 8, maxRunDurationMs: 1000 } }),
-    event(1, "search_started", { source: "freehire", attemptId: "search-1", query: "backend", location: "Remote", repeatCount: 0, remaining: { maxSearchCalls: 2, maxDetailCalls: 4, maxTotalResults: 10, maxRunDurationMs: 2000 } }),
+    event(1, "search_started", { source: "freehire", attemptId: "search-1", query: "backend", location: "Remote", intent: "apiKey=sk-secret-value", repeatCount: 0, remaining: { maxSearchCalls: 2, maxDetailCalls: 4, maxTotalResults: 10, maxRunDurationMs: 2000 } }),
     event(2, "search_state_inspected", { counts: { discovered: 2, unique: 1, enriched: 0 }, coverage: { "role:backend": "medium" }, coverageSufficient: false, marginalUtility: { status: "low", score: 0, recentSearches: 1, recentUniqueJobs: 1, recentPromisingJobs: 1, repeatedZeroYieldSearches: 0, recommendation: "Vary the query." }, remaining: { maxSearchCalls: 1, maxDetailCalls: 4, maxTotalResults: 8, maxRunDurationMs: 1000 }, termination: null }),
     event(3, "detail_provenance_rejected", { source: "freehire", resultIdLength: 120, error: "apiKey=sk-secret-value" }, "error"),
     event(5, "search_finished", { reason: "Coverage is sufficient.", reasonCategory: "coverage_sufficient", unresolvedGoals: [], counts: { discovered: 2, unique: 1, enriched: 0 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 4, maxTotalResults: 8, maxRunDurationMs: 1000 } }),
@@ -127,7 +134,11 @@ test("terminal search finish merges source stats and budget without inspect", ()
     event(7, "search_finished", {
       reason: "Candidates are sufficient.",
       reasonCategory: "candidates_sufficient",
+      unresolvedGoals: ["compensation"],
       counts: { discovered: 3, unique: 3, enriched: 2 },
+      coverage: { "role:backend": "good" },
+      coverageSufficient: true,
+      marginalUtility: { status: "medium", score: 1, recentSearches: 1, recentUniqueJobs: 3, recentPromisingJobs: 2, repeatedZeroYieldSearches: 0, recommendation: "Finish." },
       sourceStats: { freehire: { searchCalls: 1, detailCalls: 2, rawHits: 3, uniqueCount: 3, duplicateCount: 0, duplicateRate: 0, promisingJobs: 2, enrichedCount: 2, failures: 0 } },
       remaining: { maxSearchCalls: 4, maxDetailCalls: 3, maxTotalResults: 7, maxRunDurationMs: 3990 },
     }),
@@ -139,6 +150,11 @@ test("terminal search finish merges source stats and budget without inspect", ()
   assert.equal(observability.states.length, 1);
   assert.equal(observability.states[0]?.remaining?.maxSearchCalls, 4);
   assert.equal(observability.states[0]?.remaining?.maxDetailCalls, 3);
+  assert.equal(observability.states[0]?.unresolvedGoalCount, 1);
+  assert.equal(observability.states[0]?.coverageSufficient, true);
+  assert.equal(observability.states[0]?.coverage?.["role:backend"], "good");
+  assert.equal(observability.states[0]?.marginalUtility?.status, "medium");
+  assert.equal(observability.states[0]?.termination?.unresolvedGoalCount, 1);
 });
 test("task telemetry is ordered, retry-safe, and source-specific", () => {
   const db = openDatabase(":memory:");

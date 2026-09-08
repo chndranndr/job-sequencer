@@ -564,6 +564,7 @@ export type RunTrajectoryStateSnapshot = {
   marginalUtility: RunTrajectoryMarginalUtility | null;
   remaining: RunTrajectoryBudget | null;
   unresolvedGoalCount: number | null;
+  termination: RunTrajectoryTermination | null;
 };
 
 export type RunTrajectoryAdaptation = {

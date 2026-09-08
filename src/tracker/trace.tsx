@@ -54,7 +54,7 @@ function summaryText(value: string) {
 }
 
 function isProtectedTraceEvent(event: TrajectoryEvent) {
-  return event.kind === "thinking" || event.type === "system_prompt" || event.type === "user_prompt" || event.type === "assistant_thinking";
+  return event.kind === "thinking" || event.type === "system_prompt" || event.type === "user_prompt" || event.type === "assistant_thinking" || event.type === "assistant_message";
 }
 
 export function eventSummary(event: TrajectoryEvent) {
@@ -277,6 +277,9 @@ function observableBudgetUse(used: number, remaining: number | null | undefined)
   if (remaining === null || remaining === undefined || !Number.isFinite(remaining)) return String(safeUsed);
   return `${safeUsed} / ${safeUsed + Math.max(0, Math.trunc(remaining))}`;
 }
+function observableSearchTarget(target: { source: string | null; query: string | null; location: string | null }) {
+  return [observableText(target.source), observableText(target.location), observableText(target.query)].join(" · ");
+}
 
 function TraceLink({ href, navigate, children, className = "" }: { href: string; navigate: (href: string) => void; children: ReactNode; className?: string }) {
   return <a className={className} href={href} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href); }}>{children}</a>;
@@ -494,7 +497,7 @@ function TraceObservabilitySummary({ run, observability }: { run: Run; observabi
     <section className="trace-section" aria-label="Query adaptation">
       <div className="trace-section-head"><h2>Query adaptation</h2><span>{observableCount(searchAttempts.length)} searches · {observableCount(observability.adaptations.length)} transitions</span></div>
       {searchAttempts.length ? <div className="trace-observe-list">{searchAttempts.map((attempt) => <div className="trace-observe-adaptation" key={`${attempt.sequence}-${attempt.attemptId ?? attempt.query ?? "search"}`}><strong>{observableText(attempt.status)}</strong><span>{observableText(attempt.source)} · {observableText(attempt.location)} · {observableText(attempt.query)}</span><small>{observableCount(attempt.resultCount)} results · {observableCount(attempt.uniqueResultCount)} unique · {observableCount(attempt.promisingResultCount)} promising · {observablePercent(attempt.duplicateRate)} duplicate · {observableText(attempt.intent)}</small></div>)}</div> : <p className="empty">No search attempts were captured.</p>}
-      {observability.adaptations.length > 0 && <div className="trace-observe-list">{observability.adaptations.slice(0, 50).map((adaptation) => <div className="trace-observe-adaptation" key={`adaptation-${adaptation.sequence}-${adaptation.to.query ?? adaptation.to.source ?? "next"}`}><strong>{observableText(adaptation.reason)}</strong><span>{observableText(adaptation.from.source)} · {observableText(adaptation.from.location)} · {observableText(adaptation.from.query)} → {observableText(adaptation.to.source)} · {observableText(adaptation.to.location)} · {observableText(adaptation.to.query)}</span><small>{observableText(adaptation.signal)}</small></div>)}</div>}
+      {observability.adaptations.length > 0 && <div className="trace-observe-list">{observability.adaptations.slice(0, 50).map((adaptation) => <div className="trace-observe-adaptation" key={`adaptation-${adaptation.sequence}-${observableSearchTarget(adaptation.to)}`}><strong>{observableText(adaptation.reason)}</strong><span>{observableSearchTarget(adaptation.from)} → {observableSearchTarget(adaptation.to)}</span><small>{observableText(adaptation.signal)}</small></div>)}</div>}
     </section>
     <section className="trace-section" aria-label="Source effectiveness">
       <div className="trace-section-head"><h2>Source effectiveness</h2><span>{observableCount(sourceRows.length)} sources</span></div>
