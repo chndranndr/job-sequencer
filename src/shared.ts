@@ -361,6 +361,10 @@ export type TrajectoryEvent = Required<Pick<TrajectoryEventInput, "kind" | "type
 };
 
 export type TrajectoryRecorder = (runId: string, event: TrajectoryEventInput) => void;
+export function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 
 export type TaskEventStatus = "started" | "completed" | "failed";
 
@@ -485,11 +489,142 @@ export function deriveRunTaskRows(events: readonly TrajectoryEvent[], workflow: 
   return result;
 }
 
+export type RunTrajectoryAttemptStatus = "started" | "completed" | "failed" | "rejected";
+
+export type RunTrajectoryAttempt = {
+  attemptId: string | null;
+  sequence: number;
+  operation: "search" | "detail";
+  status: RunTrajectoryAttemptStatus;
+  source: string | null;
+  query: string | null;
+  location: string | null;
+  intent: string | null;
+  sourceId: string | null;
+  resultId: string | null;
+  requestedLimit: number | null;
+  resultCount: number | null;
+  uniqueResultCount: number | null;
+  duplicateCount: number | null;
+  promisingResultCount: number | null;
+  enrichedCount: number | null;
+  promising: boolean | null;
+  repeatCount: number | null;
+  latencyMs: number | null;
+  duplicateRate: number | null;
+  uniqueYield: number | null;
+  promisingYield: number | null;
+  error: string | null;
+  errorCategory: string | null;
+  timestamp: string | null;
+};
+
+export type RunTrajectoryCounts = {
+  discovered: number | null;
+  unique: number | null;
+  enriched: number | null;
+};
+
+export type RunTrajectoryBudget = {
+  maxSearchCalls: number | null;
+  maxDetailCalls: number | null;
+  maxTotalResults: number | null;
+  maxRunDurationMs: number | null;
+};
+
+export type RunTrajectorySourceStats = {
+  searchCalls: number | null;
+  detailCalls: number | null;
+  rawHits: number | null;
+  uniqueCount: number | null;
+  duplicateCount: number | null;
+  duplicateRate: number | null;
+  promisingCount: number | null;
+  enrichedCount: number | null;
+  failures: number | null;
+  latencyMs: number | null;
+};
+
+export type RunTrajectoryMarginalUtility = {
+  score: number | null;
+  recentSearches: number | null;
+  recentUniqueJobs: number | null;
+  recentPromisingJobs: number | null;
+  repeatedZeroYieldSearches: number | null;
+  status: string | null;
+  recommendation: string | null;
+};
+
+export type RunTrajectoryStateSnapshot = {
+  sequence: number;
+  timestamp: string | null;
+  counts: RunTrajectoryCounts;
+  coverage: Record<string, string> | null;
+  coverageSufficient: boolean | null;
+  marginalUtility: RunTrajectoryMarginalUtility | null;
+  remaining: RunTrajectoryBudget | null;
+  unresolvedGoalCount: number | null;
+};
+
+export type RunTrajectoryAdaptation = {
+  sequence: number;
+  from: {
+    source: string | null;
+    query: string | null;
+    location: string | null;
+  };
+  to: {
+    source: string | null;
+    query: string | null;
+    location: string | null;
+  };
+  reason: string;
+  signal: string | null;
+};
+
+export type RunTrajectoryTermination = {
+  reason: string | null;
+  category: string | null;
+  unresolvedGoals: string[];
+  unresolvedGoalCount: number | null;
+};
+
+export type RunTrajectoryPolicyEvent = {
+  sequence: number;
+  type: string;
+  category: string;
+  operation: "search" | "detail" | null;
+  source: string | null;
+  reason: string | null;
+  error: string | null;
+};
+
+export type RunTrajectoryResources = {
+  durationMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  estimatedCost: number | null;
+};
+
+export type RunTrajectoryObservability = {
+  counts: RunTrajectoryCounts;
+  resources: RunTrajectoryResources;
+  attempts: RunTrajectoryAttempt[];
+  sourceStats: Record<string, RunTrajectorySourceStats>;
+  states: RunTrajectoryStateSnapshot[];
+  adaptations: RunTrajectoryAdaptation[];
+  termination: RunTrajectoryTermination | null;
+  policyEvents: RunTrajectoryPolicyEvent[];
+};
+
 export type RunTrajectoryEnvelope = {
   runId: string;
   status: RunStatus;
   events: TrajectoryEvent[];
+  observability: RunTrajectoryObservability;
 };
+
 
 export type Run = {
   id: string;

@@ -69,6 +69,7 @@ import {
   type InterviewExecutor,
 } from "./interview.js";
 import { type FollowUpContext, type InterviewMessage, type StructuredProfile } from "../shared.js";
+import { deriveRunTrajectoryObservability } from "../trajectory.js";
 import { createRestrictedGenerationSession, getAvailablePiModels, runBoundedPi, type PiModelOption } from "./pi.js";
 import { InterviewSessionPool, type InterviewSessionFactory } from "./interview-sessions.js";
 import { MAX_PROFILE_UPLOAD_BYTES, ProfileImportRunManager, type ProfileImporter } from "./profile-import.js";
@@ -619,7 +620,8 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const id = requestId(req);
     const run = getRun(db, id);
     if (!run) throw notFound("Run not found.");
-    return { runId: id, status: run.status, events: listRunTrajectoryEvents(db, id) };
+    const events = listRunTrajectoryEvents(db, id);
+    return { runId: id, status: run.status, events, observability: deriveRunTrajectoryObservability(run, events) };
   });
   app.get("/api/runs/:id", async (req) => {
     const row = getRun(db, requestId(req));

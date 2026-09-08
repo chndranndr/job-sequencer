@@ -38,6 +38,8 @@ test("TRACE event summaries prefer useful safe fields and task summaries are det
   assert.equal(eventSummary(event(1, "tool_execution_start", { toolName: "lookupJob" }, "tool_call")), "lookupJob");
   assert.equal(eventSummary(event(2, "assistant_message", { text: "  hello   tracker  " }, "assistant")), "hello tracker");
   assert.equal(eventSummary(event(3, "run_failed", { error: "Provider unavailable" }, "error")), "Provider unavailable");
+  assert.equal(eventSummary(event(4, "assistant_thinking", { text: "private thought sk-secret-value" }, "thinking")), "[content omitted]");
+  assert.equal(eventSummary(event(5, "user_prompt", { text: "private prompt" }, "user")), "[content omitted]");
 
   const events = [
     event(1, "task_started", { taskId: "prepare", label: "Prepare", status: "started" }),
