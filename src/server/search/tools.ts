@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { createScrapeTools } from "../scrape.js";
 import { defaultCriteria } from "../config.js";
 import type { CustomJobSource, JobSource, SearchBudget, SearchGoal, SearchHit, TrajectoryRecorder } from "../../shared.js";
+import type { SourceRegistry } from "../source-plugins.js";
 import { AgentSearchState, resolveSearchBudget, type DetailReservation, type SearchAttempt } from "./state.js";
 
 type SourceTools = ReturnType<typeof createScrapeTools>;
@@ -12,6 +13,7 @@ export type AgentSearchSourceTools = ReadonlyMap<JobSource, SourceTools> | Reado
 export type AgentSearchSource = {
   key: JobSource;
   custom?: CustomJobSource;
+  registry?: SourceRegistry;
   maxAgeDays?: number;
   fallbackQueries?: string[];
 };
@@ -180,6 +182,7 @@ function toolsFromOptions(options: AgentSearchToolsOptions) {
   for (const source of options.sources) sourceTools.set(source.key, makeSourceTools({
     source: source.key,
     customSource: source.custom,
+    registry: source.registry,
     maxAgeDays: source.maxAgeDays,
     fallbackQueries: source.fallbackQueries,
   }));
@@ -195,6 +198,7 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
     : "state" in first
       ? first
       : toolsFromOptions(first);
+  const sourceManifests = sourceEntries(sourceTools).map(([, tools]) => tools.manifest);
   const toolsBySource = sourceMap(sourceTools);
 
   const searchJobs = defineTool({
@@ -262,7 +266,7 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
     description: "Inspect bounded search progress, discovery hits, source statistics, enriched IDs, and remaining budgets.",
     parameters: InspectParameters,
     executionMode: "sequential",
-    execute: async () => ({ content: [{ type: "text", text: JSON.stringify(state.inspect()) }], details: { finished: Boolean(state.termination) } }),
+    execute: async () => ({ content: [{ type: "text", text: JSON.stringify({ ...state.inspect(), sources: sourceManifests }) }], details: { finished: Boolean(state.termination) } }),
   });
 
   const finishSearch = defineTool({

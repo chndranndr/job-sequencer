@@ -12,8 +12,9 @@ import {
 import { fauxAssistantMessage, fauxProvider, type ImageContent } from "@earendil-works/pi-ai";
 import { createAgentSearchTools, type AgentSearchTools } from "./search/tools.js";
 import { createScrapeTools } from "./scrape.js";
+import { createSourceRegistry, type SourceRegistry } from "./source-plugins.js";
 import type { Settings } from "./config.js";
-import { isJobSource, jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
+import { jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
 import { telemetryAssistantPayload, telemetryPromptPayload, telemetrySystemPromptPayload, telemetryToolPayload } from "./telemetry.js";
 
 export interface PiSessionLike {
@@ -565,10 +566,10 @@ export async function runNoToolExactSmoke(): Promise<string> {
 
 export async function createFauxRestrictedGenerationSession():Promise<AgentSession>{const cwd=process.cwd();const {faux,runtime,settings,loader}=await restrictedRuntime(cwd);const {session}=await createAgentSession({cwd,model:faux.getModel(),modelRuntime:runtime,resourceLoader:loader,settingsManager:settings,sessionManager:SessionManager.inMemory(cwd),noTools:"all",thinkingLevel:"off"});return session;}
 
-type ScrapeToolSet = ReturnType<typeof createScrapeTools> | ReturnType<typeof createAgentSearchTools>;
+export type ScrapeToolSet = ReturnType<typeof createScrapeTools> | ReturnType<typeof createAgentSearchTools>;
 
-function defaultAgentSearchTools(source: JobSource, customSource?: CustomJobSource, maxAgeDays?: number) {
-  return createAgentSearchTools({ sources: [{ key: source, custom: customSource, maxAgeDays }] });
+function defaultAgentSearchTools(source: JobSource, customSource?: CustomJobSource, maxAgeDays?: number, registry?: SourceRegistry) {
+  return createAgentSearchTools({ sources: [{ key: source, custom: customSource, maxAgeDays, registry }] });
 }
 
 function scrapeToolCatalog(scrapeTools: ScrapeToolSet) {
@@ -597,9 +598,18 @@ export async function createRestrictedScrapeSession(scrapeTools?: ScrapeToolSet)
   return session;
 }
 
-export async function createLiveRestrictedScrapeSession(config: Settings, scrapeTools?: ScrapeToolSet, source: JobSource = config.source): Promise<AgentSession> {
+export function resolveLiveScrapeSession(config: Settings, scrapeTools?: ScrapeToolSet, source: JobSource = config.source, sourceRegistry: SourceRegistry = createSourceRegistry()) {
   const customSource = config.customSources?.find((item) => item.key === source);
-  const toolSet = scrapeTools ?? defaultAgentSearchTools(source, customSource, isJobSource(source) ? config.sourceMaxAgeDays?.[source] : undefined);
+  if (scrapeTools) return { source, customSource, plugin: undefined, maxAgeDays: undefined, toolSet: scrapeTools };
+  const plugin = sourceRegistry.resolve(source, customSource);
+  const configuredAge = config.sourceMaxAgeDays?.[source as keyof NonNullable<Settings["sourceMaxAgeDays"]>];
+  const maxAgeDays = configuredAge ?? plugin.manifest.defaults?.maxAgeDays;
+  const toolSet = defaultAgentSearchTools(source, customSource, maxAgeDays, sourceRegistry);
+  return { source, customSource, plugin, maxAgeDays, toolSet };
+}
+
+export async function createLiveRestrictedScrapeSession(config: Settings, scrapeTools?: ScrapeToolSet, source: JobSource = config.source, sourceRegistry: SourceRegistry = createSourceRegistry()): Promise<AgentSession> {
+  const { toolSet } = resolveLiveScrapeSession(config, scrapeTools, source, sourceRegistry);
   const cwd = process.cwd();
   const runtime = await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false });
   const model = selectConfiguredModel(runtime, config);
