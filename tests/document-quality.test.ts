@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { createEmptyProfile, defaultGenerationDirection, type ProjectEntry, type SkillEntry } from "../src/shared.js";
 import { parseRevisionDirectives, renderCVDocument } from "../src/server/rendering/cv.js";
 import { evidenceRef, type CVDocument } from "../src/server/agents/types.js";
-import { buildGenerationPrompt, estimateCvPages, filterComplementaryBullets, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
+import { buildGenerationPrompt, estimateCvPages, filterComplementaryBullets, generateJob, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
+import { openDatabase, updateJobDirection } from "../src/server/db.js";
+import { defaultSettings } from "../src/server/config.js";
+import type { CommandRunner } from "../src/server/documents.js";
 import { coverLetterClosing } from "../src/server/rendering/cover-letter.js";
 
 const skill = (name: string): SkillEntry => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name });
@@ -507,4 +512,80 @@ test("revisionNotes directives apply headline, core skills, and project removal"
   assert.match(renderedProfile.HEADLINE_BLOCK, /Senior Java \\& Platform Engineer/);
   assert.match(renderedProfile.SKILLS_SECTION, /Kubernetes/);
   assert.equal(renderedProfile.PROJECTS_SECTION, "");
+});
+
+test("generateJob applies revisionNotes to current/cv.tex on revise", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-revise-"));
+  const db = openDatabase(":memory:");
+  const jobId = randomUUID();
+  const now = "2026-09-08T00:00:00.000Z";
+
+  const notes = `change headline to "Senior Java & Platform Engineer"\n\nchange core skills to "Java, Spring Boot, Linux, Kubernetes, Docker, Helm, Ansible, Jenkins, CI/CD, Grafana, Datadog, Kibana, Kafka, Redis, PostgreSQL, AWS, Alibaba Cloud, Python, VPC & Networking, Distributed Systems, Performance Optimization"\n\nremove selected project`;
+
+  db.prepare(`
+    INSERT INTO jobs(id, source_id, source, url, company, role, posting, score, rank_json, stage, first_seen_at, updated_at)
+    VALUES (?, 's-1', 'freehire', 'https://example.test/job', 'Acme', 'Engineer', 'Java posting', 85, '{}', 'Drafting', ?, ?)
+  `).run(jobId, now, now);
+
+  updateJobDirection(db, jobId, {
+    cvLength: "complete",
+    letterMode: "standard",
+    revisionNotes: notes,
+  });
+
+  const candidate = createEmptyProfile();
+  Object.assign(candidate.identity, { firstName: "Ada", lastName: "Lovelace", headline: "Old Headline", email: "ada@example.test", phone: "+1 555 0100" });
+  candidate.experience = [{ id: "exp", title: "Backend Engineer", company: "Example", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2024", endMonth: "", endYear: "", currentRole: true, description: "Built Java services." }];
+  candidate.skills = [skill("Java")];
+  candidate.projects = [project("Old Project", "Engineer", "Legacy project.")];
+
+  const runner: CommandRunner = async (executable, args, _timeout, cwd) => {
+    if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "cv-bytes");
+    if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "letter-bytes");
+    if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
+    if (executable === "pdftotext") return { code: 0, stdout: "Example 2024 ada@example.test +1 555 0100", stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+
+  try {
+    await generateJob({
+      db,
+      dataDir: dir,
+      jobId,
+      runId: "revise-run-1",
+      profile: JSON.stringify(candidate),
+      settings: defaultSettings,
+      allowDrafting: true,
+      runner,
+      execute: async () => { throw new Error("legacy path not used"); },
+      signal: new AbortController().signal,
+      strategist: async (input) => {
+        const ref = input.context.evidenceBank.items[0]!.ref;
+        return { positioning: "Java backend engineer.", targetRole: "Engineer", primarySellingPoints: [{ angle: "Java", evidenceRefs: [ref] }], requirements: [{ requirement: "Java", importance: "critical", candidateFit: "strong", evidenceRefs: [ref] }], narrativeGuidance: ["Lead with Java."], deEmphasize: [], genuineGaps: [], rankDisagreements: [] };
+      },
+      writer: async (input) => {
+        const ref = input.context.evidenceBank.items[0]!.ref;
+        return {
+          summary: { text: "Java engineer.", evidenceRefs: [ref] },
+          experiences: [{ experienceId: "exp", bullets: [{ text: "Built Java services.", evidenceRefs: [ref], transformation: "rewrite" }] }],
+          skillIds: ["java"],
+          projects: [{ projectId: "old-project" }],
+          coverLetter: { subject: "Engineer", paragraphs: [{ text: "Letter text.", evidenceRefs: [ref] }] },
+        };
+      },
+      auditor: async () => ({ issues: [] }),
+      critic: async () => ({ score: 8, issues: [], summary: "Ready." }),
+    });
+
+    const currentCvTex = await readFile(join(dir, "applications", jobId, "current", "cv.tex"), "utf8");
+
+    assert.match(currentCvTex, /Senior Java \\& Platform Engineer/);
+    assert.doesNotMatch(currentCvTex, /Old Headline/);
+    assert.match(currentCvTex, /Kubernetes/);
+    assert.match(currentCvTex, /Alibaba Cloud/);
+    assert.doesNotMatch(currentCvTex, /\\section\{Selected Projects\}/);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
