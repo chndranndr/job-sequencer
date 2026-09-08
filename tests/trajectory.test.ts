@@ -38,7 +38,7 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
   appendRunTrajectoryEvent(db, runId, { kind: "user", type: "user_prompt", payload: { text: "apiKey=sk-secret-value" } });
   appendRunTrajectoryEvent(db, runId, { kind: "assistant", type: "assistant_message", payload: { text: "private answer", usage: { totalTokens: 3 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "thinking", type: "assistant_thinking", payload: { text: "private reasoning" } });
-  appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_started", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 4, maxRunDurationMs: 1000 } } });
+  appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_started", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", intent: "apiKey=sk-secret-value", credentials: { apiKey: { value: "nested-secret" } }, repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 4, maxRunDurationMs: 1000 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_completed", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 0, counts: { discovered: 2, unique: 1 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 900 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_state_inspected", payload: { counts: { discovered: 2, unique: 1, enriched: 0 }, coverage: { "role:backend": "medium" }, coverageSufficient: false, marginalUtility: { status: "low", score: 0, recentSearches: 1, recentUniqueJobs: 1, recentPromisingJobs: 0, repeatedZeroYieldSearches: 0, recommendation: "Vary query." }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 800 }, termination: null } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_finished", payload: { reason: "No more useful results.", reasonCategory: "marginal_utility_low", unresolvedGoals: ["compensation"], counts: { discovered: 2, unique: 1, enriched: 0 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 700 } } });
@@ -56,7 +56,7 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
     assert.equal(body.events.find((event: { type: string }) => event.type === "user_prompt")?.payload, null);
     assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_message")?.payload, null);
     assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_thinking")?.payload, null);
-    assert.doesNotMatch(JSON.stringify(body), /sk-secret-value|private reasoning|private answer/);
+    assert.doesNotMatch(JSON.stringify(body), /sk-secret-value|nested-secret|private reasoning|private answer/);
     assert.equal((await app.inject({ url: "/api/runs/missing/trajectory" })).statusCode, 404);
     assert.equal((await app.inject({ url: "/api/runs?limit=1" })).json().runs.length, 1);
 

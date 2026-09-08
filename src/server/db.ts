@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { advancedStages, jobStages, type JobStage } from "./stages.js";
 import { assertStageTransition, defaultGenerationDirection, type FollowUpContext, type GenerationDirection, type InterviewMessage, type Job, type Rank, type Run, type RunStatus, type TaskEventPayload, type TrajectoryEvent, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
+import { redactTelemetryText } from "../trajectory.js";
 import type { ScrapeResult } from "./scrape.js";
 
 const schema = `PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
@@ -512,13 +513,17 @@ const trajectoryPayloadLimits = {
   error: 50_000,
 } as const;
 
+const trajectorySecretKey = /^(?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|access[_-]?token|bearer|auth)$/i;
+
 function serializeTrajectoryPayload(value: unknown, limit: number) {
   const seen = new WeakSet<object>();
   let serialized: string;
   try {
-    serialized = JSON.stringify(value, (_key, current: unknown) => {
+    serialized = JSON.stringify(value, (key, current: unknown) => {
+      if (trajectorySecretKey.test(key)) return "[redacted]";
       if (typeof current === "bigint") return `${current}n`;
-      if (current instanceof Error) return { name: current.name, message: current.message };
+      if (current instanceof Error) return { name: current.name, message: redactTelemetryText(current.message) };
+      if (typeof current === "string") return redactTelemetryText(current);
       if (current && typeof current === "object") {
         if (seen.has(current)) return "[Circular]";
         seen.add(current);
@@ -528,11 +533,6 @@ function serializeTrajectoryPayload(value: unknown, limit: number) {
   } catch {
     serialized = JSON.stringify({ unserializable: true });
   }
-  serialized = serialized
-    .replace(/(https?:\/\/)([^/\s:@]+)(?::[^/\s@]*)?@/gi, "$1[redacted]@")
-    .replace(/(authorization\s*[:=]\s*bearer\s+|bearer\s+)[^\s,}]+/gi, "$1[redacted]")
-    .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|access_token)=)[^&\s]*/gi, "$1[redacted]")
-    .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|bearer)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]");
   if (serialized.length <= limit) return serialized;
   return JSON.stringify({ truncated: true, preview: serialized.slice(0, limit), originalChars: serialized.length });
 }
