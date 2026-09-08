@@ -478,19 +478,32 @@ test("instruction-shaped cvEdits fail generation validation so Pi can repair", (
   }, profile, ["backend_java_spring"], []), /internal or generic phrase/);
 });
 
-test("revisionNotes directives apply headline, core skills, and project removal", () => {
+test("revision notes stay grounded while omitting projects structurally", () => {
   const profile = createEmptyProfile();
   profile.identity.firstName = "John";
   profile.identity.lastName = "Doe";
   profile.identity.headline = "Original Headline";
+  profile.experience = [{
+    id: "experience",
+    title: "Backend Engineer",
+    company: "Acme",
+    employmentType: "",
+    location: "",
+    startMonth: "",
+    startYear: "",
+    endMonth: "",
+    endYear: "",
+    currentRole: false,
+    description: "Built Java services.",
+  }];
   profile.skills = [skill("Java"), skill("Go")];
   profile.projects = [project("Old Project", "Engineer", "Legacy project.")];
 
-  const notes = `change headline to "Senior Java & Platform Engineer"\n\nchange core skills to "Java, Spring Boot, Linux, Kubernetes, Docker, Helm, Ansible, Jenkins, CI/CD, Grafana, Datadog, Kibana, Kafka, Redis, PostgreSQL, AWS, Alibaba Cloud, Python, VPC & Networking, Distributed Systems, Performance Optimization"\n\nremove selected project`;
+  const notes = `change headline to "Backend Engineer"\n\nchange core skills to "Java, Kubernetes, Alibaba Cloud"\n\nremove selected project`;
 
   const directives = parseRevisionDirectives(notes);
-  assert.equal(directives.headline, "Senior Java & Platform Engineer");
-  assert.match(directives.skills ?? "", /Spring Boot/);
+  assert.equal(directives.headline, "Backend Engineer");
+  assert.match(directives.skills ?? "", /Kubernetes/);
   assert.equal(directives.omitProjects, true);
 
   const document: CVDocument = {
@@ -502,15 +515,20 @@ test("revisionNotes directives apply headline, core skills, and project removal"
   };
 
   const renderedCv = renderCVDocument(profile, document, { revisionNotes: notes });
-  assert.match(renderedCv.HEADLINE_BLOCK, /Senior Java \\& Platform Engineer/);
+  assert.match(renderedCv.HEADLINE_BLOCK, /Backend Engineer/);
   assert.doesNotMatch(renderedCv.HEADLINE_BLOCK, /Original Headline/);
-  assert.match(renderedCv.SKILLS_SECTION, /Kubernetes/);
-  assert.match(renderedCv.SKILLS_SECTION, /Alibaba Cloud/);
+  assert.match(renderedCv.SKILLS_SECTION, /Java/);
+  assert.doesNotMatch(renderedCv.SKILLS_SECTION, /Kubernetes|Alibaba Cloud/);
   assert.equal(renderedCv.PROJECTS_SECTION, "");
 
+  const unsafeHeadline = renderCVDocument(profile, document, { revisionNotes: `change headline to "Principal Cloud Architect"` });
+  assert.match(unsafeHeadline.HEADLINE_BLOCK, /Original Headline/);
+  assert.doesNotMatch(unsafeHeadline.HEADLINE_BLOCK, /Principal Cloud Architect/);
+
   const renderedProfile = renderStructuredProfile(profile, "Java", ["Java"], [], "complete", { revisionNotes: notes });
-  assert.match(renderedProfile.HEADLINE_BLOCK, /Senior Java \\& Platform Engineer/);
-  assert.match(renderedProfile.SKILLS_SECTION, /Kubernetes/);
+  assert.match(renderedProfile.HEADLINE_BLOCK, /Backend Engineer/);
+  assert.match(renderedProfile.SKILLS_SECTION, /Java/);
+  assert.doesNotMatch(renderedProfile.SKILLS_SECTION, /Kubernetes|Alibaba Cloud/);
   assert.equal(renderedProfile.PROJECTS_SECTION, "");
 });
 
@@ -520,7 +538,7 @@ test("generateJob applies revisionNotes to current/cv.tex on revise", async () =
   const jobId = randomUUID();
   const now = "2026-09-08T00:00:00.000Z";
 
-  const notes = `change headline to "Senior Java & Platform Engineer"\n\nchange core skills to "Java, Spring Boot, Linux, Kubernetes, Docker, Helm, Ansible, Jenkins, CI/CD, Grafana, Datadog, Kibana, Kafka, Redis, PostgreSQL, AWS, Alibaba Cloud, Python, VPC & Networking, Distributed Systems, Performance Optimization"\n\nremove selected project`;
+  const notes = `change headline to "Backend Engineer"\n\nchange core skills to "Java, Kubernetes, Alibaba Cloud"\n\nremove selected project`;
 
   db.prepare(`
     INSERT INTO jobs(id, source_id, source, url, company, role, posting, score, rank_json, stage, first_seen_at, updated_at)
@@ -579,10 +597,10 @@ test("generateJob applies revisionNotes to current/cv.tex on revise", async () =
 
     const currentCvTex = await readFile(join(dir, "applications", jobId, "current", "cv.tex"), "utf8");
 
-    assert.match(currentCvTex, /Senior Java \\& Platform Engineer/);
+    assert.match(currentCvTex, /Backend Engineer/);
     assert.doesNotMatch(currentCvTex, /Old Headline/);
-    assert.match(currentCvTex, /Kubernetes/);
-    assert.match(currentCvTex, /Alibaba Cloud/);
+    assert.match(currentCvTex, /Java/);
+    assert.doesNotMatch(currentCvTex, /Kubernetes|Alibaba Cloud/);
     assert.doesNotMatch(currentCvTex, /\\section\{Selected Projects\}/);
   } finally {
     db.close();
