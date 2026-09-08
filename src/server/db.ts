@@ -13,7 +13,11 @@ CREATE TABLE IF NOT EXISTS applications (job_id TEXT PRIMARY KEY REFERENCES jobs
 CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, workflow TEXT NOT NULL CHECK(workflow IN ('scrape','generate','interview','follow_up','manual_import','profile_import','test')), job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','cancelled','timed_out')), provider TEXT NOT NULL, model TEXT NOT NULL, summary_json TEXT, error TEXT, started_at TEXT NOT NULL, finished_at TEXT, idempotency_key TEXT);
 CREATE TABLE IF NOT EXISTS run_trajectory_events (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, kind TEXT NOT NULL, event_type TEXT NOT NULL, timestamp TEXT NOT NULL, started_at TEXT, ended_at TEXT, duration_ms REAL, payload_json TEXT, PRIMARY KEY(run_id, sequence));
 CREATE INDEX IF NOT EXISTS run_trajectory_events_run_idx ON run_trajectory_events(run_id, sequence);
-CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);`;
+CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS search_attempts (id TEXT PRIMARY KEY, run_id TEXT, source TEXT NOT NULL, query TEXT NOT NULL, location TEXT NOT NULL DEFAULT '', intent TEXT, status TEXT NOT NULL CHECK(status IN ('completed','failed','rejected')), result_count INTEGER NOT NULL DEFAULT 0, unique_result_count INTEGER NOT NULL DEFAULT 0, promising_result_count INTEGER NOT NULL DEFAULT 0, duplicate_count INTEGER NOT NULL DEFAULT 0, latency_ms REAL, error TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS search_attempts_run_idx ON search_attempts(run_id);
+CREATE INDEX IF NOT EXISTS search_attempts_source_query_idx ON search_attempts(source, query);
+CREATE INDEX IF NOT EXISTS search_attempts_created_at_idx ON search_attempts(created_at);`;
 
 function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -78,6 +82,14 @@ export function openDatabase(path: string): DatabaseSync {
     migrateRunsWorkflow(db);
     db.prepare("INSERT INTO migrations(version,applied_at) VALUES(6,?)").run(new Date().toISOString());
   }
+  if (!(db.prepare("SELECT 1 FROM migrations WHERE version=7").get())) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS search_attempts (id TEXT PRIMARY KEY, run_id TEXT, source TEXT NOT NULL, query TEXT NOT NULL, location TEXT NOT NULL DEFAULT '', intent TEXT, status TEXT NOT NULL CHECK(status IN ('completed','failed','rejected')), result_count INTEGER NOT NULL DEFAULT 0, unique_result_count INTEGER NOT NULL DEFAULT 0, promising_result_count INTEGER NOT NULL DEFAULT 0, duplicate_count INTEGER NOT NULL DEFAULT 0, latency_ms REAL, error TEXT, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS search_attempts_source_query_idx ON search_attempts(source, query);
+      CREATE INDEX IF NOT EXISTS search_attempts_created_at_idx ON search_attempts(created_at);
+    `);
+    db.prepare("INSERT INTO migrations(version,applied_at) VALUES(7,?)").run(new Date().toISOString());
+  }
   ensureColumn(db, "runs", "error_code", "TEXT");
   ensureColumn(db, "runs", "attempt_count", "INTEGER");
   ensureColumn(db, "runs", "input_tokens", "INTEGER");
@@ -112,6 +124,68 @@ export type RunUsage = {
   totalTokens: number | null;
   estimatedCost: number | null;
 };
+
+export type PersistedSearchAttempt = {
+  id: string;
+  runId?: string | null;
+  source: string;
+  query: string;
+  location?: string | null;
+  intent?: string | null;
+  status: "completed" | "failed" | "rejected";
+  resultCount?: number;
+  uniqueResultCount?: number;
+  promisingResultCount?: number;
+  duplicateCount?: number;
+  latencyMs?: number | null;
+  error?: string | null;
+  createdAt: string;
+};
+
+export function insertSearchAttempt(db: DatabaseSync, value: PersistedSearchAttempt) {
+  db.prepare(`
+    INSERT INTO search_attempts(
+      id, run_id, source, query, location, intent, status,
+      result_count, unique_result_count, promising_result_count, duplicate_count,
+      latency_ms, error, created_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    value.id,
+    value.runId ?? null,
+    value.source,
+    value.query,
+    value.location ?? "",
+    value.intent ?? null,
+    value.status,
+    value.resultCount ?? 0,
+    value.uniqueResultCount ?? 0,
+    value.promisingResultCount ?? 0,
+    value.duplicateCount ?? 0,
+    value.latencyMs ?? null,
+    value.error ?? null,
+    value.createdAt,
+  );
+}
+
+export function listSearchAttempts(db: DatabaseSync, limit = 100): PersistedSearchAttempt[] {
+  const rows = db.prepare("SELECT * FROM search_attempts ORDER BY created_at DESC LIMIT ?").all(limit) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: String(row.id),
+    runId: row.run_id ? String(row.run_id) : null,
+    source: String(row.source),
+    query: String(row.query),
+    location: String(row.location ?? ""),
+    intent: row.intent ? String(row.intent) : null,
+    status: row.status as PersistedSearchAttempt["status"],
+    resultCount: Number(row.result_count ?? 0),
+    uniqueResultCount: Number(row.unique_result_count ?? 0),
+    promisingResultCount: Number(row.promising_result_count ?? 0),
+    duplicateCount: Number(row.duplicate_count ?? 0),
+    latencyMs: row.latency_ms !== null && row.latency_ms !== undefined ? Number(row.latency_ms) : null,
+    error: row.error ? String(row.error) : null,
+    createdAt: String(row.created_at),
+  }));
+}
 
 export type NewRun = {
   id: string;

@@ -56,6 +56,7 @@ export type SearchTerminationReasonCategory =
 
 export type SearchAttempt = {
   id: string;
+  runId?: string;
   operation: "search" | "detail";
   status: "started" | "completed" | "failed" | "rejected";
   source: JobSource;
@@ -132,6 +133,7 @@ export type SearchStateOptions = {
   now?: () => number;
   runId?: string;
   trajectory?: TrajectoryRecorder;
+  onSearchAttempt?: (attempt: SearchAttempt) => void;
 };
 
 export type SearchReservation = {
@@ -140,6 +142,7 @@ export type SearchReservation = {
   query: string;
   location: string;
   limit: number;
+  intent?: string;
   attemptIndex: number;
 };
 
@@ -311,7 +314,7 @@ export class AgentSearchState {
   private terminationValue: SearchTermination | null = null;
   private readonly runId?: string;
   private readonly trajectory?: TrajectoryRecorder;
-
+  private readonly onSearchAttempt?: (attempt: SearchAttempt) => void;
   constructor(config: { goal: SearchGoal; budget?: Partial<SearchBudget> | SearchBudget } & SearchStateOptions);
   constructor(goal: SearchGoal, budget?: Partial<SearchBudget> | SearchBudget, options?: SearchStateOptions);
   constructor(
@@ -326,6 +329,7 @@ export class AgentSearchState {
     this.startedAtMs = this.now();
     this.runId = config.runId;
     this.trajectory = config.trajectory;
+    this.onSearchAttempt = config.onSearchAttempt;
     for (const source of this.goal.enabledSources) this.sourceStatsByKey.set(source, { calls: 0, searchCalls: 0, detailCalls: 0, discoveredCount: 0, rawHits: 0, uniqueCount: 0, uniqueJobs: 0, duplicateCount: 0, duplicateRate: 0, promisingJobs: 0, enrichedCount: 0, errors: 0 });
   }
 
@@ -396,9 +400,10 @@ export class AgentSearchState {
 
   private rejectBudget(operation: "search" | "detail", source: JobSource, reason: SearchBudgetExceededError["reason"], metadata: Partial<SearchAttempt>): never {
     const startedAt = isoTime(this.now());
-    this.attemptList.push({ id: this.attemptId(operation), operation, status: "rejected", source, startedAt, endedAt: startedAt, latencyMs: 0, ...metadata });
+    const attempt: SearchAttempt = { id: this.attemptId(operation), runId: this.runId, operation, status: "rejected", source, startedAt, endedAt: startedAt, latencyMs: 0, ...metadata };
+    this.attemptList.push(attempt);
+    if (operation === "search") this.onSearchAttempt?.(copyAttempt(attempt));
     this.record("search_budget_rejected", {
-      operation,
       source,
       reason,
       remaining: this.remainingBudgets(),
@@ -435,18 +440,19 @@ export class AgentSearchState {
     throw new SearchBudgetExceededError(operation, "maxRunDurationMs");
   }
 
-  reserveSearch(input: { source?: unknown; query: string; location: string; limit: number }): SearchReservation {
+  reserveSearch(input: { source?: unknown; query: string; location: string; limit: number; intent?: string }): SearchReservation {
     const source = this.resolveSource(input.source, "search");
     const query = text(input.query, 200);
     const location = text(input.location, 120);
-    this.open("search", source, { query, location, requestedLimit: input.limit });
+    const intent = input.intent ? text(input.intent, 200) : undefined;
+    this.open("search", source, { query, location, intent, requestedLimit: input.limit });
     const remaining = this.remainingBudgets();
-    const metadata = { query, location, requestedLimit: input.limit };
+    const metadata = { query, location, intent, requestedLimit: input.limit };
     if (remaining.maxSearchCalls <= 0) this.rejectBudget("search", source, "maxSearchCalls", metadata);
     if (remaining.maxRunDurationMs <= 0) this.rejectBudget("search", source, "maxRunDurationMs", metadata);
     if (remaining.maxTotalResults <= 0) this.rejectBudget("search", source, "maxTotalResults", metadata);
     const startedAt = isoTime(this.now());
-    const attempt: SearchAttempt = { id: this.attemptId("search"), operation: "search", status: "started", source, query, location, requestedLimit: Math.min(input.limit, remaining.maxTotalResults), repeatCount: this.repeatCount(source, query, location), startedAt };
+    const attempt: SearchAttempt = { id: this.attemptId("search"), runId: this.runId, operation: "search", status: "started", source, query, location, intent, requestedLimit: Math.min(input.limit, remaining.maxTotalResults), repeatCount: this.repeatCount(source, query, location), startedAt };
     const attemptIndex = this.attemptList.push(attempt) - 1;
     const token = this.nextToken++;
     this.pending.set(token, attempt);
@@ -455,7 +461,7 @@ export class AgentSearchState {
     stats.calls += 1;
     stats.searchCalls += 1;
     this.record("search_started", { source, searchCall: this.searchCallCount, requestedLimit: attempt.requestedLimit, remaining: this.remainingBudgets() });
-    return { token, source, query, location, limit: attempt.requestedLimit!, attemptIndex };
+    return { token, source, query, location, limit: attempt.requestedLimit!, intent, attemptIndex };
   }
 
   completeSearch(reservation: SearchReservation, hits: SearchHit[]) {
@@ -493,6 +499,7 @@ export class AgentSearchState {
     attempt.latencyMs = this.latency(attempt);
     attempt.endedAt = endedAt;
     const stats = this.sourceStatsByKey.get(reservation.source)!;
+    this.onSearchAttempt?.(copyAttempt(attempt));
     stats.discoveredCount += hits.length;
     stats.rawHits += hits.length;
     stats.uniqueCount += added.length;
@@ -516,8 +523,8 @@ export class AgentSearchState {
     this.errors.push(`${reservation.source}: ${message}`);
     this.sourceStatsByKey.get(reservation.source)!.errors += 1;
     this.record("search_failed", { source: reservation.source, error: message }, "error");
+    this.onSearchAttempt?.(copyAttempt(attempt));
   }
-
   private hitFor(source: JobSource, resultId: string) {
     const directKey = searchProvenanceKey(source, resultId);
     if (this.provenance.has(directKey)) return this.discoveredHits.find((hit) => searchProvenanceKey(hit.source, hit.sourceId) === directKey);

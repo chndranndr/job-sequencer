@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { createScrapeTools } from "../scrape.js";
 import { defaultCriteria } from "../config.js";
 import type { CustomJobSource, JobSource, SearchBudget, SearchGoal, SearchHit, TrajectoryRecorder } from "../../shared.js";
-import { AgentSearchState, resolveSearchBudget, type DetailReservation } from "./state.js";
+import { AgentSearchState, resolveSearchBudget, type DetailReservation, type SearchAttempt } from "./state.js";
 
 type SourceTools = ReturnType<typeof createScrapeTools>;
 export type AgentSearchSourceTools = ReadonlyMap<JobSource, SourceTools> | Readonly<Record<string, SourceTools>>;
@@ -24,6 +24,7 @@ export type AgentSearchToolsOptions = {
   runId?: string;
   trajectory?: TrajectoryRecorder;
   createSourceTools?: (options: Parameters<typeof createScrapeTools>[0]) => SourceTools;
+  onSearchAttempt?: (attempt: SearchAttempt) => void;
 };
 
 export type AgentSearchToolOptions = {
@@ -50,6 +51,7 @@ const SearchParameters = Type.Object({
   query: Type.String({ minLength: 1, maxLength: 200 }),
   location: Type.Optional(Type.String({ maxLength: 120 })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 5 })),
+  intent: Type.Optional(Type.String({ maxLength: 200 })),
 });
 const DetailParameters = Type.Object({ source: sourceParameter, resultId: Type.String({ minLength: 1, maxLength: 200 }) });
 const InspectParameters = Type.Object({});
@@ -71,6 +73,7 @@ const SearchInputSchema = z.object({
   query: z.string().trim().min(1).max(200),
   location: z.string().trim().max(120).default(""),
   limit: z.number().int().min(1).max(5).default(5),
+  intent: z.string().trim().max(200).optional(),
 }).strict();
 const DetailInputSchema = z.object({
   source: z.string().trim().min(2).max(40).optional(),
@@ -170,6 +173,7 @@ function toolsFromOptions(options: AgentSearchToolsOptions) {
     budget: resolveSearchBudget(options.budget ?? {}, options.maxJobs ?? goal.criteria.maxJobsPerRun),
     runId: options.runId,
     trajectory: options.trajectory,
+    onSearchAttempt: options.onSearchAttempt,
   });
   const makeSourceTools = options.createSourceTools ?? createScrapeTools;
   const sourceTools = new Map<JobSource, SourceTools>();
