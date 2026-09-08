@@ -513,7 +513,7 @@ const trajectoryPayloadLimits = {
   error: 50_000,
 } as const;
 
-const trajectorySecretKey = /^(?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|access[_-]?token|bearer|auth)$/i;
+const trajectorySecretKey = /^(?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|access[_-]?token|bearer|auth|client[_-]?secret|refresh[_-]?token)$/i;
 
 function serializeTrajectoryPayload(value: unknown, limit: number) {
   const seen = new WeakSet<object>();
