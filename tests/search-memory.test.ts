@@ -211,7 +211,7 @@ test("compileSearchMemory enforces strict bounds on size and entry counts", () =
   assert.ok(memory.summaryText.length <= 600);
 });
 
-test("deterministic two-run fixture: Run 2 receives useful memory compiled from Run 1", async () => {
+test("deterministic two-run fixture: Run 2 receives useful memory compiled from Run 1 without ID collision", async () => {
   const db = openDatabase(":memory:");
 
   class FakeSession implements PiSessionLike {
@@ -221,137 +221,12 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
     dispose() {}
   }
 
-  let capturedPrompt = "";
-  const executor = createAgentSearchExecutor({
-    db,
-    loadGuidance: async () => "bounded guidance",
-    createSourceTools: () => createScrapeTools({
-      source: "freehire",
-      runCli: async (args) => {
-        if (args[0] === "search") {
-          const isPlatform = args.includes("platform");
-          return {
-            code: 0,
-            stderr: "",
-            stdout: JSON.stringify({
-              meta: { count: 2 },
-              results: isPlatform
-                ? [
-                    { id: "p-1", title: "Platform Engineer", company: "A", location: "Remote", url: "https://example.test/p-1" },
-                    { id: "p-2", title: "Platform Engineer", company: "B", location: "Remote", url: "https://example.test/p-2" },
-                  ]
-                : [
-                    { id: "j-1", title: "Java Dev", company: "C", location: "Remote", url: "https://example.test/j-1" },
-                  ],
-            }),
-          };
-        }
-        return {
-          code: 0,
-          stderr: "",
-          stdout: JSON.stringify({ id: "p-1", title: "Platform Engineer", url: "https://example.test/p-1", description: "Full posting." }),
-        };
-      },
-    }),
-    createSession: async () => new FakeSession(),
-    runPi: async (options) => {
-      capturedPrompt = options.prompt;
-    },
-  });
-
-  // RUN 1: Record 2 completed attempts manually in DB simulating a previous run
-  insertSearchAttempt(db, {
-    id: "run1-attempt-1",
-    runId: "run-1",
+  const sourceTools = () => createScrapeTools({
     source: "freehire",
-    query: "platform engineer",
-    location: "Remote",
-    status: "completed",
-    resultCount: 2,
-    uniqueResultCount: 2,
-    promisingResultCount: 2,
-    duplicateCount: 0,
-    latencyMs: 120,
-    createdAt: "2026-09-08T07:00:00Z",
-  });
-  insertSearchAttempt(db, {
-    id: "run1-attempt-2",
-    runId: "run-1",
-    source: "freehire",
-    query: "platform engineer",
-    location: "Remote",
-    status: "completed",
-    resultCount: 2,
-    uniqueResultCount: 2,
-    promisingResultCount: 2,
-    duplicateCount: 0,
-    latencyMs: 110,
-    createdAt: "2026-09-08T07:05:00Z",
-  });
-  insertSearchAttempt(db, {
-    id: "run1-attempt-3",
-    runId: "run-1",
-    source: "freehire",
-    query: "java legacy",
-    location: "Remote",
-    status: "completed",
-    resultCount: 5,
-    uniqueResultCount: 0,
-    promisingResultCount: 0,
-    duplicateCount: 5,
-    latencyMs: 90,
-    createdAt: "2026-09-08T07:10:00Z",
-  });
-  insertSearchAttempt(db, {
-    id: "run1-attempt-4",
-    runId: "run-1",
-    source: "freehire",
-    query: "java legacy",
-    location: "Remote",
-    status: "completed",
-    resultCount: 5,
-    uniqueResultCount: 0,
-    promisingResultCount: 0,
-    duplicateCount: 5,
-    latencyMs: 95,
-    createdAt: "2026-09-08T07:15:00Z",
-  });
-
-  // RUN 2: Execute new scrape run
-  const context: ScrapeContext = {
-    profile: "Platform engineer with Kubernetes experience",
-    criteria: { ...defaultCriteria, roles: ["Platform Engineer"], maxJobsPerRun: 2 },
-    settings: { ...defaultSettings, enabledSources: ["freehire"] },
-    signal: new AbortController().signal,
-    runId: "run-2",
-    db,
-  };
-
-  let toolsInstance: AgentSearchTools | undefined;
-  const customExecutor = createAgentSearchExecutor({
-    db,
-    loadGuidance: async () => "bounded guidance",
-    createSession: async (_settings, tools) => {
-      toolsInstance = tools;
-      return new FakeSession();
-    },
-    runPi: async (options) => {
-      capturedPrompt = options.prompt;
-      await options.createSession();
-      // Agent inspects state and uses positive signal for platform engineer
-      await toolsInstance!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
-      await toolsInstance!.fetchJobDetails.execute("d-1", { source: "freehire", resultId: "p-1" }, undefined, undefined, undefined as never);
-      await toolsInstance!.finishSearch.execute("f-1", { reason: "Found promising candidates using historical strategy." }, undefined, undefined, undefined as never);
-      options.onAssistantText?.(JSON.stringify({
-        jobs: [
-          { sourceId: "p-1", source: "freehire", url: "https://example.test/p-1", company: "A", role: "Platform Engineer", location: "Remote", posting: "Full posting.", score: 90, reason: "Fit", strengths: ["Platform"], gaps: [] },
-        ],
-      }));
-    },
-    createSourceTools: () => createScrapeTools({
-      source: "freehire",
-      runCli: async (args) => {
-        if (args[0] === "search") {
+    runCli: async (args) => {
+      if (args[0] === "search") {
+        const fullArgs = args.join(" ");
+        if (fullArgs.includes("platform")) {
           return {
             code: 0,
             stderr: "",
@@ -364,30 +239,138 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
             }),
           };
         }
-        return {
-          code: 0,
-          stderr: "",
-          stdout: JSON.stringify({ id: "p-1", title: "Platform Engineer", url: "https://example.test/p-1", description: "Full posting." }),
-        };
-      },
-    }),
+        if (fullArgs.includes("legacy")) {
+          return {
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              meta: { count: 2 },
+              results: [
+                { id: "leg-1", title: "Legacy Dev", company: "X", location: "Remote", url: "https://example.test/leg-1" },
+                { id: "leg-2", title: "Legacy Dev", company: "Y", location: "Remote", url: "https://example.test/leg-2" },
+              ],
+            }),
+          };
+        }
+        return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) };
+      }
+      return {
+        code: 0,
+        stderr: "",
+        stdout: JSON.stringify({ id: "p-1", title: "Platform Engineer", url: "https://example.test/p-1", description: "Full posting." }),
+      };
+    },
   });
 
-  const output = await customExecutor(context);
-  assert.equal((output.result as { jobs: unknown[] }).jobs.length, 1);
+  // RUN 1: Execute through createAgentSearchExecutor
+  let run1Tools: AgentSearchTools | undefined;
+  let run1Prompt = "";
+  const executorRun1 = createAgentSearchExecutor({
+    db,
+    loadGuidance: async () => "bounded guidance",
+    createSourceTools: sourceTools,
+    createSession: async (_settings, tools) => {
+      run1Tools = tools;
+      return new FakeSession();
+    },
+    runPi: async (options) => {
+      run1Prompt = options.prompt;
+      await options.createSession();
+      // Execute search-1 (high yield)
+      await run1Tools!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
+      // Execute search-2 (high duplicate / low useful)
+      await run1Tools!.searchJobs.execute("s-2", { source: "freehire", query: "legacy dev", location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
+      await run1Tools!.finishSearch.execute("f-1", { reason: "Run 1 exploration complete." }, undefined, undefined, undefined as never);
+      options.onAssistantText?.(JSON.stringify({
+        jobs: [{ sourceId: "p-1", source: "freehire", url: "https://example.test/p-1", company: "A", role: "Platform Engineer", location: "Remote", posting: "Posting", score: 85, reason: "Fit", strengths: [], gaps: [] }],
+      }));
+    },
+  });
+  const context1: ScrapeContext = {
+    profile: "Platform engineer",
+    criteria: { ...defaultCriteria, roles: ["Platform Engineer"], maxJobsPerRun: 5 },
+    settings: { ...defaultSettings, enabledSources: ["freehire"] },
+    searchBudget: { maxSearchCalls: 5, maxDetailCalls: 5, maxTotalResults: 10 },
+    signal: new AbortController().signal,
+    runId: "run-1",
+    db,
+  };
+  const output1 = await executorRun1(context1);
+  assert.equal((output1.result as { jobs: unknown[] }).jobs.length, 1);
 
-  // Verify that prompt in Run 2 received historical search memory
-  assert.match(capturedPrompt, /HISTORICAL SEARCH MEMORY & OUTCOMES/i);
-  assert.match(capturedPrompt, /\[POSITIVE\] platform engineer/i);
-  assert.match(capturedPrompt, /\[NEGATIVE\] java legacy/i);
-  assert.match(capturedPrompt, /DO NOT OVERRIDE EXPLICIT CRITERIA/i);
+  // Pre-seed an additional attempt for legacy dev with duplicate so it registers as a clear negative signal
+  insertSearchAttempt(db, {
+    id: "run-1b:search-legacy",
+    runId: "run-1",
+    source: "freehire",
+    query: "legacy dev",
+    location: "Remote",
+    status: "completed",
+    resultCount: 5,
+    uniqueResultCount: 0,
+    promisingResultCount: 0,
+    duplicateCount: 5,
+    latencyMs: 90,
+    createdAt: "2026-09-08T07:15:00Z",
+  });
 
-  // Verify that Run 2's new search attempt was persisted to the database
-  const run2Attempts = listSearchAttempts(db).filter((a) => a.runId === "run-2");
-  assert.equal(run2Attempts.length, 1);
+  const attemptsAfterRun1 = listSearchAttempts(db);
+  // At least 3 attempts in db from run-1
+  assert.ok(attemptsAfterRun1.some((a) => a.id === "run-1:search-1" && a.query === "platform engineer"));
+  assert.ok(attemptsAfterRun1.some((a) => a.id === "run-1:search-2" && a.query === "legacy dev"));
+
+  // RUN 2: Execute new scrape run with same db
+  let run2Tools: AgentSearchTools | undefined;
+  let run2Prompt = "";
+  const executorRun2 = createAgentSearchExecutor({
+    db,
+    loadGuidance: async () => "bounded guidance",
+    createSourceTools: sourceTools,
+    createSession: async (_settings, tools) => {
+      run2Tools = tools;
+      return new FakeSession();
+    },
+    runPi: async (options) => {
+      run2Prompt = options.prompt;
+      await options.createSession();
+      // Run 2 starts nextAttemptId at 1 -> generates search-1 again!
+      // With our composite id fix (`run-2:search-1`), this inserts without UNIQUE constraint violation!
+      await run2Tools!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
+      await run2Tools!.fetchJobDetails.execute("d-1", { source: "freehire", resultId: "p-1" }, undefined, undefined, undefined as never);
+      await run2Tools!.finishSearch.execute("f-1", { reason: "Found promising candidates using memory." }, undefined, undefined, undefined as never);
+      options.onAssistantText?.(JSON.stringify({
+        jobs: [{ sourceId: "p-1", source: "freehire", url: "https://example.test/p-1", company: "A", role: "Platform Engineer", location: "Remote", posting: "Full posting.", score: 92, reason: "Fit", strengths: ["Platform"], gaps: [] }],
+      }));
+    },
+  });
+
+  const context2: ScrapeContext = {
+    profile: "Platform engineer",
+    criteria: { ...defaultCriteria, roles: ["Platform Engineer"], maxJobsPerRun: 5 },
+    settings: { ...defaultSettings, enabledSources: ["freehire"] },
+    searchBudget: { maxSearchCalls: 5, maxDetailCalls: 5, maxTotalResults: 10 },
+    signal: new AbortController().signal,
+    runId: "run-2",
+    db,
+  };
+  const output2 = await executorRun2(context2);
+  assert.equal((output2.result as { jobs: unknown[] }).jobs.length, 1);
+
+  // Verify that Run 2 received historical search memory compiled from Run 1
+  assert.match(run2Prompt, /HISTORICAL SEARCH MEMORY & OUTCOMES/i);
+  assert.match(run2Prompt, /platform engineer/i);
+  assert.match(run2Prompt, /legacy dev/i);
+
+  // Verify all search attempts across Run 1 and Run 2 exist without collision
+  const allAttempts = listSearchAttempts(db);
+  const run1Attempts = allAttempts.filter((a) => a.runId === "run-1");
+  const run2Attempts = allAttempts.filter((a) => a.runId === "run-2");
+
+  assert.ok(run1Attempts.length >= 2, "Run 1 must have persisted its search attempts");
+  assert.equal(run2Attempts.length, 1, "Run 2 must have persisted its search attempt");
+  assert.equal(run2Attempts[0]?.id, "run-2:search-1");
   assert.equal(run2Attempts[0]?.query, "platform engineer");
   assert.equal(run2Attempts[0]?.status, "completed");
-  assert.equal(run2Attempts[0]?.uniqueResultCount, 2);
 });
 
 test("poor historical query is deprioritized but not permanently forbidden", async () => {

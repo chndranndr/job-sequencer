@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import { classifyPiError, PiRunCancelledError, PiRunTimeoutError, type PiRunUsage } from "./pi.js";
 import { createTaskReporter, insertSearchAttempt, persistScrape } from "./db.js";
 import { hydrateScrapeResult, sanitizeFallbackQueries, ScrapeResultSchema, validateScrapeResult, type ScrapeResult } from "./scrape.js";
@@ -158,7 +159,7 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
         onSearchAttempt: db ? (attempt) => {
           try {
             insertSearchAttempt(db, {
-              id: attempt.id,
+              id: `${context.runId ?? randomUUID()}:${attempt.id}`,
               runId: context.runId ?? null,
               source: attempt.source,
               query: attempt.query ?? "",
@@ -173,7 +174,9 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
               error: attempt.error ?? null,
               createdAt: attempt.endedAt ?? attempt.startedAt ?? new Date().toISOString(),
             });
-          } catch {}
+          } catch (error) {
+            throw new Error(`Failed to persist search attempt: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+          }
         } : undefined,
       });
     } catch (error) {

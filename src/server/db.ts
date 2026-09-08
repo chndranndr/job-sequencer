@@ -143,6 +143,7 @@ export type PersistedSearchAttempt = {
 };
 
 export function insertSearchAttempt(db: DatabaseSync, value: PersistedSearchAttempt) {
+  const id = value.id || randomUUID();
   db.prepare(`
     INSERT INTO search_attempts(
       id, run_id, source, query, location, intent, status,
@@ -150,7 +151,7 @@ export function insertSearchAttempt(db: DatabaseSync, value: PersistedSearchAtte
       latency_ms, error, created_at
     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
-    value.id,
+    id,
     value.runId ?? null,
     value.source,
     value.query,
