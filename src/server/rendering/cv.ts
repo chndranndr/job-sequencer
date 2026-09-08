@@ -26,11 +26,93 @@ function cvBullets(items: string[]) {
   return items.length ? `\\begin{itemize}[leftmargin=*,labelindent=0pt,labelsep=0.4em,itemindent=0pt,itemsep=0pt,topsep=1pt,parsep=0pt,partopsep=0pt]\n${items.map(item => `\\item ${latex(item)}`).join("\n")}\n\\end{itemize}` : "";
 }
 
-function headerCommands(profile: StructuredProfile) {
+export type CVRenderOptions = {
+  headline?: string;
+  skills?: string;
+  omitProjects?: boolean;
+  revisionNotes?: string;
+};
+
+export function parseRevisionDirectives(notes?: string): CVRenderOptions {
+  if (!notes || !notes.trim()) return {};
+  const result: CVRenderOptions = {};
+
+  const headlineMatch = notes.match(/(?:change|set)?\s*headline\s*(?:to|:)\s*["“']?([^"”'\n\r]+)["”']?/i);
+  if (headlineMatch?.[1]?.trim()) {
+    result.headline = headlineMatch[1].trim();
+  }
+
+  const skillsMatch = notes.match(/(?:change|set)?\s*(?:core\s+)?skills\s*(?:to|:)\s*["“']?([^"”'\n\r]+)["”']?/i);
+  if (skillsMatch?.[1]?.trim()) {
+    result.skills = skillsMatch[1].trim();
+  }
+
+  if (/(?:remove|omit|delete|hide|drop|no)\s+(?:selected\s+)?projects?/i.test(notes)) {
+    result.omitProjects = true;
+  }
+
+  return result;
+}
+function normalizeDirectiveText(value: string) {
+  const normalized = normalizeProse(value);
+  return normalized.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function canonicalProfileValues(profile: StructuredProfile) {
+  const values: string[] = [];
+  const visit = (value: unknown): void => {
+    if (typeof value === "string") values.push(value);
+    else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object") Object.values(value).forEach(visit);
+  };
+  visit(profile);
+  return values;
+}
+
+function normalizeSkillName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+export type ResolvedCVRenderOptions = {
+  headline: string;
+  skills?: string[];
+  omitProjects: boolean;
+};
+
+export function resolveRevisionDirectives(profile: StructuredProfile, options: CVRenderOptions = {}): ResolvedCVRenderOptions {
+  const parsed = parseRevisionDirectives(options.revisionNotes);
+  const requestedHeadline = options.headline !== undefined ? options.headline : parsed.headline;
+  const requestedSkills = options.skills !== undefined ? options.skills : parsed.skills;
+  const normalizedHeadline = requestedHeadline ? normalizeDirectiveText(requestedHeadline) : "";
+  const groundedHeadline = normalizedHeadline
+    ? canonicalProfileValues(profile).some(value => normalizeDirectiveText(value).includes(normalizedHeadline))
+    : false;
+  const headline = groundedHeadline ? requestedHeadline!.trim() : profile.identity.headline.trim();
+  let skills: string[] | undefined;
+  if (requestedSkills !== undefined) {
+    const resolved: string[] = [];
+    const seen = new Set<string>();
+    for (const request of requestedSkills.split(/[,;|]\s*/).map(value => value.trim()).filter(Boolean)) {
+      const id = request.toLowerCase();
+      const normalizedName = normalizeSkillName(request);
+      const entry = profile.skills.find(skill => skill.id.trim().toLowerCase() === id)
+        ?? profile.skills.find(skill => normalizeSkillName(skill.name) === normalizedName);
+      if (!entry || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const name = entry.name.trim();
+      if (name) resolved.push(name);
+    }
+    skills = resolved.length > 0 ? resolved : undefined;
+  }
+  return { headline, skills, omitProjects: options.omitProjects !== undefined ? options.omitProjects : Boolean(parsed.omitProjects) };
+}
+
+
+function headerCommands(profile: StructuredProfile, headlineOverride?: string) {
   const identity = profile.identity;
   const firstName = identity.firstName.trim();
   const lastName = identity.lastName.trim();
-  const headline = identity.headline.trim();
+  const headline = (headlineOverride ?? identity.headline).trim();
   const location = [identity.city, identity.country].filter(value => value.trim()).join(", ");
   const links = ([
     ["Website", identity.website],
@@ -99,7 +181,8 @@ function projectEntry(entry: ProjectEntry, bullets: string[]) {
   ].join("\n");
 }
 
-export function renderCVDocument(profile: StructuredProfile, document: CVDocument) {
+export function renderCVDocument(profile: StructuredProfile, document: CVDocument, options: CVRenderOptions = {}) {
+  const directives = resolveRevisionDirectives(profile, options);
   const experiences = new Map(profile.experience.map(entry => [entry.id, entry]));
   const skills = new Map(profile.skills.map(entry => [entry.id, entry]));
   const projects = new Map(profile.projects.map(entry => [entry.id, entry]));
@@ -108,15 +191,19 @@ export function renderCVDocument(profile: StructuredProfile, document: CVDocumen
     if (!entry) return "";
     return experienceEntry(entry, item.bullets.map(bullet => bullet.text), (item.technologiesUsed ?? []).map(technology => technology.name.trim()).filter(Boolean));
   }).filter(Boolean).join("\n");
-  const skillNames = document.skillIds.map(id => skills.get(id)?.name.trim() ?? "").filter(Boolean).map(name => latex(name)).join(", ");
-  const projectBody = document.projects.map(item => {
-    const entry = projects.get(item.projectId);
-    if (!entry) return "";
-    const bullets = item.bullets ? item.bullets.map(bullet => bullet.text) : splitDescriptionIntoBullets(entry.description);
-    return projectEntry(entry, bullets);
-  }).filter(Boolean).join("\n");
+  const skillNames = directives.skills !== undefined
+    ? directives.skills.map(name => latex(name)).join(", ")
+    : document.skillIds.map(id => skills.get(id)?.name.trim() ?? "").filter(Boolean).map(name => latex(name)).join(", ");
+  const projectBody = directives.omitProjects
+    ? ""
+    : document.projects.map(item => {
+        const entry = projects.get(item.projectId);
+        if (!entry) return "";
+        const bullets = item.bullets ? item.bullets.map(bullet => bullet.text) : splitDescriptionIntoBullets(entry.description);
+        return projectEntry(entry, bullets);
+      }).filter(Boolean).join("\n");
   return {
-    ...headerCommands(profile),
+    ...headerCommands(profile, directives.headline),
     SUMMARY_SECTION: cvSection("Professional Summary", latex(document.summary.text)),
     SKILLS_SECTION: cvSection("Core Skills", skillNames ? `\\cvitem{}{${skillNames}}` : ""),
     EXPERIENCE: experienceBody,
