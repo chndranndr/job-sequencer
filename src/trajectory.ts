@@ -470,7 +470,7 @@ function deriveAdaptations(attempts: readonly RunTrajectoryAttempt[]): RunTrajec
   const result: RunTrajectoryAdaptation[] = [];
   let previous: RunTrajectoryAttempt | null = null;
   for (const attempt of attempts) {
-    if (attempt.operation !== "search" || !["completed", "failed", "rejected"].includes(attempt.status)) continue;
+    if (attempt.operation !== "search" || !["completed", "failed"].includes(attempt.status)) continue;
     if (previous && (previous.source !== attempt.source || previous.query !== attempt.query || previous.location !== attempt.location)) {
       result.push({
         sequence: attempt.sequence,
@@ -487,21 +487,26 @@ function deriveAdaptations(attempts: readonly RunTrajectoryAttempt[]): RunTrajec
 }
 
 function terminalTermination(run: Pick<Run, "status" | "error">, events: readonly TrajectoryEvent[]): RunTrajectoryTermination | null {
+  if (run.status === "succeeded") {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      if (events[index]?.type === "run_completed") return { reason: "Run completed.", category: "agent_finished", unresolvedGoals: [], unresolvedGoalCount: null };
+    }
+    return { reason: "Run completed.", category: "agent_finished", unresolvedGoals: [], unresolvedGoalCount: null };
+  }
+  const terminalType = run.status === "cancelled" ? "run_cancelled" : run.status === "timed_out" ? "run_timed_out" : run.status === "failed" ? "run_failed" : null;
+  if (!terminalType) return null;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!;
-    if (!event.type.startsWith("run_")) continue;
+    if (event.type !== terminalType) continue;
     const payload = record(event.payload);
     const error = safeError(payload?.error) ?? safeError(run.error);
-    if (event.type === "run_cancelled") return { reason: error ?? "Run cancelled.", category: "cancelled", unresolvedGoals: [], unresolvedGoalCount: null };
-    if (event.type === "run_timed_out") return { reason: error ?? "Run timed out.", category: "timeout", unresolvedGoals: [], unresolvedGoalCount: null };
-    if (event.type === "run_failed") return { reason: error ?? "Run failed.", category: payloadText(payload, "errorCode", 80) ?? "failed", unresolvedGoals: [], unresolvedGoalCount: null };
-    if (event.type === "run_completed") return { reason: "Run completed.", category: "agent_finished", unresolvedGoals: [], unresolvedGoalCount: null };
+    if (run.status === "cancelled") return { reason: error ?? "Run cancelled.", category: "cancelled", unresolvedGoals: [], unresolvedGoalCount: null };
+    if (run.status === "timed_out") return { reason: error ?? "Run timed out.", category: "timeout", unresolvedGoals: [], unresolvedGoalCount: null };
+    return { reason: error ?? "Run failed.", category: payloadText(payload, "errorCode", 80) ?? "failed", unresolvedGoals: [], unresolvedGoalCount: null };
   }
   if (run.status === "cancelled") return { reason: safeError(run.error) ?? "Run cancelled.", category: "cancelled", unresolvedGoals: [], unresolvedGoalCount: null };
   if (run.status === "timed_out") return { reason: safeError(run.error) ?? "Run timed out.", category: "timeout", unresolvedGoals: [], unresolvedGoalCount: null };
-  if (run.status === "failed") return { reason: safeError(run.error) ?? "Run failed.", category: "failed", unresolvedGoals: [], unresolvedGoalCount: null };
-  if (run.status === "succeeded") return { reason: "Run completed.", category: "agent_finished", unresolvedGoals: [], unresolvedGoalCount: null };
-  return null;
+  return { reason: safeError(run.error) ?? "Run failed.", category: "failed", unresolvedGoals: [], unresolvedGoalCount: null };
 }
 
 export function deriveRunTrajectoryObservability(
@@ -520,6 +525,7 @@ export function deriveRunTrajectoryObservability(
   const policyEvents: RunTrajectoryPolicyEvent[] = [];
   let counts: RunTrajectoryCounts = { discovered: null, unique: null, enriched: null };
   let searchTermination: RunTrajectoryTermination | null = null;
+  let configuredBudget: RunTrajectoryBudget | null = null;
 
   const queueAttempt = (index: AttemptIndex, operationValue: AttemptOperation, source: string | null, identifier: string | null) => {
     const key = attemptKey(operationValue, source, identifier);
@@ -619,6 +625,8 @@ export function deriveRunTrajectoryObservability(
 
   for (const event of ordered) {
     const payload = record(event.payload);
+    const eventBudget = parseBudget(payload?.budget);
+    if (configuredBudget === null && eventBudget !== null) configuredBudget = eventBudget;
     const operationValue = operation(payload?.operation);
     if (event.type === "search_started") {
       const index = resolve("search", event, payload);
@@ -708,12 +716,16 @@ export function deriveRunTrajectoryObservability(
     totalTokens: run.total_tokens ?? usage.totalTokens,
     estimatedCost: run.estimated_cost ?? usage.estimatedCost,
   };
-  const termination = searchTermination ?? terminalTermination(run, ordered);
+  const runTermination = terminalTermination(run, ordered);
+  const termination = run.status === "succeeded"
+    ? searchTermination ?? runTermination
+    : runTermination ?? searchTermination;
   const sourceOutputMap: Record<string, RunTrajectorySourceStats> = {};
   for (const [source, value] of [...sources.entries()].slice(0, MAX_SOURCES)) sourceOutputMap[source] = sourceOutput(value);
   return {
     counts,
     resources,
+    configuredBudget,
     attempts,
     sourceStats: sourceOutputMap,
     states,

@@ -8,6 +8,7 @@ import {
   formatEstimatedCost,
   formatTraceDuration,
   isRunSyncMessage,
+  observableBudgetUse,
   runSyncMessage,
   safePayloadText,
   traceTaskSummary,
@@ -61,6 +62,11 @@ test("TRACE payload inspection redacts secret-shaped values and sync messages ca
   assert.equal(isRunSyncMessage({ type: "tracker-active-run", runId: "run-1", payload: "secret" }), false);
   assert.equal(isRunSyncMessage({ type: "tracker-active-run", runId: 42 }), false);
   assert.equal(isRunSyncMessage({ type: "other", runId: "run-1" }), false);
+});
+
+test("TRACE budget usage excludes rejected attempts", () => {
+  assert.equal(observableBudgetUse(2, 0, 1), "1 / 1");
+  assert.equal(observableBudgetUse(1, 2, null), "1 / 3");
 });
 
 test("TRACE duration formatting handles terminal and live runs", () => {

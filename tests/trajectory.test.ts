@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { buildServer } from "../src/server/app.js";
-import { appendRunTrajectoryEvent, createTaskReporter, createTrajectoryRecorder, listRunTrajectoryEvents, openDatabase } from "../src/server/db.js";
+import { appendRunTrajectoryEvent, createTaskReporter, createTrajectoryRecorder, finishRun, listRunTrajectoryEvents, openDatabase } from "../src/server/db.js";
 import { runBoundedPi, type PiSessionLike } from "../src/server/pi.js";
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createMultiSourceScrapeExecutor, RunManager } from "../src/server/runs.js";
@@ -42,6 +42,7 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_completed", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 0, counts: { discovered: 2, unique: 1 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 900 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_state_inspected", payload: { counts: { discovered: 2, unique: 1, enriched: 0 }, coverage: { "role:backend": "medium" }, coverageSufficient: false, marginalUtility: { status: "low", score: 0, recentSearches: 1, recentUniqueJobs: 1, recentPromisingJobs: 0, repeatedZeroYieldSearches: 0, recommendation: "Vary query." }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 800 }, termination: null } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_finished", payload: { reason: "No more useful results.", reasonCategory: "marginal_utility_low", unresolvedGoals: ["compensation"], counts: { discovered: 2, unique: 1, enriched: 0 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 700 } } });
+  finishRun(db, runId, "succeeded", null, null, null, "2026-08-20T00:00:05.000Z");
   const app = await buildServer({ db, dataDir: process.cwd() });
   try {
     const response = await app.inject({ url: `/api/runs/${runId}/trajectory` });
@@ -155,6 +156,91 @@ test("terminal search finish merges source stats and budget without inspect", ()
   assert.equal(observability.states[0]?.coverage?.["role:backend"], "good");
   assert.equal(observability.states[0]?.marginalUtility?.status, "medium");
   assert.equal(observability.states[0]?.termination?.unresolvedGoalCount, 1);
+});
+test("trajectory budget separates consumed calls from rejected attempts", () => {
+  const run = {
+    workflow: "scrape",
+    status: "succeeded",
+    started_at: "2026-08-20T00:00:00.000Z",
+    finished_at: "2026-08-20T00:00:05.000Z",
+    error: null,
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    estimated_cost: null,
+  } satisfies Parameters<typeof deriveRunTrajectoryObservability>[0];
+  const budget = { maxSearchCalls: 1, maxDetailCalls: 1, maxTotalResults: 2, maxRunDurationMs: 1_000 };
+  const event = (sequence: number, type: string, payload: unknown): TrajectoryEvent => ({
+    runId: "trajectory-budget",
+    sequence,
+    kind: type.includes("rejected") ? "error" : "lifecycle",
+    type,
+    timestamp: `2026-08-20T00:00:0${sequence}.000Z`,
+    startedAt: null,
+    endedAt: null,
+    durationMs: null,
+    payload,
+  });
+  const observability = deriveRunTrajectoryObservability(run, [
+    event(1, "search_started", { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", budget, remaining: { maxSearchCalls: 0, maxDetailCalls: 1, maxTotalResults: 2, maxRunDurationMs: 999 } }),
+    event(2, "search_completed", { attemptId: "search-1", operation: "search", source: "freehire", resultCount: 1, uniqueResultCount: 1, promisingResultCount: 1, budget, remaining: { maxSearchCalls: 0, maxDetailCalls: 1, maxTotalResults: 1, maxRunDurationMs: 998 } }),
+    event(3, "search_budget_rejected", { operation: "search", source: "freehire", reason: "maxSearchCalls", error: "Search budget exhausted.", budget, remaining: { maxSearchCalls: 0, maxDetailCalls: 1, maxTotalResults: 1, maxRunDurationMs: 998 } }),
+    event(4, "detail_started", { attemptId: "detail-1", operation: "detail", source: "freehire", sourceId: "job-1", resultId: "job-1", budget, remaining: { maxSearchCalls: 0, maxDetailCalls: 0, maxTotalResults: 1, maxRunDurationMs: 997 } }),
+    event(5, "detail_completed", { attemptId: "detail-1", operation: "detail", source: "freehire", sourceId: "job-1", resultId: "job-1", enrichedCount: 1, budget, remaining: { maxSearchCalls: 0, maxDetailCalls: 0, maxTotalResults: 1, maxRunDurationMs: 996 } }),
+    event(6, "search_budget_rejected", { operation: "detail", source: "freehire", sourceId: "job-1", resultId: "job-1", reason: "maxDetailCalls", error: "Detail budget exhausted.", budget, remaining: { maxSearchCalls: 0, maxDetailCalls: 0, maxTotalResults: 1, maxRunDurationMs: 996 } }),
+    event(7, "search_finished", { reason: "Budget exhausted.", reasonCategory: "budget_exhausted", budget, remaining: { maxSearchCalls: 0, maxDetailCalls: 0, maxTotalResults: 1, maxRunDurationMs: 996 } }),
+  ]);
+  assert.deepEqual(observability.configuredBudget, budget);
+  assert.deepEqual(observability.attempts.map((attempt) => [attempt.operation, attempt.status]), [
+    ["search", "completed"],
+    ["search", "rejected"],
+    ["detail", "completed"],
+    ["detail", "rejected"],
+  ]);
+  assert.equal(observability.sourceStats.freehire?.searchCalls, 1);
+  assert.equal(observability.sourceStats.freehire?.detailCalls, 1);
+  assert.deepEqual(observability.policyEvents.map((event) => [event.category, event.operation]), [
+    ["budget_rejection", "search"],
+    ["budget_rejection", "detail"],
+  ]);
+});
+
+test("run failure and timeout override a successful search finish", () => {
+  const run = (status: "failed" | "timed_out", error: string) => ({
+    workflow: "scrape",
+    status,
+    started_at: "2026-08-20T00:00:00.000Z",
+    finished_at: "2026-08-20T00:00:05.000Z",
+    error,
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    estimated_cost: null,
+  } satisfies Parameters<typeof deriveRunTrajectoryObservability>[0]);
+  const event = (sequence: number, type: string, payload: unknown): TrajectoryEvent => ({
+    runId: "terminal-precedence",
+    sequence,
+    kind: type === "run_failed" ? "error" : "lifecycle",
+    type,
+    timestamp: `2026-08-20T00:00:0${sequence}.000Z`,
+    startedAt: null,
+    endedAt: null,
+    durationMs: null,
+    payload,
+  });
+  const searchFinished = event(1, "search_finished", { reason: "Coverage is sufficient.", reasonCategory: "coverage_sufficient" });
+  const failed = deriveRunTrajectoryObservability(run("failed", "Provider failed."), [
+    searchFinished,
+    event(2, "run_failed", { error: "Provider failed.", errorCode: "provider" }),
+  ]);
+  const timedOut = deriveRunTrajectoryObservability(run("timed_out", "Run timed out."), [
+    searchFinished,
+    event(2, "run_timed_out", { error: "Run timed out." }),
+  ]);
+  assert.equal(failed.termination?.category, "provider");
+  assert.equal(failed.termination?.reason, "Provider failed.");
+  assert.equal(timedOut.termination?.category, "timeout");
+  assert.equal(timedOut.termination?.reason, "Run timed out.");
 });
 test("task telemetry is ordered, retry-safe, and source-specific", () => {
   const db = openDatabase(":memory:");

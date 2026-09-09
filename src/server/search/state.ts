@@ -374,6 +374,7 @@ export class AgentSearchState {
       error: attempt.error ? safeError(attempt.error) : null,
       errorCategory: null,
       remaining: this.remainingBudgets(),
+      budget: this.budget,
       ...extras,
     };
   }
@@ -399,6 +400,7 @@ export class AgentSearchState {
       error: null,
       errorCategory: null,
       remaining: this.remainingBudgets(),
+      budget: this.budget,
       ...extras,
     };
   }
@@ -796,6 +798,7 @@ export class AgentSearchState {
       marginalUtility,
       sourceStats,
       remaining: this.remainingBudgets(),
+      budget: this.budget,
     });
     return this.termination;
   }
@@ -829,10 +832,10 @@ export class AgentSearchState {
       errorCategory: null,
       counts: snapshot.counts,
       remaining: snapshot.remaining,
+      budget: this.budget,
       sourceStats: snapshot.sourceStats,
       coverage: snapshot.coverage,
       coverageSufficient: snapshot.coverageSufficient,
-      marginalUtility: snapshot.marginalUtility,
       termination: snapshot.termination ? {
         ...snapshot.termination,
         unresolvedGoals: [...snapshot.termination.unresolvedGoals],

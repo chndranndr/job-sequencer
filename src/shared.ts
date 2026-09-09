@@ -611,6 +611,7 @@ export type RunTrajectoryResources = {
 export type RunTrajectoryObservability = {
   counts: RunTrajectoryCounts;
   resources: RunTrajectoryResources;
+  configuredBudget: RunTrajectoryBudget | null;
   attempts: RunTrajectoryAttempt[];
   sourceStats: Record<string, RunTrajectorySourceStats>;
   states: RunTrajectoryStateSnapshot[];

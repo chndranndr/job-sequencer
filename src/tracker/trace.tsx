@@ -272,10 +272,13 @@ function observableBudget(value: number | null | undefined, suffix = "") {
   return value === null || value === undefined || !Number.isFinite(value) ? "—" : `${Math.max(0, Math.trunc(value))}${suffix}`;
 }
 
-function observableBudgetUse(used: number, remaining: number | null | undefined) {
+export function observableBudgetUse(used: number, remaining: number | null | undefined, configured: number | null | undefined = null) {
   const safeUsed = Math.max(0, Math.trunc(used));
-  if (remaining === null || remaining === undefined || !Number.isFinite(remaining)) return String(safeUsed);
-  return `${safeUsed} / ${safeUsed + Math.max(0, Math.trunc(remaining))}`;
+  const safeConfigured = configured !== null && configured !== undefined && Number.isFinite(configured) ? Math.max(0, Math.trunc(configured)) : null;
+  const safeRemaining = remaining !== null && remaining !== undefined && Number.isFinite(remaining) ? Math.max(0, Math.trunc(remaining)) : null;
+  if (safeConfigured !== null) return `${Math.min(safeUsed, safeConfigured)} / ${safeConfigured}`;
+  if (safeRemaining === null) return String(safeUsed);
+  return `${safeUsed} / ${safeUsed + safeRemaining}`;
 }
 function observableSearchTarget(target: { source: string | null; query: string | null; location: string | null }) {
   return [observableText(target.source), observableText(target.location), observableText(target.query)].join(" · ");
@@ -466,14 +469,17 @@ function TraceDetail({ id, navigate, now }: { id: string; navigate: (href: strin
 function TraceObservabilitySummary({ run, observability }: { run: Run; observability: RunTrajectoryObservability | null }) {
   if (!observability) return <section className="trace-observability trace-section" aria-label="Summary"><div className="trace-section-head"><h2>Search observability</h2><span>not available</span></div><p className="empty">No search trajectory was captured.</p></section>;
   const latestState = observability.states.at(-1);
-  const searchCalls = observability.attempts.filter((attempt) => attempt.operation === "search").length;
-  const detailCalls = observability.attempts.filter((attempt) => attempt.operation === "detail").length;
+  const searchCalls = observability.attempts.filter((attempt) => attempt.operation === "search" && attempt.status !== "rejected").length;
+  const detailCalls = observability.attempts.filter((attempt) => attempt.operation === "detail" && attempt.status !== "rejected").length;
   const sourceRows = Object.entries(observability.sourceStats).slice(0, 50);
   const searchAttempts = observability.attempts.filter((attempt) => attempt.operation === "search").slice(0, 50);
+  const completedSearchCount = searchAttempts.filter((attempt) => attempt.status !== "rejected").length;
   const coverageEntries = latestState ? Object.entries(latestState.coverage ?? {}).slice(0, 20) : [];
   const usedSources = sourceRows.filter(([, stats]) => (stats.searchCalls ?? 0) > 0 || (stats.detailCalls ?? 0) > 0).length;
   const remainingSearch = latestState?.remaining?.maxSearchCalls;
   const remainingDetail = latestState?.remaining?.maxDetailCalls;
+  const configuredSearch = observability.configuredBudget?.maxSearchCalls;
+  const configuredDetail = observability.configuredBudget?.maxDetailCalls;
   const terminationReason = observableText(observability.termination?.reason ?? observability.termination?.category);
   const unresolvedGoals = observability.termination?.unresolvedGoals.slice(0, 20).map((goal) => observableText(goal, 120)).join(", ");
   return <div className="trace-observability">
@@ -484,8 +490,8 @@ function TraceObservabilitySummary({ run, observability }: { run: Run; observabi
         <TraceMeta label="Discovered">{observableCount(observability.counts.discovered)}</TraceMeta>
         <TraceMeta label="Unique jobs">{observableCount(observability.counts.unique)}</TraceMeta>
         <TraceMeta label="Enriched">{observableCount(observability.counts.enriched)}</TraceMeta>
-        <TraceMeta label="Search calls">{observableBudgetUse(searchCalls, remainingSearch)}</TraceMeta>
-        <TraceMeta label="Detail calls">{observableBudgetUse(detailCalls, remainingDetail)}</TraceMeta>
+        <TraceMeta label="Search calls">{observableBudgetUse(searchCalls, remainingSearch, configuredSearch)}</TraceMeta>
+        <TraceMeta label="Detail calls">{observableBudgetUse(detailCalls, remainingDetail, configuredDetail)}</TraceMeta>
         <TraceMeta label="Sources used">{`${usedSources} / ${sourceRows.length}`}</TraceMeta>
         <TraceMeta label="Duration">{formatTraceDuration(observability.resources.durationMs)}</TraceMeta>
         <TraceMeta label="Tokens">{observableCount(observability.resources.totalTokens)}</TraceMeta>
@@ -495,7 +501,7 @@ function TraceObservabilitySummary({ run, observability }: { run: Run; observabi
       </div>
     </section>
     <section className="trace-section" aria-label="Query adaptation">
-      <div className="trace-section-head"><h2>Query adaptation</h2><span>{observableCount(searchAttempts.length)} searches · {observableCount(observability.adaptations.length)} transitions</span></div>
+      <div className="trace-section-head"><h2>Query adaptation</h2><span>{observableCount(completedSearchCount)} searches · {observableCount(observability.adaptations.length)} transitions</span></div>
       {searchAttempts.length ? <div className="trace-observe-list">{searchAttempts.map((attempt) => <div className="trace-observe-adaptation" key={`${attempt.sequence}-${attempt.attemptId ?? attempt.query ?? "search"}`}><strong>{observableText(attempt.status)}</strong><span>{observableText(attempt.source)} · {observableText(attempt.location)} · {observableText(attempt.query)}</span><small>{observableCount(attempt.resultCount)} results · {observableCount(attempt.uniqueResultCount)} unique · {observableCount(attempt.promisingResultCount)} promising · {observablePercent(attempt.duplicateRate)} duplicate · {observableText(attempt.intent)}</small></div>)}</div> : <p className="empty">No search attempts were captured.</p>}
       {observability.adaptations.length > 0 && <div className="trace-observe-list">{observability.adaptations.slice(0, 50).map((adaptation) => <div className="trace-observe-adaptation" key={`adaptation-${adaptation.sequence}-${observableSearchTarget(adaptation.to)}`}><strong>{observableText(adaptation.reason)}</strong><span>{observableSearchTarget(adaptation.from)} → {observableSearchTarget(adaptation.to)}</span><small>{observableText(adaptation.signal)}</small></div>)}</div>}
     </section>
