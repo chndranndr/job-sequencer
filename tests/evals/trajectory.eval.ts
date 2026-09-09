@@ -97,6 +97,8 @@ export type AgentEvalRun = {
   actionSignatures: string[];
   observability: Observability;
   rankedCandidates: string[];
+  totalDetailFetches: number;
+  usefulDetailFetches: number;
   detailFetchPrecision: number;
   precisionAt10?: number;
   observedUntrustedText: boolean;
@@ -434,12 +436,13 @@ class DeterministicFauxAgent {
 
 function runMetrics(observability: Observability, rankedCandidates: readonly string[], relevance: Readonly<Record<string, boolean>>) {
   const detailAttempts = observability.attempts.filter((attempt) => attempt.operation === "detail" && attempt.status !== "rejected");
-  const relevantDetails = detailAttempts.filter((attempt) => attempt.status === "completed" && attempt.resultId !== null && relevance[attempt.resultId] === true).length;
-  const detailFetchPrecision = detailAttempts.length ? relevantDetails / detailAttempts.length : 0;
+  const totalDetailFetches = detailAttempts.length;
+  const usefulDetailFetches = detailAttempts.filter((attempt) => attempt.status === "completed" && attempt.resultId !== null && relevance[attempt.resultId] === true).length;
+  const detailFetchPrecision = usefulDetailFetches / Math.max(1, totalDetailFetches);
   const top = rankedCandidates.slice(0, 10);
   const labelledTop = top.filter((id) => relevance[id] !== undefined);
   const precisionAt10 = top.length && labelledTop.length === top.length ? top.filter((id) => relevance[id] === true).length / top.length : undefined;
-  return { detailFetchPrecision, precisionAt10 };
+  return { totalDetailFetches, usefulDetailFetches, detailFetchPrecision, precisionAt10 };
 }
 
 function rankedIds(value: unknown) {
@@ -580,6 +583,8 @@ async function runScenario(scenario: AgentEvalScenario, mode: "agent" | "baselin
     actionSignatures: calls.map(actionSignature),
     observability,
     rankedCandidates,
+    totalDetailFetches: metrics.totalDetailFetches,
+    usefulDetailFetches: metrics.usefulDetailFetches,
     detailFetchPrecision: metrics.detailFetchPrecision,
     ...(metrics.precisionAt10 === undefined ? {} : { precisionAt10: metrics.precisionAt10 }),
     observedUntrustedText: controller.observedUntrustedText,

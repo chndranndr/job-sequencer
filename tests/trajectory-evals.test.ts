@@ -12,6 +12,8 @@ import {
 function reportMetrics(runs: readonly AgentEvalRun[], scenarios = trajectoryEvalScenarios) {
   let searchCalls = 0;
   let detailCalls = 0;
+  let totalDetailFetches = 0;
+  let usefulDetailFetches = 0;
   let duplicateRate = 0;
   let unique = 0;
   let promising = 0;
@@ -26,6 +28,8 @@ function reportMetrics(runs: readonly AgentEvalRun[], scenarios = trajectoryEval
     const searches = run.observability.attempts.filter((attempt) => attempt.operation === "search" && attempt.status !== "rejected");
     const details = run.observability.attempts.filter((attempt) => attempt.operation === "detail" && attempt.status !== "rejected");
     searchCalls += searches.length;
+    totalDetailFetches += run.totalDetailFetches;
+    usefulDetailFetches += run.usefulDetailFetches;
     detailCalls += details.length;
     duplicateRate += searches.length ? searches.reduce((sum, attempt) => sum + (attempt.duplicateRate ?? 0), 0) / searches.length : 0;
     unique += searches.reduce((sum, attempt) => sum + (attempt.uniqueResultCount ?? 0), 0);
@@ -52,7 +56,7 @@ function reportMetrics(runs: readonly AgentEvalRun[], scenarios = trajectoryEval
     duplicateRate: duplicateRate / count,
     uniqueJobsPerSearchCall: unique / Math.max(1, searchCalls),
     promisingJobsPerSearchCall: promising / Math.max(1, searchCalls),
-    detailFetchPrecision: runs.reduce((sum, run) => sum + run.detailFetchPrecision, 0) / count,
+    detailFetchPrecision: usefulDetailFetches / Math.max(1, totalDetailFetches),
     unnecessarySearchRate: unnecessarySearches / Math.max(1, searchCalls),
     ...(precisionRuns.length ? { precisionAt10: precisionRuns.reduce((sum, run) => sum + (run.precisionAt10 ?? 0), 0) / precisionRuns.length } : {}),
   };
@@ -94,6 +98,8 @@ test("trajectory evaluation runs an agent executor and an independent baseline",
     if (scenario.id === "selective-enrichment") {
       assert.deepEqual(report.rankedCandidates, ["useful-1", "ambiguous-1"]);
       assert.equal(report.detailFetchPrecision, 1);
+      assert.equal(report.totalDetailFetches, 2);
+      assert.equal(report.usefulDetailFetches, 2);
       assert.equal(report.baseline.detailFetchPrecision, 2 / 3);
       assert.equal(report.precisionAt10, 1);
       assert.equal(report.baseline.precisionAt10, 2 / 3);
@@ -112,6 +118,8 @@ test("trajectory evaluation runs an agent executor and an independent baseline",
       const searchAttempts = report.observability.attempts.filter((attempt) => attempt.operation === "search");
       assert.equal(searchAttempts.filter((attempt) => attempt.status === "completed").length, scenario.budget.maxSearchCalls);
       assert.equal(searchAttempts.filter((attempt) => attempt.status === "rejected").length, 1);
+      assert.equal(report.totalDetailFetches, 0);
+      assert.equal(report.usefulDetailFetches, 0);
       assert.deepEqual(report.rankedCandidates, []);
       assert.ok(report.actions.includes("search:freehire:backend:Remote:rejected"));
     }
@@ -131,6 +139,8 @@ test("trajectory evaluation runs an agent executor and an independent baseline",
       assert.deepEqual(report.rankedCandidates, ["good-1"]);
     }
   }
+  const selectiveAndBounded = reportMetrics([reports[1]!, reports[5]!], [trajectoryEvalScenarios[1]!, trajectoryEvalScenarios[5]!]);
+  assert.equal(selectiveAndBounded.detailFetchPrecision, 1);
   const baseline = reports.map((report) => report.baseline);
   console.log(JSON.stringify({
     scenarios: { passed: reports.filter((item) => item.passed).length, failed: reports.filter((item) => !item.passed).length },
