@@ -38,6 +38,7 @@ function reportMetrics(runs: readonly AgentEvalRun[], scenarios = trajectoryEval
     const searches = run.observability.attempts.filter((attempt) => attempt.operation === "search" && attempt.status !== "rejected");
     const details = run.observability.attempts.filter((attempt) => attempt.operation === "detail" && attempt.status !== "rejected");
     searchCalls += searches.length;
+    detailCalls += details.length;
     duplicateRate += searches.length ? searches.reduce((sum, attempt) => sum + (attempt.duplicateRate ?? 0), 0) / searches.length : 0;
     unique += searches.reduce((sum, attempt) => sum + (attempt.uniqueResultCount ?? 0), 0);
     promising += searches.reduce((sum, attempt) => sum + (attempt.promisingResultCount ?? 0), 0);
