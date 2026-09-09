@@ -113,11 +113,12 @@ test("trajectory evaluation runs an agent executor and an independent baseline",
       assert.equal(searchAttempts.filter((attempt) => attempt.status === "completed").length, scenario.budget.maxSearchCalls);
       assert.equal(searchAttempts.filter((attempt) => attempt.status === "rejected").length, 1);
       assert.deepEqual(report.rankedCandidates, []);
-      assert.ok(report.actions.some((action) => action.endsWith(":rejected")));
+      assert.ok(report.actions.includes("search:freehire:backend:Remote:rejected"));
     }
     if (scenario.id === "provenance-protection") {
       assert.ok(report.calls.some((action) => action.kind === "detail" && action.resultId === "forged-1"));
       assert.ok(report.observability.policyEvents.some((event) => event.type === "detail_provenance_rejected"));
+      assert.ok(report.actions.includes("detail:freehire:forged-1:rejected"));
       assert.deepEqual(report.rankedCandidates, []);
       assert.deepEqual(report.baseline.rankedCandidates, ["good-1"]);
     }
