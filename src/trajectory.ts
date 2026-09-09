@@ -41,7 +41,7 @@ export function redactTelemetryText(value: string) {
     .replace(/(authorization\s*[:=]\s*bearer\s+|bearer\s+)[^\s,}]+/gi, "$1[redacted]")
     .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|access[_-]?token|client[_-]?secret|refresh[_-]?token)=)[^&\s]*/gi, "$1[redacted]")
     .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|bearer|client[_-]?secret|refresh[_-]?token)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]")
-    .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}\b/gi, "[redacted]")
+    .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]+\b/gi, "[redacted]")
     .replace(/\b(?:system|user|assistant)[ _-](?:prompt|message|thinking|content)\s*[:=]\s*[^|;]+/gi, "[redacted]");
 }
 const omittedVisiblePayloadKeys = new Set(["text", "content", "prompt", "systemprompt", "userprompt", "assistantmessage", "thinking", "reasoning", "posting", "description", "body", "raw", "rawtext", "result", "results", "summary", "data", "output", "outputs", "apikey", "token", "secret", "password", "authorization", "credential", "credentials", "cookie", "privatekey", "accesstoken", "bearer", "auth", "clientsecret", "refreshtoken"]);
