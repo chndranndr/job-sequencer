@@ -113,6 +113,7 @@ test("trajectory evaluation runs an agent executor and an independent baseline",
       assert.equal(searchAttempts.filter((attempt) => attempt.status === "completed").length, scenario.budget.maxSearchCalls);
       assert.equal(searchAttempts.filter((attempt) => attempt.status === "rejected").length, 1);
       assert.deepEqual(report.rankedCandidates, []);
+      assert.ok(report.actions.some((action) => action.endsWith(":rejected")));
     }
     if (scenario.id === "provenance-protection") {
       assert.ok(report.calls.some((action) => action.kind === "detail" && action.resultId === "forged-1"));

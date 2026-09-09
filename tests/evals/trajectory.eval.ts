@@ -167,6 +167,19 @@ function actionSignature(action: AgentEvalAction): string {
 function actionLabel(action: AgentEvalAction, status: "ok" | "rejected" | "failed", error?: unknown): string {
   return `${actionSignature(action)}:${status}${error instanceof Error ? `:${error.name}` : ""}`.slice(0, 240);
 }
+function actionLabels(calls: readonly AgentEvalAction[], observability: Observability) {
+  const attempts = {
+    search: observability.attempts.filter((attempt) => attempt.operation === "search"),
+    detail: observability.attempts.filter((attempt) => attempt.operation === "detail"),
+  };
+  const offsets = { search: 0, detail: 0 };
+  return calls.map((action) => {
+    if (action.kind !== "search" && action.kind !== "detail") return actionLabel(action, "ok");
+    const attempt = attempts[action.kind][offsets[action.kind]++];
+    const status = attempt?.status === "rejected" ? "rejected" : attempt?.status === "failed" ? "failed" : "ok";
+    return actionLabel(action, status, attempt?.error);
+  });
+}
 
 
 function recordFrom(value: unknown): Record<string, unknown> | null {
@@ -563,7 +576,7 @@ async function runScenario(scenario: AgentEvalScenario, mode: "agent" | "baselin
   const metrics = runMetrics(observability, rankedCandidates, scenario.relevance);
   const report: AgentEvalRun = {
     calls,
-    actions: calls.map((action) => actionLabel(action, "ok")),
+    actions: actionLabels(calls, observability),
     actionSignatures: calls.map(actionSignature),
     observability,
     rankedCandidates,
