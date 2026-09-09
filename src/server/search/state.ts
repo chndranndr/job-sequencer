@@ -835,6 +835,7 @@ export class AgentSearchState {
       budget: this.budget,
       sourceStats: snapshot.sourceStats,
       coverage: snapshot.coverage,
+      marginalUtility: snapshot.marginalUtility,
       coverageSufficient: snapshot.coverageSufficient,
       termination: snapshot.termination ? {
         ...snapshot.termination,

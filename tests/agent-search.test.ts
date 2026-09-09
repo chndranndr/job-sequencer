@@ -116,11 +116,11 @@ test("expired reservations reject without granting provenance and record a budge
 });
 
 test("same-run provenance is qualified by source and trajectory records the harness lifecycle", async () => {
-  const events: string[] = [];
+  const events: Array<{ type: string; payload?: unknown }> = [];
   const state = new AgentSearchState({
     goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire", "linkedin"] },
     runId: "run-1",
-    trajectory: (_runId, event) => { events.push(event.type); },
+    trajectory: (_runId, event) => { events.push({ type: event.type, payload: event.payload }); },
   });
   const adapter = (id: string, url: string) => createScrapeTools({
     source: id === "freehire-job" ? "freehire" : "linkedin",
@@ -137,10 +137,13 @@ test("same-run provenance is qualified by source and trajectory records the harn
   await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never);
   await tools.finishSearch.execute("finish", { reason: "Enough evidence collected." }, undefined, undefined, undefined as never);
   assert.deepEqual(tools.provenance.get("freehire\u0000freehire-job"), "https://jobs.example.test/freehire");
-  assert.ok(events.includes("search_started"));
-  assert.ok(events.includes("search_completed"));
-  assert.ok(events.includes("search_state_inspected"));
-  assert.ok(events.includes("search_finished"));
+  assert.ok(events.some((event) => event.type === "search_started"));
+  assert.ok(events.some((event) => event.type === "search_completed"));
+  const inspected = events.find((event) => event.type === "search_state_inspected");
+  const inspectPayload = inspected?.payload && typeof inspected.payload === "object" ? inspected.payload as { marginalUtility?: unknown } : null;
+  assert.ok(inspectPayload && Object.prototype.hasOwnProperty.call(inspectPayload, "marginalUtility"));
+  assert.deepEqual(inspectPayload?.marginalUtility, state.snapshot().marginalUtility);
+  assert.ok(events.some((event) => event.type === "search_finished"));
 });
 
 test("search state records adaptive yield, duplicate provenance, coverage, and termination categories", () => {
