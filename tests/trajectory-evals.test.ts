@@ -139,8 +139,11 @@ test("trajectory evaluation runs an agent executor and an independent baseline",
       assert.deepEqual(report.rankedCandidates, ["good-1"]);
     }
   }
-  const selectiveAndBounded = reportMetrics([reports[1]!, reports[5]!], [trajectoryEvalScenarios[1]!, trajectoryEvalScenarios[5]!]);
-  assert.equal(selectiveAndBounded.detailFetchPrecision, 1);
+  const syntheticRuns = [
+    { ...reports[0]!, totalDetailFetches: 2, usefulDetailFetches: 2, detailFetchPrecision: 1 },
+    { ...reports[0]!, totalDetailFetches: 0, usefulDetailFetches: 0, detailFetchPrecision: 0 },
+  ] satisfies AgentEvalRun[];
+  assert.equal(reportMetrics(syntheticRuns, []).detailFetchPrecision, 1);
   const baseline = reports.map((report) => report.baseline);
   console.log(JSON.stringify({
     scenarios: { passed: reports.filter((item) => item.passed).length, failed: reports.filter((item) => !item.passed).length },
