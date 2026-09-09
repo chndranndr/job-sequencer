@@ -687,7 +687,7 @@ export const trajectoryEvalScenarios: readonly AgentEvalScenario[] = [
     budget: baseBudget,
     searchFixtures: [{ source: "freehire", query: "backend", location: "Tokyo", results: [] }, { source: "freehire", query: "backend typescript", location: "Tokyo", results: [goodTokyo] }],
     detailFixtures: [detailFor("freehire", goodTokyo, "Backend Engineer TypeScript APIs in Tokyo.")],
-    seededSearchMemoryAttempts: [{ id: "positive", source: "freehire", query: "backend typescript", location: "Tokyo", resultCount: 3, uniqueResultCount: 3, promisingResultCount: 2 }, { id: "negative", source: "freehire", query: "php", location: "Remote", resultCount: 3, uniqueResultCount: 0, duplicateCount: 3 }],
+    seededSearchMemoryAttempts: [{ id: "positive", source: "freehire", query: "backend typescript", location: "Remote", resultCount: 3, uniqueResultCount: 3, promisingResultCount: 2 }, { id: "negative", source: "freehire", query: "php", location: "Remote", resultCount: 3, uniqueResultCount: 0, duplicateCount: 3 }],
     expected: { searches: [{ source: "freehire", query: "backend typescript", location: "Tokyo" }], requiredDetailIds: ["good-1"], requiredRankedIds: ["good-1"], expectedMemorySignal: { patternIncludes: "backend typescript", signal: "positive" }, termination: "candidates_sufficient" },
     relevance: { "good-1": true },
   },

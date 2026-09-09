@@ -38,6 +38,7 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
   appendRunTrajectoryEvent(db, runId, { kind: "user", type: "user_prompt", payload: { text: "apiKey=sk-secret-value" } });
   appendRunTrajectoryEvent(db, runId, { kind: "assistant", type: "assistant_message", payload: { text: "private answer", usage: { totalTokens: 3 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "thinking", type: "assistant_thinking", payload: { text: "private reasoning" } });
+  appendRunTrajectoryEvent(db, runId, { kind: "thinking", type: "model_internal", payload: { text: "arbitrary reasoning marker" } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_started", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", intent: "apiKey=sk-secret-value", credentials: { apiKey: { value: "nested-secret" } }, clientSecret: { value: "client-secret-marker" }, refreshToken: "refresh-token-marker", repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 4, maxRunDurationMs: 1000 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_completed", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 0, counts: { discovered: 2, unique: 1 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 900 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_state_inspected", payload: { counts: { discovered: 2, unique: 1, enriched: 0 }, coverage: { "role:backend": "medium" }, coverageSufficient: false, marginalUtility: { status: "low", score: 0, recentSearches: 1, recentUniqueJobs: 1, recentPromisingJobs: 0, repeatedZeroYieldSearches: 0, recommendation: "Vary query." }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 800 }, termination: null } });
@@ -57,6 +58,7 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
     assert.equal(body.events.find((event: { type: string }) => event.type === "user_prompt")?.payload, null);
     assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_message")?.payload, null);
     assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_thinking")?.payload, null);
+    assert.equal(body.events.find((event: { type: string }) => event.type === "model_internal")?.payload, null);
     assert.doesNotMatch(JSON.stringify(body), /sk-secret-value|nested-secret|client-secret-marker|refresh-token-marker|private reasoning|private answer/);
     assert.equal((await app.inject({ url: "/api/runs/missing/trajectory" })).statusCode, 404);
     assert.equal((await app.inject({ url: "/api/runs?limit=1" })).json().runs.length, 1);
@@ -241,6 +243,37 @@ test("run failure and timeout override a successful search finish", () => {
   assert.equal(failed.termination?.reason, "Provider failed.");
   assert.equal(timedOut.termination?.category, "timeout");
   assert.equal(timedOut.termination?.reason, "Run timed out.");
+});
+
+test("policy categories follow event types, not final run status", () => {
+  const run = {
+    workflow: "scrape",
+    status: "timed_out",
+    started_at: "2026-08-20T00:00:00.000Z",
+    finished_at: "2026-08-20T00:00:05.000Z",
+    error: "Run timed out.",
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    estimated_cost: null,
+  } satisfies Parameters<typeof deriveRunTrajectoryObservability>[0];
+  const event = (sequence: number, type: string, payload: unknown): TrajectoryEvent => ({
+    runId: "policy-event-types",
+    sequence,
+    kind: type === "search_failed" || type === "run_timed_out" ? "error" : "lifecycle",
+    type,
+    timestamp: `2026-08-20T00:00:0${sequence}.000Z`,
+    startedAt: null,
+    endedAt: null,
+    durationMs: null,
+    payload,
+  });
+  const observability = deriveRunTrajectoryObservability(run, [
+    event(1, "run_started", null),
+    event(2, "search_failed", { operation: "search", source: "freehire", error: "FreeHire unavailable." }),
+    event(3, "run_timed_out", { error: "Run timed out." }),
+  ]);
+  assert.deepEqual(observability.policyEvents.map((item) => item.category), ["source_failure", "timeout"]);
 });
 test("task telemetry is ordered, retry-safe, and source-specific", () => {
   const db = openDatabase(":memory:");

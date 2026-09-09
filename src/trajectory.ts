@@ -66,7 +66,7 @@ function sanitizeVisiblePayload(value: unknown, seen: WeakSet<object>, depth = 0
 }
 
 export function sanitizeTrajectoryEvent(event: TrajectoryEvent): TrajectoryEvent {
-  return protectedTrajectoryEventTypes.has(event.type)
+  return event.kind === "thinking" || protectedTrajectoryEventTypes.has(event.type)
     ? { ...event, payload: null }
     : { ...event, payload: sanitizeVisiblePayload(event.payload, new WeakSet<object>()) };
 }
@@ -423,20 +423,20 @@ function runDuration(run: Pick<Run, "started_at" | "finished_at">): number | nul
   return Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null;
 }
 
-function policyCategory(type: string, payload: Payload | null, status: Run["status"]): string | null {
+function policyCategory(type: string, payload: Payload | null): string | null {
   if (type.includes("provenance")) return "provenance_rejection";
   if (type.includes("budget")) return "budget_rejection";
   if (type.includes("source_rejected")) return "disabled_source_rejection";
-  if (type === "run_timed_out" || status === "timed_out") return "timeout";
-  if (type === "run_cancelled" || status === "cancelled") return "cancellation";
+  if (type === "run_timed_out") return "timeout";
+  if (type === "run_cancelled") return "cancellation";
   if (type === "run_failed" || payloadText(payload, "errorCode", 80) === "provider") return "provider_failure";
   if (type.includes("malformed") || type.includes("invalid")) return "tool_validation";
   if (type === "search_failed" || type === "detail_failed") return "source_failure";
   return null;
 }
 
-function policyEvent(event: TrajectoryEvent, payload: Payload | null, status: Run["status"]): RunTrajectoryPolicyEvent | null {
-  const category = policyCategory(event.type, payload, status);
+function policyEvent(event: TrajectoryEvent, payload: Payload | null): RunTrajectoryPolicyEvent | null {
+  const category = policyCategory(event.type, payload);
   if (!category) return null;
   const declaredOperation = operation(payload?.operation);
   const inferredOperation = event.type.startsWith("detail") ? "detail" : event.type.startsWith("search") ? "search" : null;
@@ -619,7 +619,7 @@ export function deriveRunTrajectoryObservability(
 
   const addPolicy = (event: TrajectoryEvent, payload: Payload | null) => {
     if (policyEvents.length >= MAX_POLICY_EVENTS) return;
-    const next = policyEvent(event, payload, run.status);
+    const next = policyEvent(event, payload);
     if (next) policyEvents.push(next);
   };
 

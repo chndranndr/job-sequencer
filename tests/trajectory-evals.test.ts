@@ -126,6 +126,7 @@ test("trajectory evaluation runs an agent executor and an independent baseline",
       const firstSearch = report.calls.find((action) => action.kind === "search");
       const baselineSearch = report.baseline.calls.find((action) => action.kind === "search");
       assert.equal(firstSearch?.kind === "search" ? firstSearch.query : "", "backend typescript");
+      assert.equal(firstSearch?.kind === "search" ? firstSearch.location : "", "Tokyo");
       assert.equal(baselineSearch?.kind === "search" ? baselineSearch.query : "", "backend");
       assert.deepEqual(report.rankedCandidates, ["good-1"]);
     }
