@@ -8,6 +8,7 @@ import {
   formatEstimatedCost,
   formatTraceDuration,
   isRunSyncMessage,
+  observableBudgetUse,
   runSyncMessage,
   safePayloadText,
   traceTaskSummary,
@@ -36,8 +37,10 @@ test("TRACE routes parse and encode run IDs without changing existing route shap
 
 test("TRACE event summaries prefer useful safe fields and task summaries are deterministic", () => {
   assert.equal(eventSummary(event(1, "tool_execution_start", { toolName: "lookupJob" }, "tool_call")), "lookupJob");
-  assert.equal(eventSummary(event(2, "assistant_message", { text: "  hello   tracker  " }, "assistant")), "hello tracker");
+  assert.equal(eventSummary(event(2, "assistant_message", { text: "  hello   tracker  " }, "assistant")), "[content omitted]");
   assert.equal(eventSummary(event(3, "run_failed", { error: "Provider unavailable" }, "error")), "Provider unavailable");
+  assert.equal(eventSummary(event(4, "assistant_thinking", { text: "private thought sk-secret-value" }, "thinking")), "[content omitted]");
+  assert.equal(eventSummary(event(5, "user_prompt", { text: "private prompt" }, "user")), "[content omitted]");
 
   const events = [
     event(1, "task_started", { taskId: "prepare", label: "Prepare", status: "started" }),
@@ -59,6 +62,11 @@ test("TRACE payload inspection redacts secret-shaped values and sync messages ca
   assert.equal(isRunSyncMessage({ type: "tracker-active-run", runId: "run-1", payload: "secret" }), false);
   assert.equal(isRunSyncMessage({ type: "tracker-active-run", runId: 42 }), false);
   assert.equal(isRunSyncMessage({ type: "other", runId: "run-1" }), false);
+});
+
+test("TRACE budget usage excludes rejected attempts", () => {
+  assert.equal(observableBudgetUse(2, 0, 1), "1 / 1");
+  assert.equal(observableBudgetUse(1, 2, null), "1 / 3");
 });
 
 test("TRACE duration formatting handles terminal and live runs", () => {

@@ -351,6 +351,59 @@ export class AgentSearchState {
     if (!this.runId || !this.trajectory) return;
     try { this.trajectory(this.runId, { kind, type, payload }); } catch {}
   }
+  private attemptPayload(attempt: SearchAttempt, extras: Record<string, unknown> = {}) {
+    const resultId = attempt.resultId ? text(attempt.resultId, 200) : null;
+    return {
+      attemptId: attempt.id,
+      operation: attempt.operation,
+      status: attempt.status,
+      source: text(attempt.source, 80),
+      query: attempt.query ? text(attempt.query, 200) : null,
+      location: attempt.location ? text(attempt.location, 120) : null,
+      intent: attempt.intent ? text(attempt.intent, 200) : null,
+      repeatCount: attempt.repeatCount ?? null,
+      requestedLimit: attempt.requestedLimit ?? null,
+      resultCount: attempt.resultCount ?? null,
+      uniqueResultCount: attempt.uniqueResultCount ?? null,
+      duplicateCount: attempt.duplicateCount ?? null,
+      promisingResultCount: attempt.promisingResultCount ?? null,
+      latencyMs: attempt.latencyMs ?? null,
+      sourceId: null,
+      resultId,
+      resultIdLength: resultId?.length ?? null,
+      error: attempt.error ? safeError(attempt.error) : null,
+      errorCategory: null,
+      remaining: this.remainingBudgets(),
+      budget: this.budget,
+      ...extras,
+    };
+  }
+  private preAttemptPayload(operation: "search" | "detail", source: string | null, extras: Record<string, unknown> = {}) {
+    return {
+      attemptId: null,
+      operation,
+      status: "rejected",
+      source: source ? text(source, 80) : null,
+      query: null,
+      location: null,
+      intent: null,
+      repeatCount: null,
+      requestedLimit: null,
+      resultCount: null,
+      uniqueResultCount: null,
+      duplicateCount: null,
+      promisingResultCount: null,
+      latencyMs: null,
+      sourceId: null,
+      resultId: null,
+      resultIdLength: null,
+      error: null,
+      errorCategory: null,
+      remaining: this.remainingBudgets(),
+      budget: this.budget,
+      ...extras,
+    };
+  }
   private attemptId(operation: "search" | "detail") {
     return `${operation}-${this.nextAttemptId++}`;
   }
@@ -366,16 +419,28 @@ export class AgentSearchState {
   }
   private source(source: unknown, operation: "search" | "detail"): JobSource {
     if (typeof source === "string" && this.goal.enabledSources.includes(source)) return source;
-    const value = typeof source === "string" ? source : "(missing)";
-    this.record(`${operation}_source_rejected`, { operation, source: value.slice(0, 100), enabledSources: [...this.goal.enabledSources] }, "error");
-    throw new Error(`${operation} source ${value} is not enabled`);
+    const rawValue = typeof source === "string" ? source : "(missing)";
+    const value = text(rawValue, 100);
+    this.record(`${operation}_source_rejected`, this.preAttemptPayload(operation, value, {
+      reason: "source_disabled",
+      error: `${operation} source ${value} is not enabled`,
+      errorCategory: "disabled_source",
+      enabledSources: this.goal.enabledSources.slice(0, 100),
+    }), "error");
+    throw new Error(`${operation} source ${rawValue} is not enabled`);
   }
 
   resolveSource(source: unknown, operation: "search" | "detail" = "search") {
     if (source === undefined || source === null || source === "") {
       if (this.goal.enabledSources.length === 1) return this.goal.enabledSources[0];
-      this.record(`${operation}_source_rejected`, { operation, reason: "source_required", enabledSources: [...this.goal.enabledSources] }, "error");
-      throw new Error(`${operation} source is required when multiple sources are enabled`);
+      const error = `${operation} source is required when multiple sources are enabled`;
+      this.record(`${operation}_source_rejected`, this.preAttemptPayload(operation, null, {
+        reason: "source_required",
+        error,
+        errorCategory: "source_required",
+        enabledSources: this.goal.enabledSources.slice(0, 100),
+      }), "error");
+      throw new Error(error);
     }
     return this.source(source, operation);
   }
@@ -393,30 +458,41 @@ export class AgentSearchState {
   private open(operation: "search" | "detail", source: JobSource, metadata: Partial<SearchAttempt>) {
     if (!this.terminationValue) return;
     const startedAt = isoTime(this.now());
-    this.attemptList.push({ id: this.attemptId(operation), operation, status: "rejected", source, startedAt, endedAt: startedAt, latencyMs: 0, ...metadata });
-    this.record(`${operation}_rejected`, { operation, source, reason: "search_finished" }, "error");
+    const attempt: SearchAttempt = { id: this.attemptId(operation), operation, status: "rejected", source, startedAt, endedAt: startedAt, latencyMs: 0, ...metadata };
+    this.attemptList.push(attempt);
+    this.record(`${operation}_rejected`, this.attemptPayload(attempt, {
+      reason: "search_finished",
+      error: "Search is already finished.",
+      errorCategory: "search_finished",
+    }), "error");
     throw new Error("Search is already finished.");
   }
 
-  private rejectBudget(operation: "search" | "detail", source: JobSource, reason: SearchBudgetExceededError["reason"], metadata: Partial<SearchAttempt>): never {
+  private rejectBudget(operation: "search" | "detail", source: JobSource, reason: SearchBudgetExceededError["reason"], metadata: Partial<SearchAttempt>, extras: Record<string, unknown> = {}): never {
     const startedAt = isoTime(this.now());
     const attempt: SearchAttempt = { id: this.attemptId(operation), runId: this.runId, operation, status: "rejected", source, startedAt, endedAt: startedAt, latencyMs: 0, ...metadata };
     this.attemptList.push(attempt);
     if (operation === "search") this.onSearchAttempt?.(copyAttempt(attempt));
-    this.record("search_budget_rejected", {
-      source,
+    this.record("search_budget_rejected", this.attemptPayload(attempt, {
+      ...extras,
+      attemptId: null,
       reason,
-      remaining: this.remainingBudgets(),
-      requestedLimit: metadata.requestedLimit,
-      resultIdLength: metadata.resultId?.length,
-    }, "error");
+      error: `${operation === "detail" ? "Detail" : "Search"} budget exhausted: ${reason}`,
+      errorCategory: "budget",
+      requestedLimit: metadata.requestedLimit ?? null,
+      resultIdLength: metadata.resultId?.length ?? null,
+    }), "error");
     throw new SearchBudgetExceededError(operation, reason);
   }
 
   private rejectProvenance(source: JobSource, resultId: string): never {
     const startedAt = isoTime(this.now());
     this.attemptList.push({ id: this.attemptId("detail"), operation: "detail", status: "rejected", source, resultId: text(resultId, 200), startedAt, endedAt: startedAt, latencyMs: 0 });
-    this.record("detail_provenance_rejected", { source, resultIdLength: resultId.length }, "error");
+    this.record("detail_provenance_rejected", this.preAttemptPayload("detail", source, {
+      resultIdLength: resultId.length,
+      error: "resultId was not returned by searchJobs in this run.",
+      errorCategory: "provenance",
+    }), "error");
     throw new SearchProvenanceError(source, resultId);
   }
 
@@ -429,14 +505,21 @@ export class AgentSearchState {
       attempt.endedAt = isoTime(this.now());
       attempt.latencyMs = this.latency(attempt);
     }
-    this.record("search_budget_rejected", {
-      operation,
-      source: reservation.source,
-      reason: "maxRunDurationMs",
-      remaining: this.remainingBudgets(),
-      requestedLimit: operation === "search" ? (reservation as SearchReservation).limit : undefined,
-      resultIdLength: operation === "detail" ? (reservation as DetailReservation).resultId.length : undefined,
-    }, "error");
+    this.record("search_budget_rejected", attempt
+      ? this.attemptPayload(attempt, {
+        reason: "maxRunDurationMs",
+        errorCategory: "timeout",
+        sourceId: operation === "detail" ? text((reservation as DetailReservation).sourceId, 200) : null,
+        requestedLimit: operation === "search" ? (reservation as SearchReservation).limit : null,
+        resultIdLength: operation === "detail" ? (reservation as DetailReservation).resultId.length : null,
+      })
+      : this.preAttemptPayload(operation, reservation.source, {
+        reason: "maxRunDurationMs",
+        error: "Search duration budget exhausted: maxRunDurationMs",
+        errorCategory: "timeout",
+        requestedLimit: operation === "search" ? (reservation as SearchReservation).limit : null,
+        resultIdLength: operation === "detail" ? (reservation as DetailReservation).resultId.length : null,
+      }), "error");
     throw new SearchBudgetExceededError(operation, "maxRunDurationMs");
   }
 
@@ -445,14 +528,15 @@ export class AgentSearchState {
     const query = text(input.query, 200);
     const location = text(input.location, 120);
     const intent = input.intent ? text(input.intent, 200) : undefined;
-    this.open("search", source, { query, location, intent, requestedLimit: input.limit });
+    const repeatCount = this.repeatCount(source, query, location);
+    this.open("search", source, { query, location, intent, requestedLimit: input.limit, repeatCount });
     const remaining = this.remainingBudgets();
-    const metadata = { query, location, intent, requestedLimit: input.limit };
+    const metadata = { query, location, intent, requestedLimit: input.limit, repeatCount };
     if (remaining.maxSearchCalls <= 0) this.rejectBudget("search", source, "maxSearchCalls", metadata);
     if (remaining.maxRunDurationMs <= 0) this.rejectBudget("search", source, "maxRunDurationMs", metadata);
     if (remaining.maxTotalResults <= 0) this.rejectBudget("search", source, "maxTotalResults", metadata);
     const startedAt = isoTime(this.now());
-    const attempt: SearchAttempt = { id: this.attemptId("search"), runId: this.runId, operation: "search", status: "started", source, query, location, intent, requestedLimit: Math.min(input.limit, remaining.maxTotalResults), repeatCount: this.repeatCount(source, query, location), startedAt };
+    const attempt: SearchAttempt = { id: this.attemptId("search"), runId: this.runId, operation: "search", status: "started", source, query, location, intent, requestedLimit: Math.min(input.limit, remaining.maxTotalResults), repeatCount, startedAt };
     const attemptIndex = this.attemptList.push(attempt) - 1;
     const token = this.nextToken++;
     this.pending.set(token, attempt);
@@ -460,10 +544,9 @@ export class AgentSearchState {
     const stats = this.sourceStatsByKey.get(source)!;
     stats.calls += 1;
     stats.searchCalls += 1;
-    this.record("search_started", { source, searchCall: this.searchCallCount, requestedLimit: attempt.requestedLimit, remaining: this.remainingBudgets() });
+    this.record("search_started", this.attemptPayload(attempt, { searchCall: this.searchCallCount }), "lifecycle");
     return { token, source, query, location, limit: attempt.requestedLimit!, intent, attemptIndex };
   }
-
   completeSearch(reservation: SearchReservation, hits: SearchHit[]) {
     const attempt = this.pending.get(reservation.token);
     if (!attempt || attempt.operation !== "search") throw new Error("Unknown search reservation.");
@@ -507,7 +590,9 @@ export class AgentSearchState {
     stats.duplicateCount += duplicateCount;
     stats.promisingJobs += promisingResultCount;
     stats.duplicateRate = stats.rawHits ? stats.duplicateCount / stats.rawHits : 0;
-    this.record("search_completed", { source: reservation.source, resultCount: hits.length, uniqueResultCount: added.length, duplicateCount, promisingResultCount, counts: { unique: this.uniqueCountValue, discovered: this.discoveredCountValue }, remaining: this.remainingBudgets() });
+    this.record("search_completed", this.attemptPayload(attempt, {
+      counts: { unique: this.uniqueCountValue, discovered: this.discoveredCountValue, enriched: this.enrichedKeys.size },
+    }));
     return added;
   }
 
@@ -522,7 +607,7 @@ export class AgentSearchState {
     attempt.latencyMs = this.latency(attempt);
     this.errors.push(`${reservation.source}: ${message}`);
     this.sourceStatsByKey.get(reservation.source)!.errors += 1;
-    this.record("search_failed", { source: reservation.source, error: message }, "error");
+    this.record("search_failed", this.attemptPayload(attempt, { errorCategory: "provider" }), "error");
     this.onSearchAttempt?.(copyAttempt(attempt));
   }
   private hitFor(source: JobSource, resultId: string) {
@@ -540,11 +625,13 @@ export class AgentSearchState {
     const resultId = text(input.resultId, 200);
     const hit = this.hitFor(source, resultId);
     if (!hit) this.rejectProvenance(source, resultId);
+    const sourceId = text(hit.sourceId, 200);
     this.open("detail", source, { resultId });
     const remaining = this.remainingBudgets();
     const metadata = { resultId };
-    if (remaining.maxDetailCalls <= 0) this.rejectBudget("detail", source, "maxDetailCalls", metadata);
-    if (remaining.maxRunDurationMs <= 0) this.rejectBudget("detail", source, "maxRunDurationMs", metadata);
+    const eventExtras = { sourceId, resultIdLength: resultId.length };
+    if (remaining.maxDetailCalls <= 0) this.rejectBudget("detail", source, "maxDetailCalls", metadata, eventExtras);
+    if (remaining.maxRunDurationMs <= 0) this.rejectBudget("detail", source, "maxRunDurationMs", metadata, eventExtras);
     const startedAt = isoTime(this.now());
     const attempt: SearchAttempt = { id: this.attemptId("detail"), operation: "detail", status: "started", source, resultId, cached: false, startedAt };
     const attemptIndex = this.attemptList.push(attempt) - 1;
@@ -553,7 +640,7 @@ export class AgentSearchState {
     this.detailCallCount += 1;
     const stats = this.sourceStatsByKey.get(source)!;
     stats.detailCalls += 1;
-    this.record("detail_started", { source, sourceId: hit.sourceId, detailCall: this.detailCallCount, remaining: this.remainingBudgets() });
+    this.record("detail_started", this.attemptPayload(attempt, { sourceId, detailCall: this.detailCallCount, cached: false }), "lifecycle");
     return { token, source, sourceId: hit.sourceId, resultId, hit: copyHit(hit), cached: false, attemptIndex };
   }
 
@@ -580,7 +667,12 @@ export class AgentSearchState {
     attempt.latencyMs = this.latency(attempt);
     const stats = this.sourceStatsByKey.get(reservation.source)!;
     if (!alreadyEnriched) stats.enrichedCount += 1;
-    this.record("detail_completed", { source: reservation.source, sourceId: reservation.sourceId, postingLength: posting.length, enrichedCount: this.enrichedKeys.size, promising: isNowPromising, remaining: this.remainingBudgets() });
+    this.record("detail_completed", this.attemptPayload(attempt, {
+      sourceId: text(reservation.sourceId, 200),
+      postingLength: posting.length,
+      enrichedCount: this.enrichedKeys.size,
+      promising: isNowPromising,
+    }));
   }
 
   failDetail(reservation: DetailReservation, error: unknown) {
@@ -594,7 +686,10 @@ export class AgentSearchState {
     attempt.latencyMs = this.latency(attempt);
     this.errors.push(`${reservation.source}: ${message}`);
     this.sourceStatsByKey.get(reservation.source)!.errors += 1;
-    this.record("detail_failed", { source: reservation.source, sourceId: reservation.sourceId, error: message }, "error");
+    this.record("detail_failed", this.attemptPayload(attempt, {
+      sourceId: text(reservation.sourceId, 200),
+      errorCategory: "provider",
+    }), "error");
   }
 
   getDetail(reservation: Pick<DetailReservation, "source" | "sourceId" | "hit">) {
@@ -670,7 +765,41 @@ export class AgentSearchState {
     if (!normalizedReason) throw new Error("finishSearch requires a reason.");
     const goals = [...new Set(unresolvedGoals.map((value) => text(value, 240)).filter(Boolean))].slice(0, 20);
     this.terminationValue = { reason: normalizedReason, reasonCategory: reasonCategory ?? inferReasonCategory(normalizedReason), unresolvedGoals: goals, finishedAt: isoTime(this.now()) };
-    this.record("search_finished", { reason: normalizedReason, reasonCategory: this.terminationValue.reasonCategory, unresolvedGoals: goals, counts: { unique: this.uniqueCountValue, discovered: this.discoveredCountValue, enriched: this.enrichedKeys.size }, remaining: this.remainingBudgets() });
+    const { coverage, coverageSufficient } = this.coverageDetails();
+    const marginalUtility = this.marginalUtility();
+    const sourceStats = Object.fromEntries([...this.sourceStatsByKey.entries()].map(([source, stats]) => [source, { ...stats }]));
+    this.record("search_finished", {
+      attemptId: null,
+      operation: null,
+      status: null,
+      source: null,
+      query: null,
+      location: null,
+      intent: null,
+      repeatCount: null,
+      requestedLimit: null,
+      resultCount: null,
+      uniqueResultCount: null,
+      duplicateCount: null,
+      promisingResultCount: null,
+      latencyMs: null,
+      sourceId: null,
+      resultId: null,
+      resultIdLength: null,
+      error: null,
+      errorCategory: null,
+      reason: normalizedReason,
+      reasonCategory: this.terminationValue.reasonCategory,
+      unresolvedGoals: goals,
+      termination: { ...this.terminationValue, unresolvedGoals: [...goals] },
+      counts: { unique: this.uniqueCountValue, discovered: this.discoveredCountValue, enriched: this.enrichedKeys.size },
+      coverage,
+      coverageSufficient,
+      marginalUtility,
+      sourceStats,
+      remaining: this.remainingBudgets(),
+      budget: this.budget,
+    });
     return this.termination;
   }
 
@@ -681,7 +810,39 @@ export class AgentSearchState {
 
   inspect(): AgentSearchSnapshot {
     const snapshot = this.snapshot();
-    this.record("search_state_inspected", { counts: snapshot.counts, remaining: snapshot.remaining, sourceStats: snapshot.sourceStats, termination: snapshot.termination ? { reason: snapshot.termination.reason, unresolvedGoalCount: snapshot.termination.unresolvedGoals.length } : null });
+    this.record("search_state_inspected", {
+      attemptId: null,
+      operation: null,
+      status: null,
+      source: null,
+      query: null,
+      location: null,
+      intent: null,
+      repeatCount: null,
+      requestedLimit: null,
+      resultCount: null,
+      uniqueResultCount: null,
+      duplicateCount: null,
+      promisingResultCount: null,
+      latencyMs: null,
+      sourceId: null,
+      resultId: null,
+      resultIdLength: null,
+      error: null,
+      errorCategory: null,
+      counts: snapshot.counts,
+      remaining: snapshot.remaining,
+      budget: this.budget,
+      sourceStats: snapshot.sourceStats,
+      coverage: snapshot.coverage,
+      marginalUtility: snapshot.marginalUtility,
+      coverageSufficient: snapshot.coverageSufficient,
+      termination: snapshot.termination ? {
+        ...snapshot.termination,
+        unresolvedGoals: [...snapshot.termination.unresolvedGoals],
+        unresolvedGoalCount: snapshot.termination.unresolvedGoals.length,
+      } : null,
+    });
     return snapshot;
   }
 

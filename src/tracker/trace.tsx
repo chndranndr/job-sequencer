@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Run, RunStatus, RunTaskRow, RunWorkflow, TrajectoryEvent } from "../shared.js";
+import type { Run, RunStatus, RunTaskRow, RunTrajectoryObservability, RunWorkflow, TrajectoryEvent } from "../shared.js";
 import { deriveRunTaskRows } from "../shared.js";
 import { getRun, getRunTrajectory, getRuns } from "../api.js";
 import { trackerHref } from "./hash.js";
@@ -53,7 +53,12 @@ function summaryText(value: string) {
   return scrubString(value).replace(/\s+/g, " ").trim().slice(0, 150);
 }
 
+function isProtectedTraceEvent(event: TrajectoryEvent) {
+  return event.kind === "thinking" || event.type === "system_prompt" || event.type === "user_prompt" || event.type === "assistant_thinking" || event.type === "assistant_message";
+}
+
 export function eventSummary(event: TrajectoryEvent) {
+  if (isProtectedTraceEvent(event)) return "[content omitted]";
   const payload = record(event.payload);
   if (typeof payload?.text === "string" && summaryText(payload.text)) return summaryText(payload.text);
   if (typeof payload?.toolName === "string") return summaryText(payload.toolName);
@@ -250,6 +255,34 @@ function dateTime(value: string | null | undefined) {
 function safeError(value: string | null | undefined) {
   return value ? summaryText(value) : "—";
 }
+function observableText(value: string | null | undefined, limit = 120) {
+  if (!value) return "—";
+  return value.replace(/\s+/g, " ").trim().slice(0, limit) || "—";
+}
+
+function observableCount(value: number | null | undefined) {
+  return value === null || value === undefined || !Number.isFinite(value) ? "—" : String(Math.max(0, Math.trunc(value)));
+}
+
+function observablePercent(value: number | null | undefined) {
+  return value === null || value === undefined || !Number.isFinite(value) ? "—" : `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function observableBudget(value: number | null | undefined, suffix = "") {
+  return value === null || value === undefined || !Number.isFinite(value) ? "—" : `${Math.max(0, Math.trunc(value))}${suffix}`;
+}
+
+export function observableBudgetUse(used: number, remaining: number | null | undefined, configured: number | null | undefined = null) {
+  const safeUsed = Math.max(0, Math.trunc(used));
+  const safeConfigured = configured !== null && configured !== undefined && Number.isFinite(configured) ? Math.max(0, Math.trunc(configured)) : null;
+  const safeRemaining = remaining !== null && remaining !== undefined && Number.isFinite(remaining) ? Math.max(0, Math.trunc(remaining)) : null;
+  if (safeConfigured !== null) return `${Math.min(safeUsed, safeConfigured)} / ${safeConfigured}`;
+  if (safeRemaining === null) return String(safeUsed);
+  return `${safeUsed} / ${safeUsed + safeRemaining}`;
+}
+function observableSearchTarget(target: { source: string | null; query: string | null; location: string | null }) {
+  return [observableText(target.source), observableText(target.location), observableText(target.query)].join(" · ");
+}
 
 function TraceLink({ href, navigate, children, className = "" }: { href: string; navigate: (href: string) => void; children: ReactNode; className?: string }) {
   return <a className={className} href={href} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href); }}>{children}</a>;
@@ -325,6 +358,7 @@ function RunHistoryRow({ run, active, navigate, now }: { run: Run; active: boole
 function TraceDetail({ id, navigate, now }: { id: string; navigate: (href: string) => void; now: number }) {
   const [run, setRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<TrajectoryEvent[]>([]);
+  const [observability, setObservability] = useState<RunTrajectoryObservability | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const loadedRunId = useRef<string | null>(null);
@@ -333,7 +367,7 @@ function TraceDetail({ id, navigate, now }: { id: string; navigate: (href: strin
     if (initial) setLoading(true);
     try {
       const [nextRun, trajectory] = await Promise.all([getRun(id), getRunTrajectory(id)]);
-      setRun(nextRun); setEvents(trajectory.events); setError("");
+      setRun(nextRun); setEvents(trajectory.events); setObservability(trajectory.observability); setError("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Trajectory unavailable."); }
     finally {
       if (initial) {
@@ -423,6 +457,7 @@ function TraceDetail({ id, navigate, now }: { id: string; navigate: (href: strin
       <div className="trace-rail-labels"><span>START</span><span>{dateTime(run.started_at)}</span><span>{run.status === "running" ? "LIVE" : "FINISH"}</span></div>
     </section>
     {run.summary !== null && <details className="trace-payload"><summary>Run result summary</summary><pre>{safePayloadText(run.summary)}</pre></details>}
+    <TraceObservabilitySummary run={run} observability={observability} />
     <section className="trace-section" aria-label="Trajectory event list">
       <div className="trace-section-head"><h2>Event ledger</h2><span>oldest first</span></div>
       {events.length ? <div className="trace-events">{events.map((event) => <TraceEvent key={`${event.sequence}-${event.type}`} event={event} />)}</div> : <p className="empty">No visible trajectory events were persisted.</p>}
@@ -430,10 +465,64 @@ function TraceDetail({ id, navigate, now }: { id: string; navigate: (href: strin
   </div>;
 }
 
+
+function TraceObservabilitySummary({ run, observability }: { run: Run; observability: RunTrajectoryObservability | null }) {
+  if (!observability) return <section className="trace-observability trace-section" aria-label="Summary"><div className="trace-section-head"><h2>Search observability</h2><span>not available</span></div><p className="empty">No search trajectory was captured.</p></section>;
+  const latestState = observability.states.at(-1);
+  const searchCalls = observability.attempts.filter((attempt) => attempt.operation === "search" && attempt.status !== "rejected").length;
+  const detailCalls = observability.attempts.filter((attempt) => attempt.operation === "detail" && attempt.status !== "rejected").length;
+  const sourceRows = Object.entries(observability.sourceStats).slice(0, 50);
+  const searchAttempts = observability.attempts.filter((attempt) => attempt.operation === "search").slice(0, 50);
+  const completedSearchCount = searchAttempts.filter((attempt) => attempt.status !== "rejected").length;
+  const coverageEntries = latestState ? Object.entries(latestState.coverage ?? {}).slice(0, 20) : [];
+  const usedSources = sourceRows.filter(([, stats]) => (stats.searchCalls ?? 0) > 0 || (stats.detailCalls ?? 0) > 0).length;
+  const remainingSearch = latestState?.remaining?.maxSearchCalls;
+  const remainingDetail = latestState?.remaining?.maxDetailCalls;
+  const configuredSearch = observability.configuredBudget?.maxSearchCalls;
+  const configuredDetail = observability.configuredBudget?.maxDetailCalls;
+  const terminationReason = observableText(observability.termination?.reason ?? observability.termination?.category);
+  const unresolvedGoals = observability.termination?.unresolvedGoals.slice(0, 20).map((goal) => observableText(goal, 120)).join(", ");
+  return <div className="trace-observability">
+    <section className="trace-section" aria-label="Summary">
+      <div className="trace-section-head"><h2>Search observability</h2><span>bounded projection</span></div>
+      <div className="trace-observe-cards">
+        <TraceMeta label="Status">{run.status}</TraceMeta>
+        <TraceMeta label="Discovered">{observableCount(observability.counts.discovered)}</TraceMeta>
+        <TraceMeta label="Unique jobs">{observableCount(observability.counts.unique)}</TraceMeta>
+        <TraceMeta label="Enriched">{observableCount(observability.counts.enriched)}</TraceMeta>
+        <TraceMeta label="Search calls">{observableBudgetUse(searchCalls, remainingSearch, configuredSearch)}</TraceMeta>
+        <TraceMeta label="Detail calls">{observableBudgetUse(detailCalls, remainingDetail, configuredDetail)}</TraceMeta>
+        <TraceMeta label="Sources used">{`${usedSources} / ${sourceRows.length}`}</TraceMeta>
+        <TraceMeta label="Duration">{formatTraceDuration(observability.resources.durationMs)}</TraceMeta>
+        <TraceMeta label="Tokens">{observableCount(observability.resources.totalTokens)}</TraceMeta>
+        <TraceMeta label="Est. cost">{formatEstimatedCost(observability.resources.estimatedCost)}</TraceMeta>
+        <TraceMeta label="Termination">{terminationReason}</TraceMeta>
+        {unresolvedGoals && <TraceMeta label="Unresolved">{unresolvedGoals}</TraceMeta>}
+      </div>
+    </section>
+    <section className="trace-section" aria-label="Query adaptation">
+      <div className="trace-section-head"><h2>Query adaptation</h2><span>{observableCount(completedSearchCount)} searches · {observableCount(observability.adaptations.length)} transitions</span></div>
+      {searchAttempts.length ? <div className="trace-observe-list">{searchAttempts.map((attempt) => <div className="trace-observe-adaptation" key={`${attempt.sequence}-${attempt.attemptId ?? attempt.query ?? "search"}`}><strong>{observableText(attempt.status)}</strong><span>{observableText(attempt.source)} · {observableText(attempt.location)} · {observableText(attempt.query)}</span><small>{observableCount(attempt.resultCount)} results · {observableCount(attempt.uniqueResultCount)} unique · {observableCount(attempt.promisingResultCount)} promising · {observablePercent(attempt.duplicateRate)} duplicate · {observableText(attempt.intent)}</small></div>)}</div> : <p className="empty">No search attempts were captured.</p>}
+      {observability.adaptations.length > 0 && <div className="trace-observe-list">{observability.adaptations.slice(0, 50).map((adaptation) => <div className="trace-observe-adaptation" key={`adaptation-${adaptation.sequence}-${observableSearchTarget(adaptation.to)}`}><strong>{observableText(adaptation.reason)}</strong><span>{observableSearchTarget(adaptation.from)} → {observableSearchTarget(adaptation.to)}</span><small>{observableText(adaptation.signal)}</small></div>)}</div>}
+    </section>
+    <section className="trace-section" aria-label="Source effectiveness">
+      <div className="trace-section-head"><h2>Source effectiveness</h2><span>{observableCount(sourceRows.length)} sources</span></div>
+      {sourceRows.length ? <div className="trace-observe-table"><div className="trace-observe-row trace-observe-row--head"><span>Source</span><span>Searches</span><span>Raw</span><span>Unique</span><span>Duplicate</span><span>Promising</span><span>Enriched</span><span>Failures</span><span>Latency</span></div>{sourceRows.map(([source, stats]) => <div className="trace-observe-row" key={source}><strong>{observableText(source)}</strong><span>{observableCount(stats.searchCalls)}</span><span>{observableCount(stats.rawHits)}</span><span>{observableCount(stats.uniqueCount)}</span><span>{observablePercent(stats.duplicateRate)}</span><span>{observableCount(stats.promisingCount)}</span><span>{observableCount(stats.enrichedCount)}</span><span>{observableCount(stats.failures)}</span><span>{observableBudget(stats.latencyMs, "ms")}</span></div>)}</div> : <p className="empty">No source statistics were captured.</p>}
+    </section>
+    <section className="trace-section" aria-label="State transitions">
+      <div className="trace-section-head"><h2>State transitions</h2><span>{observableCount(observability.states.length)} snapshots</span></div>
+      {latestState ? <><div className="trace-observe-state"><TraceMeta label="Coverage">{latestState.coverageSufficient === null ? "—" : latestState.coverageSufficient ? "sufficient" : "incomplete"}</TraceMeta><TraceMeta label="Remaining search">{observableBudget(remainingSearch)}</TraceMeta><TraceMeta label="Remaining detail">{observableBudget(remainingDetail)}</TraceMeta><TraceMeta label="Marginal utility">{observableText(latestState.marginalUtility?.status ?? latestState.marginalUtility?.recommendation)}</TraceMeta></div>{coverageEntries.length > 0 && <div className="trace-observe-coverage">{coverageEntries.map(([name, level]) => <span key={name}><strong>{observableText(name)}</strong> {observableText(level)}</span>)}</div>}</> : <p className="empty">No state snapshots were captured.</p>}
+    </section>
+    <section className="trace-section" aria-label="Policy events">
+      <div className="trace-section-head"><h2>Policy events</h2><span>{observableCount(observability.policyEvents.length)} decisions</span></div>
+      {observability.policyEvents.length ? <div className="trace-observe-list">{observability.policyEvents.slice(0, 50).map((policy) => <div className="trace-observe-policy" key={`${policy.sequence}-${policy.type}`}><strong>{observableText(policy.category)}</strong><span>{observableText(policy.type)}</span><small>{observableText(policy.reason ?? policy.error)}</small></div>)}</div> : <p className="empty">No policy events were captured.</p>}
+    </section>
+  </div>;
+}
+
 function TraceMeta({ label, children }: { label: string; children: ReactNode }) {
   return <div className="trace-meta-item"><em>{label}</em><strong>{children}</strong></div>;
 }
-
 function TaskRow({ row }: { row: RunTaskRow }) {
   return <div className={`trace-task task-${row.status}`}><i aria-hidden="true" /><span><strong>{row.label}</strong>{row.detail && <small>{row.detail}</small>}</span><b>{row.status === "active" ? "IN PROGRESS" : row.status.toUpperCase()}</b></div>;
 }
@@ -441,6 +530,6 @@ function TaskRow({ row }: { row: RunTaskRow }) {
 function TraceEvent({ event }: { event: TrajectoryEvent }) {
   return <details className={`trace-event event-${event.kind}`}>
     <summary><span className="trace-event-main"><em>{event.kind.replaceAll("_", " ")}</em><strong>{event.type.replaceAll("_", " ")}</strong><small>{eventSummary(event)}</small></span><span className="trace-event-time"><strong>{eventTime(event.timestamp)}</strong><small>{formatTraceDuration(event.durationMs)}</small></span></summary>
-    <div className="trace-event-body"><div className="trace-event-facts"><span>SEQ <b>{event.sequence}</b></span><span>CAPTURED <b>{dateTime(event.timestamp)}</b></span>{event.startedAt && <span>STARTED <b>{dateTime(event.startedAt)}</b></span>}{event.endedAt && <span>ENDED <b>{dateTime(event.endedAt)}</b></span>}</div><pre>{safePayloadText(event.payload)}</pre></div>
+    <div className="trace-event-body"><div className="trace-event-facts"><span>SEQ <b>{event.sequence}</b></span><span>CAPTURED <b>{dateTime(event.timestamp)}</b></span>{event.startedAt && <span>STARTED <b>{dateTime(event.startedAt)}</b></span>}{event.endedAt && <span>ENDED <b>{dateTime(event.endedAt)}</b></span>}</div>{isProtectedTraceEvent(event) ? <p className="trace-event-redacted">Content omitted from TRACE.</p> : <pre>{safePayloadText(event.payload)}</pre>}</div>
   </details>;
 }

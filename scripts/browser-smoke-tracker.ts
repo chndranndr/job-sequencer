@@ -8,7 +8,7 @@ import { chromium } from "playwright";
 import { expect } from "playwright/test";
 import { buildServer } from "../src/server/app.js";
 import { writeSettings, writeStructuredProfile } from "../src/server/config.js";
-import { listJobs, openDatabase, persistScrape, setJobStage } from "../src/server/db.js";
+import { appendRunTrajectoryEvent, finishRun, insertRun, listJobs, openDatabase, persistScrape, setJobStage } from "../src/server/db.js";
 import { createEmptyProfile } from "../src/shared.js";
 import type { ApplicationStrategy, CVDocument } from "../src/server/agents/types.js";
 import type { RunStrategistInput } from "../src/server/agents/strategist.js";
@@ -133,6 +133,20 @@ for (const stage of ["Selected", "Drafting", "Ready", "Applied"] as const) setJo
 const selectedJob = listJobs(db).find((job) => job.source_id === fixtures[1].sourceId);
 if (!selectedJob) throw new Error("Tracker smoke second fixture job was not persisted");
 setJobStage(db, selectedJob.id, "Selected");
+const traceRunId = "tracker-browser-adaptive";
+insertRun(db, { id: traceRunId, workflow: "scrape", status: "running", provider: "fixture", model: "adaptive", startedAt: "2026-08-20T00:00:00.000Z" });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "run_started", timestamp: "2026-08-20T00:00:00.000Z", payload: { workflow: "scrape" } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_started", timestamp: "2026-08-20T00:00:01.000Z", payload: { attemptId: "search-1", operation: "search", status: "started", source: "freehire", query: "backend broad", location: "Remote", intent: "discover", repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 3, maxDetailCalls: 3, maxTotalResults: 5, maxRunDurationMs: 11000 } } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_completed", timestamp: "2026-08-20T00:00:02.000Z", durationMs: 1000, payload: { attemptId: "search-1", operation: "search", status: "completed", source: "freehire", query: "backend broad", location: "Remote", resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 0, counts: { discovered: 2, unique: 1 }, remaining: { maxSearchCalls: 3, maxDetailCalls: 3, maxTotalResults: 3, maxRunDurationMs: 10000 } } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_started", timestamp: "2026-08-20T00:00:03.000Z", payload: { attemptId: "search-2", operation: "search", status: "started", source: "freehire", query: "platform engineer", location: "Remote", intent: "adapt", repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 2, maxDetailCalls: 3, maxTotalResults: 3, maxRunDurationMs: 9000 } } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_completed", timestamp: "2026-08-20T00:00:04.000Z", durationMs: 1000, payload: { attemptId: "search-2", operation: "search", status: "completed", source: "freehire", query: "platform engineer", location: "Remote", resultCount: 2, uniqueResultCount: 2, duplicateCount: 0, promisingResultCount: 2, counts: { discovered: 4, unique: 3 }, remaining: { maxSearchCalls: 2, maxDetailCalls: 3, maxTotalResults: 1, maxRunDurationMs: 8000 } } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_state_inspected", timestamp: "2026-08-20T00:00:05.000Z", payload: { counts: { discovered: 4, unique: 3, enriched: 0 }, coverage: { "role:platform engineer": "good", "location:remote": "medium" }, coverageSufficient: false, marginalUtility: { score: 1, recentSearches: 2, recentUniqueJobs: 3, recentPromisingJobs: 2, repeatedZeroYieldSearches: 0, status: "medium", recommendation: "Enrich promising candidates." }, remaining: { maxSearchCalls: 2, maxDetailCalls: 3, maxTotalResults: 1, maxRunDurationMs: 7000 }, termination: null } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "detail_started", timestamp: "2026-08-20T00:00:06.000Z", payload: { attemptId: "detail-3", operation: "detail", status: "started", source: "freehire", sourceId: "tracker-browser-job", resultId: "tracker-browser-job", remaining: { maxSearchCalls: 2, maxDetailCalls: 2, maxTotalResults: 1, maxRunDurationMs: 6000 } } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "detail_completed", timestamp: "2026-08-20T00:00:08.000Z", durationMs: 2000, payload: { attemptId: "detail-3", operation: "detail", status: "completed", source: "freehire", sourceId: "tracker-browser-job", resultId: "tracker-browser-job", postingLength: 86, enrichedCount: 1, promising: true, counts: { discovered: 4, unique: 3, enriched: 1 }, remaining: { maxSearchCalls: 2, maxDetailCalls: 2, maxTotalResults: 1, maxRunDurationMs: 4000 } } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "error", type: "search_budget_rejected", timestamp: "2026-08-20T00:00:08.500Z", payload: { attemptId: null, operation: "search", status: "rejected", source: "freehire", query: "platform engineer", location: "Remote", reason: "maxSearchCalls", errorCategory: "budget", remaining: { maxSearchCalls: 0, maxDetailCalls: 2, maxTotalResults: 1, maxRunDurationMs: 3500 } } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "error", type: "detail_provenance_rejected", timestamp: "2026-08-20T00:00:09.000Z", payload: { operation: "detail", source: "freehire", resultIdLength: 120, reason: "not_returned", error: "authorization: Bearer smoke-secret-value" } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_finished", timestamp: "2026-08-20T00:00:10.000Z", payload: { reason: "Coverage sufficient after adaptive query.", reasonCategory: "coverage_sufficient", unresolvedGoals: [], counts: { discovered: 4, unique: 3, enriched: 1 }, remaining: { maxSearchCalls: 2, maxDetailCalls: 2, maxTotalResults: 1, maxRunDurationMs: 2000 } } });
+finishRun(db, traceRunId, "succeeded", null, null, null, "2026-08-20T00:00:12.000Z");
 
 const app = await buildServer({
   dataDir,
@@ -204,6 +218,15 @@ try {
     await page.locator(route.marker).filter({ hasText: route.text }).waitFor({ state: "visible", timeout: 30_000 });
     await assertNoOverflow(page, `desktop ${route.hash}`);
   }
+  await openTracker(page, base, `#/trace/${traceRunId}`);
+  await expect(page.locator(".trace-observability")).toBeVisible();
+  await expect(page.locator(".trace-observability")).toContainText("Unique jobs");
+  await expect(page.locator(".trace-observability")).toContainText("Search calls");
+  await expect(page.locator(".trace-observability")).toContainText("platform engineer");
+  await expect(page.locator(".trace-observability")).toContainText("Coverage sufficient");
+  await expect(page.locator(".trace-observability")).toContainText("budget");
+  await expect(page.locator(".trace-observability")).not.toContainText("smoke-secret-value");
+  await assertNoOverflow(page, "desktop #/trace/adaptive");
 
   await openTracker(page, base, "#/pattern");
   await page.getByRole("button", { name: "Collapse workflow rack" }).click();
@@ -349,6 +372,9 @@ try {
     await page.locator(route.marker).filter({ hasText: route.text }).waitFor({ state: "visible", timeout: 30_000 });
     await assertNoOverflow(page, `mobile ${route.hash}`);
   }
+  await openTracker(page, base, `#/trace/${traceRunId}`);
+  await expect(page.locator(".trace-observability")).toBeVisible();
+  await assertNoOverflow(page, "mobile #/trace/adaptive");
   await openTracker(page, base, "#/order");
   await page.locator(".order-board").waitFor();
   const mobileBoard = await page.locator(".order-list").evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
