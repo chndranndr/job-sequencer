@@ -9,11 +9,21 @@ import {
   type AgentEvalRun,
 } from "./evals/trajectory.eval.js";
 
+type DetailFetchCounts = Pick<AgentEvalRun, "totalDetailFetches" | "usefulDetailFetches">;
+
+function aggregateDetailFetchPrecision(runs: readonly DetailFetchCounts[]) {
+  let totalDetailFetches = 0;
+  let usefulDetailFetches = 0;
+  for (const run of runs) {
+    totalDetailFetches += run.totalDetailFetches;
+    usefulDetailFetches += run.usefulDetailFetches;
+  }
+  return usefulDetailFetches / Math.max(1, totalDetailFetches);
+}
+
 function reportMetrics(runs: readonly AgentEvalRun[], scenarios = trajectoryEvalScenarios) {
   let searchCalls = 0;
   let detailCalls = 0;
-  let totalDetailFetches = 0;
-  let usefulDetailFetches = 0;
   let duplicateRate = 0;
   let unique = 0;
   let promising = 0;
@@ -28,9 +38,6 @@ function reportMetrics(runs: readonly AgentEvalRun[], scenarios = trajectoryEval
     const searches = run.observability.attempts.filter((attempt) => attempt.operation === "search" && attempt.status !== "rejected");
     const details = run.observability.attempts.filter((attempt) => attempt.operation === "detail" && attempt.status !== "rejected");
     searchCalls += searches.length;
-    totalDetailFetches += run.totalDetailFetches;
-    usefulDetailFetches += run.usefulDetailFetches;
-    detailCalls += details.length;
     duplicateRate += searches.length ? searches.reduce((sum, attempt) => sum + (attempt.duplicateRate ?? 0), 0) / searches.length : 0;
     unique += searches.reduce((sum, attempt) => sum + (attempt.uniqueResultCount ?? 0), 0);
     promising += searches.reduce((sum, attempt) => sum + (attempt.promisingResultCount ?? 0), 0);
@@ -56,7 +63,7 @@ function reportMetrics(runs: readonly AgentEvalRun[], scenarios = trajectoryEval
     duplicateRate: duplicateRate / count,
     uniqueJobsPerSearchCall: unique / Math.max(1, searchCalls),
     promisingJobsPerSearchCall: promising / Math.max(1, searchCalls),
-    detailFetchPrecision: usefulDetailFetches / Math.max(1, totalDetailFetches),
+    detailFetchPrecision: aggregateDetailFetchPrecision(runs),
     unnecessarySearchRate: unnecessarySearches / Math.max(1, searchCalls),
     ...(precisionRuns.length ? { precisionAt10: precisionRuns.reduce((sum, run) => sum + (run.precisionAt10 ?? 0), 0) / precisionRuns.length } : {}),
   };
@@ -140,10 +147,10 @@ test("trajectory evaluation runs an agent executor and an independent baseline",
     }
   }
   const syntheticRuns = [
-    { ...reports[0]!, totalDetailFetches: 2, usefulDetailFetches: 2, detailFetchPrecision: 1 },
-    { ...reports[0]!, totalDetailFetches: 0, usefulDetailFetches: 0, detailFetchPrecision: 0 },
-  ] satisfies AgentEvalRun[];
-  assert.equal(reportMetrics(syntheticRuns, []).detailFetchPrecision, 1);
+    { totalDetailFetches: 2, usefulDetailFetches: 2 },
+    { totalDetailFetches: 0, usefulDetailFetches: 0 },
+  ] satisfies DetailFetchCounts[];
+  assert.equal(aggregateDetailFetchPrecision(syntheticRuns), 1);
   const baseline = reports.map((report) => report.baseline);
   console.log(JSON.stringify({
     scenarios: { passed: reports.filter((item) => item.passed).length, failed: reports.filter((item) => !item.passed).length },
