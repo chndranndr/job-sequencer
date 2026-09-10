@@ -43,6 +43,19 @@ const fixtures = [
     strengths: ["Backend"],
     gaps: ["Scale is not stated."],
   },
+  {
+    sourceId: "tracker-browser-lifecycle",
+    source: "freehire",
+    url: "https://example.test/tracker-browser-lifecycle",
+    company: "Tracker Lifecycle",
+    role: "Senior Backend Engineer",
+    location: "Remote",
+    posting: "Build and operate reliable backend services.",
+    score: 85,
+    reason: "Backend reliability experience is a strong fit.",
+    strengths: ["Backend", "Reliability"],
+    gaps: [],
+  },
 ];
 
 const manualPostingFixture = "Tracker Manual\nSite Reliability Engineer\nRemote\n\nOwn resilient systems and improve service reliability.";
@@ -147,6 +160,8 @@ appendRunTrajectoryEvent(db, traceRunId, { kind: "error", type: "search_budget_r
 appendRunTrajectoryEvent(db, traceRunId, { kind: "error", type: "detail_provenance_rejected", timestamp: "2026-08-20T00:00:09.000Z", payload: { operation: "detail", source: "freehire", resultIdLength: 120, reason: "not_returned", error: "authorization: Bearer smoke-secret-value" } });
 appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_finished", timestamp: "2026-08-20T00:00:10.000Z", payload: { reason: "Coverage sufficient after adaptive query.", reasonCategory: "coverage_sufficient", unresolvedGoals: [], counts: { discovered: 4, unique: 3, enriched: 1 }, remaining: { maxSearchCalls: 2, maxDetailCalls: 2, maxTotalResults: 1, maxRunDurationMs: 2000 } } });
 finishRun(db, traceRunId, "succeeded", null, null, null, "2026-08-20T00:00:12.000Z");
+const lifecycleJob = listJobs(db).find((job) => job.source_id === fixtures[2].sourceId);
+if (!lifecycleJob) throw new Error("Tracker smoke lifecycle fixture job was not persisted");
 
 const app = await buildServer({
   dataDir,
@@ -163,6 +178,12 @@ const app = await buildServer({
   },
   auditor: async () => ({ issues: [] }),
   critic: async () => ({ score: 8, issues: [], summary: "Ready." }),
+  interviewExecutor: async ({ onDelta }) => {
+    const response = "Tell me about a reliability improvement you shipped.";
+    onDelta?.(response);
+    return response;
+  },
+  followUpExecutor: async () => "Thanks for the interview. I appreciated the discussion about reliability and backend systems.",
   availableModels: async () => [{ id: "fixture", name: "Fixture" }],
   manualImporter: async () => manualImportFixture,
   projectRoot: process.cwd(),
@@ -334,7 +355,7 @@ try {
   await page.mouse.up();
   await expect.poll(async () => Number(await diskSeparator.getAttribute("aria-valuenow"))).toBeGreaterThan(diskBeforeDrag);
 
-  await openTracker(page, base, "#/order");
+  await openTracker(page, base, "#/order/follow");
   await page.locator(".order-board").waitFor();
   await expect(page.locator(".reco")).toContainText("Generate");
   await expect(page.locator(".reco button", { hasText: "Accept · generate" })).toBeVisible();
@@ -365,6 +386,53 @@ try {
     return (await response.json()).generation_direction.revisionCount;
   }, { timeout: 30_000 }).toBe(1);
   await expect(page.getByRole("button", { name: "Revise", exact: true })).toBeEnabled({ timeout: 30_000 });
+
+  await openTracker(page, base, `#/sample/${lifecycleJob.id}`);
+  await expect(page.getByRole("button", { name: "Select", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Select", exact: true }).click();
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/jobs/${lifecycleJob.id}`)).json()).stage).toBe("Selected");
+
+  await page.getByRole("button", { name: "Generate documents", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Approve documents", exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/jobs/${lifecycleJob.id}`)).json()).stage).toBe("Drafting");
+
+  await page.getByRole("button", { name: "Approve documents", exact: true }).click();
+  const approvalDialog = page.getByRole("dialog", { name: "Approve documents?" });
+  await approvalDialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Mark Applied", exact: true })).toBeVisible();
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/jobs/${lifecycleJob.id}`)).json()).stage).toBe("Ready");
+
+  await page.getByRole("button", { name: "Mark Applied", exact: true }).click();
+  const appliedDialog = page.getByRole("dialog", { name: "Mark as Applied" });
+  await appliedDialog.getByLabel("Channel or portal").fill("Company careers portal");
+  await appliedDialog.getByRole("button", { name: "Confirm Applied", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Change outcome", exact: true })).toBeVisible();
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/jobs/${lifecycleJob.id}`)).json()).stage).toBe("Applied");
+
+  await page.getByRole("button", { name: "Change outcome", exact: true }).click();
+  const outcomeDialog = page.getByRole("dialog", { name: "Change outcome" });
+  await outcomeDialog.getByRole("button", { name: "Save outcome", exact: true }).click();
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/jobs/${lifecycleJob.id}`)).json()).stage).toBe("Interview");
+
+  await page.getByRole("button", { name: "Open PHRASE", exact: true }).click();
+  await expect(page.locator(".phrase-panel")).toBeVisible();
+  await page.getByRole("button", { name: "Start practice", exact: true }).click();
+  await expect(page.locator(".msg").filter({ hasText: "Tell me about a reliability improvement you shipped." })).toBeVisible({ timeout: 30_000 });
+
+  await openTracker(page, base, "#/order");
+  const followUpEditor = page.getByRole("region", { name: "Follow-up editor" });
+  await followUpEditor.getByLabel("Follow-up job").selectOption(lifecycleJob.id);
+  await followUpEditor.getByRole("button", { name: "Draft follow-up", exact: true }).click();
+  const followUpDraft = followUpEditor.locator(".follow-up__draft textarea");
+  await expect(followUpDraft).toHaveValue(/Thanks for the interview/, { timeout: 30_000 });
+  await expect.poll(async () => {
+    const job = await (await page.request.get(`${base}/api/jobs/${lifecycleJob.id}`)).json();
+    return { stage: job.stage, interviewMessages: job.interview_messages?.length ?? 0, followUpDraft: job.follow_up_draft };
+  }, { timeout: 30_000 }).toEqual({
+    stage: "Interview",
+    interviewMessages: 2,
+    followUpDraft: "Thanks for the interview. I appreciated the discussion about reliability and backend systems.",
+  });
 
   await page.setViewportSize({ width: 390, height: 844 });
   for (const route of routes) {
