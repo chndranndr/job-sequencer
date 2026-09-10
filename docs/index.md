@@ -39,7 +39,7 @@ Working plans and execution records are intentionally local-only. They are not r
 
 ## Debt and deferred capabilities
 
-- CI is deferred because no repository CI provider is configured.
+- GitHub Actions runs `npm run check`, `npm test`, and `npm run eval` on pushes and pull requests.
 - Observability is partial: workflow telemetry and JSON health are structured, while general request, error, and lifecycle logging is not complete.
 - Live-provider evaluation remains opt-in; deterministic fixtures are the default acceptance evidence.
 

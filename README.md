@@ -1,6 +1,60 @@
 # Job Sequencer
 
-Job Sequencer is a local-first job-search dashboard for one person. The app runs on loopback, uses Pi SDK in-process for AI workflows, and keeps provider credentials outside the project.
+Job Sequencer is a local-first job-search workbench for one person. It turns a reviewed profile and explicit search criteria into a ranked shortlist, then keeps every next step manual.
+
+The app runs on loopback. Pi handles bounded search and drafting workflows in-process. SQLite keeps the local record. Credentials stay in Pi's auth store or environment variables. The user approves documents and records applications.
+
+<p align="center">
+  <img src="README-assets/job-sequencer-pattern.png" alt="Job Sequencer Tracker showing ranked remote engineering jobs and the last adaptive run" width="100%">
+</p>
+
+The screenshot and video use deterministic fixture data. They show the real Tracker UI without provider credentials.
+
+<video controls muted loop playsinline width="100%" poster="README-assets/job-sequencer-pattern.png">
+  <source src="README-assets/job-sequencer-walkthrough.mp4" type="video/mp4">
+</video>
+
+[Download the 24-second search-to-TRACE walkthrough](README-assets/job-sequencer-walkthrough.mp4)
+
+## The product loop
+
+1. Define a profile and search criteria in **DISK**.
+2. Start a bounded search from **PATTERN**.
+3. Let Pi refine the query when the first pass is weak.
+4. Review ranked jobs and open their evidence in **SAMPLE**.
+5. Select jobs yourself before document generation.
+6. Approve drafts before you record **Applied**.
+7. Practice in **PHRASE** and draft follow-up messages in **ORDER**.
+8. Inspect every run in **TRACE**.
+
+The workflow never submits an application, sends a message, or silently advances a job. Each stage ends at a visible approval gate.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Tracker[React Tracker] --> API[Fastify API]
+  API --> Orchestrator[Agent orchestrator]
+  Orchestrator --> Pi[Pi Coding Agent]
+  Pi --> Tools[Bounded source tools]
+  Tools --> Sources[Job sources]
+  API --> SQLite[(SQLite)]
+  Orchestrator --> Memory[(Search memory)]
+  Orchestrator --> Evidence[(Evidence store)]
+  API --> Evidence
+```
+
+The browser owns Tracker views and calls the API through `src/api.ts`. The API owns workflow state, run coordination, SQLite persistence, and approval boundaries. The orchestrator gives Pi typed search and detail tools instead of shell access. Search memory improves later queries without overriding current criteria.
+
+## What the repository demonstrates
+
+- A React and Vite workbench with PATTERN, SAMPLE, ORDER, PHRASE, DISK, and TRACE surfaces.
+- Fastify routes backed by SQLite and explicit run IDs.
+- Bounded Pi sessions with typed, source-specific tools.
+- Deterministic fixtures for search adaptation, ranking, provenance checks, budget limits, and trace telemetry.
+- Local-only operation with no cloud sync, automatic provider fallback, or hidden job submission.
+
+The rest of this README is the operator guide. It keeps the complete install, authentication, runtime, verification, and safety details close to the commands they describe.
 
 ## Requirements
 
@@ -159,8 +213,10 @@ The canonical profile is `data/profile.json`. A legacy `data/profile.md` is pres
 
 ```bash
 npm run typecheck
+npm run check
 npm run build
 npm test
+npm run eval
 npm run test:vendor:freehire
 npm run smoke
 npm run smoke:latex
@@ -182,6 +238,10 @@ npm run smoke:browser:tracker
 `smoke:browser` starts fixture API/frontend processes, opens the root Tracker, exercises PATTERN/ORDER/PHRASE/SAMPLE/DISK/TRACE, and checks zero console/page/request errors plus desktop/mobile overflow. `smoke:browser:tracker` remains an explicit alias for existing gate commands.
 
 `smoke:latex` uses temporary files and fixed executable argument arrays. It exits non-zero when a compiler or PDF verifier is unavailable.
+
+## Continuous integration
+
+GitHub Actions runs `npm run check`, `npm test`, and `npm run eval` for pushes and pull requests. The workflow is [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Workflow and safety boundaries
 
