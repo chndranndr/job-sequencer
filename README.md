@@ -8,13 +8,13 @@ The app runs on loopback. Pi handles bounded search and drafting workflows in-pr
   <img src="docs/assets/job-sequencer-pattern.png" alt="Job Sequencer Tracker showing ranked remote engineering jobs and the last adaptive run" width="100%">
 </p>
 
-The screenshot and video use deterministic fixture data. They show the real Tracker UI without provider credentials.
+The screenshot and animated walkthrough use deterministic fixture data. They show the real Tracker UI without provider credentials.
 
-<video controls muted loop playsinline width="100%" poster="docs/assets/job-sequencer-pattern.png">
-  <source src="docs/assets/job-sequencer-walkthrough.mp4" type="video/mp4">
-</video>
+<p align="center">
+  <img src="docs/assets/job-sequencer-walkthrough.gif" alt="Job Sequencer search-to-TRACE walkthrough" width="100%">
+</p>
 
-[Download the 24-second search-to-TRACE walkthrough](docs/assets/job-sequencer-walkthrough.mp4)
+[Open the 24-second search-to-TRACE GIF](docs/assets/job-sequencer-walkthrough.gif)
 
 ## The product loop
 
