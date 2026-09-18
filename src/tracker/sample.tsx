@@ -118,7 +118,7 @@ function clampInspectorWidth(value: number) {
   return Math.max(MIN_INSPECTOR_WIDTH, Math.min(MAX_INSPECTOR_WIDTH, value));
 }
 
-export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, run }: {
+export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, run, popup, onClose }: {
   jobId?: string;
   settings: Settings | null;
   navigate: (href: string) => void;
@@ -126,6 +126,8 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
   onRun: (detail: { id: string; workflow: "generate"; status: "running" }) => void;
   onReload: () => void;
   run: Run | null;
+  popup?: boolean;
+  onClose?: () => void;
 }) {
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
@@ -314,7 +316,10 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
 
   return <>
     <section className="panel sample-panel">
-      <div className="panel-h">SAMPLE · {job.company} <a href={trackerHref("pattern")} onClick={(event) => { event.preventDefault(); navigate("#/pattern"); }}>PATTERN</a></div>
+      <div className="panel-h">SAMPLE · {job.company} <span className="sample-head-actions">
+        <a href={popup ? trackerHref("sample", job.id) : trackerHref("pattern")} onClick={(event) => { event.preventDefault(); navigate(popup ? trackerHref("sample", job.id) : "#/pattern"); }}>{popup ? "FULL PAGE" : "PATTERN"}</a>
+        {popup && onClose && <button type="button" aria-label="Close job popup" onClick={onClose}>×</button>}
+      </span></div>
       <div className="sample-scroll">
         <header className="sample-head">
           <div>
@@ -457,9 +462,50 @@ export function SampleView({ jobId, settings, navigate, toast, onRun, onReload, 
   </>;
 }
 
+export function SamplePopup({ jobId, settings, navigate, toast, onRun, onReload, run, onClose }: {
+  jobId: string;
+  settings: Settings | null;
+  navigate: (href: string) => void;
+  toast: (message: string) => void;
+  onRun: (detail: { id: string; workflow: "generate"; status: "running" }) => void;
+  onReload: () => void;
+  run: Run | null;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // Latest-ref: OrderView passes an inline onClose, and App re-renders every 80ms for the
+  // transport clock. Depending on onClose directly would re-run this effect on every tick
+  // and steal focus from whatever the user is typing inside the popup.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // A nested Confirm/Apply/Outcome dialog owns this Escape; its own listener closes it.
+      if (document.querySelector(".sample-dialog-backdrop")) return;
+      event.preventDefault();
+      closeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return <div className="sample-popup-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="sample-popup" ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="SAMPLE job detail">
+      <SampleView popup jobId={jobId} settings={settings} navigate={navigate} toast={toast} onRun={onRun} onReload={onReload} run={run} onClose={onClose} />
+    </div>
+  </div>;
+}
+
 function SampleDialog({ open, title, children, actions, onClose }: { open: boolean; title: string; children: ReactNode; actions: ReactNode; onClose: () => void }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); onClose(); } };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
   if (!open) return null;
-  return <div className="sample-dialog-backdrop" role="presentation" onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
+  return <div className="sample-dialog-backdrop" role="presentation">
     <div className="sample-dialog" role="dialog" aria-modal="true" aria-labelledby="sample-dialog-title">
       <div className="sample-dialog-head"><h2 id="sample-dialog-title">{title}</h2><button aria-label="Close dialog" onClick={onClose}>×</button></div>
       <div className="sample-dialog-body">{children}</div>

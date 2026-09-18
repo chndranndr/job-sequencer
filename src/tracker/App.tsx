@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Criteria, Job, JobStage, Run, Settings, TrajectoryEvent } from "../shared.js";
+import type { Criteria, Job, JobStage, Run, Settings, StructuredProfile, TrajectoryEvent } from "../shared.js";
 import { jobSourceLabel } from "../shared.js";
 import { api, getActiveRun, getCriteria, getJobs, getProfile, getRun, getRunTrajectory, getSettings } from "../api.js";
 import { drawSquareWave, stopTrackerTune } from "./audio.js";
-import { ActiveRunStrip } from "./agent.js";
+import { ActiveRunStrip, type SearchPreferencePanel } from "./agent.js";
 import { TapeDeck } from "./tape-deck.js";
 import { DiskView } from "./disk.js";
 import { parseTrackerHash, TRACKER_VIEWS, trackerHref, orderTabLabel, type OrderFocus, type TrackerRoute } from "./hash.js";
@@ -17,6 +17,9 @@ import { shouldRefreshActiveRun } from "./visibility.js";
 import { WorkflowRack } from "./workflow-rack.js";
 import { WORKFLOW_CHANNELS, type WorkflowChannelId } from "./workflow.js";
 import { useWorkflowCues } from "../workflow-cues.js";
+import { cloneProfile } from "../profile-editor.js";
+import { cloneSettings, settingsAreDirty } from "../settings-editor.js";
+import { readMuted, writeMuted } from "./mute.js";
 import "./studio.css";
 
 const summaryStages: JobStage[] = ["Recommended", "Discarded", "Selected", "Drafting", "Ready", "Applied", "Interview", "Offer", "Rejected", "Archived"];
@@ -27,11 +30,37 @@ const commands = [
   ["/import", "Paste a posting into a new row"],
   ["/disk", "Open profile and settings"],
 ];
+type ManualBatchResult = {
+  runId: string | null;
+  accepted: Array<{ index: number; input: string; url: string }>;
+  rejected: Array<{ index: number; input: string; url?: string; error: string }>;
+  reused: boolean;
+};
+
+function profileHasSearchContext(profile: StructuredProfile) {
+  const entryValues = (entries: readonly object[]) => entries.flatMap(entry => Object.entries(entry).filter(([key]) => key !== "id").flatMap(([, value]) => Array.isArray(value) ? value : [value]));
+  return [
+    profile.identity.headline,
+    profile.identity.summary,
+    ...profile.workPreferences.targetRoles,
+    profile.workPreferences.authorizationStatus,
+    profile.workPreferences.relocationPreference,
+    profile.workPreferences.remotePreference,
+    ...entryValues([...profile.experience, ...profile.education, ...profile.skills, ...profile.certifications, ...profile.projects, ...profile.awards, ...profile.languages]),
+  ].some(value => typeof value === "string" && Boolean(value.trim()));
+}
+
 
 export function TrackerApp() {
   const [route, setRoute] = useState<TrackerRoute>(() => parseTrackerHash());
   const [settings, setSettings] = useState<Settings | null>(null);
   const [criteria, setCriteria] = useState<Criteria | null>(null);
+  const [savedCriteria, setSavedCriteria] = useState<Criteria | null>(null);
+  const [savedSettings, setSavedSettings] = useState<Settings | null>(null);
+  const [prefsError, setPrefsError] = useState("");
+  // "loading" gates the scrape ask even when stale snapshots exist: a failed refresh keeps
+  // criteria/settings non-null, so nullness alone cannot distinguish fresh from stale.
+  const [prefsLoad, setPrefsLoad] = useState<"loading" | "ok" | "failed">("loading");
   const [profileReady, setProfileReady] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [filter, setFilter] = useState<JobStage | "all">("all");
@@ -44,12 +73,13 @@ export function TrackerApp() {
   const [query, setQuery] = useState("");
   const [tapeOpen, setTapeOpen] = useState(false);
   const [tapeLive, setTapeLive] = useState(false);
+  const [muted, setMuted] = useState(readMuted);
   const [now, setNow] = useState(() => Date.now());
   const [clock, setClock] = useState("");
   const osc = useRef<HTMLCanvasElement>(null);
   const currentRunId = useRef<string | null>(null);
   const syncRef = useRef<ReturnType<typeof createRunSyncChannel> | null>(null);
-  useWorkflowCues(run);
+  useWorkflowCues(run, muted);
 
   function navigate(href: string) {
     const request = { allowed: true };
@@ -74,11 +104,34 @@ export function TrackerApp() {
     setJobs(result.jobs);
   }
   useEffect(() => {
-    void getSettings().then(setSettings).catch(() => undefined);
-    void getCriteria().then(setCriteria).catch(() => undefined);
-    void getProfile().then((result) => setProfileReady(result.canonical && Boolean(result.profile.identity.firstName || result.profile.identity.summary))).catch(() => undefined);
+    void getSettings().then((value) => { setSettings(value); setSavedSettings(cloneSettings(value)); }).catch(() => undefined);
+    void getCriteria().then((value) => { setCriteria(value); setSavedCriteria(cloneProfile(value)); }).catch(() => undefined);
+    void getProfile().then((result) => setProfileReady(result.canonical && profileHasSearchContext(result.profile))).catch(() => undefined);
     void reloadJobs().catch(() => undefined);
   }, []);
+  useEffect(() => {
+    if (!pendingScrape) return;
+    let active = true;
+    setPrefsLoad("loading");
+    void Promise.all([getCriteria(), getSettings()])
+      .then(([nextCriteria, nextSettings]) => {
+        if (!active) return;
+        setCriteria(nextCriteria);
+        setSavedCriteria(cloneProfile(nextCriteria));
+        setSettings(nextSettings);
+        setSavedSettings(cloneSettings(nextSettings));
+        setPrefsError("");
+        setPrefsLoad("ok");
+      })
+      .catch((caught) => {
+        if (!active) return;
+        // The snapshots stay non-null here, so the load state is the only thing that can
+        // gate the scrape: without it a failed refresh would let stale preferences through.
+        setPrefsError(caught instanceof Error ? caught.message : "Search preferences could not be loaded.");
+        setPrefsLoad("failed");
+      });
+    return () => { active = false; };
+  }, [pendingScrape]);
 
   function observeRun(next: Run | null) {
     currentRunId.current = next?.id ?? null;
@@ -184,6 +237,7 @@ export function TrackerApp() {
     return () => window.clearInterval(timer);
   }, [run?.status, tapeLive]);
   useEffect(() => () => stopTrackerTune(), []);
+  useEffect(() => { writeMuted(muted); }, [muted]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 2800);
@@ -205,10 +259,9 @@ export function TrackerApp() {
   const scrapeIssues = useMemo(() => {
     const issues = [];
     if (!profileReady) issues.push("Save a structured profile first.");
-    if (!criteria?.roles.length || !criteria.locations.length) issues.push("Add at least one target role and location.");
     if (!settings?.model) issues.push("Select a provider model on DISK.");
     return issues;
-  }, [profileReady, criteria, settings]);
+  }, [profileReady, settings]);
   const enabledLabels = settings ? (settings.enabledSources?.length ? settings.enabledSources : [settings.source]).map((source) => jobSourceLabel(source, settings.customSources ?? [])).join(", ") : "…";
   const running = run?.status === "running";
   const playIndex = running ? Math.floor(now / 400) : 0;
@@ -231,10 +284,22 @@ export function TrackerApp() {
     announce({ id: result.runId, workflow: "manual_import", status: "running" });
     setToast("Manual import started.");
   }
+  async function startManualBatch(urls: string[]): Promise<ManualBatchResult> {
+    if (running) throw new Error("Another AI run is already active.");
+    const result = await api<ManualBatchResult>("/api/jobs/manual/batch", { method: "POST", body: JSON.stringify({ urls }) });
+    if (result.reused) {
+      setToast("Batch already queued.");
+      return result;
+    }
+    if (result.runId) announce({ id: result.runId, workflow: "manual_import", status: "running" });
+    const rejected = result.rejected.map(({ index, error }) => `Link ${index + 1}: ${error}`).join(" ");
+    setToast(rejected ? `Queued ${result.accepted.length} link(s). ${rejected}` : `Queued ${result.accepted.length} link(s).`);
+    return result;
+  }
   async function runCommand(value: string) {
     const text = value.trim();
     if (!text) return;
-    if (text.startsWith("/scrape")) { setPendingScrape(true); navigate("#/pattern"); return; }
+    if (text.startsWith("/scrape")) { requestScrape(); navigate("#/pattern"); return; }
     if (text.startsWith("/generate")) { setOrderFocus("draft"); void generate(jobs.filter((job) => job.stage === "Selected").map((job) => job.id)); navigate(trackerHref("order", undefined, "draft")); return; }
     if (text.startsWith("/interview")) { navigate("#/phrase"); return; }
     if (text.startsWith("/disk")) { navigate("#/disk"); return; }
@@ -247,7 +312,53 @@ export function TrackerApp() {
     }
     setToast("Use a /command. Pi does not take freeform workspace chat.");
   }
+  const prefsReady = prefsLoad === "ok" && Boolean(criteria && savedCriteria && settings && savedSettings);
+  const prefsDirty = Boolean(criteria && savedCriteria && JSON.stringify(criteria) !== JSON.stringify(savedCriteria)) || settingsAreDirty(settings, savedSettings);
+
+  async function saveSearchPreferences(): Promise<boolean> {
+    if (prefsLoad !== "ok" || !criteria || !settings || !savedCriteria || !savedSettings) {
+      // A failed or unfinished preference load must not fall through to POST /api/scrape:
+      // the server reads persisted criteria.json/settings.json at run start, so scraping
+      // here would silently run on preferences the user never saw.
+      setPrefsError("Search preferences are not loaded, so the scrape cannot start.");
+      return false;
+    }
+    const criteriaDirty = JSON.stringify(criteria) !== JSON.stringify(savedCriteria);
+    const settingsDirty = settingsAreDirty(settings, savedSettings);
+    if (!criteriaDirty && !settingsDirty) { setPrefsError(""); return true; }
+    try {
+      const [nextCriteria, nextSettings] = await Promise.all([
+        criteriaDirty ? api<Criteria>("/api/criteria", { method: "PUT", body: JSON.stringify(criteria) }) : Promise.resolve(criteria),
+        settingsDirty ? api<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(settings) }) : Promise.resolve(settings),
+      ]);
+      setCriteria(nextCriteria);
+      setSavedCriteria(cloneProfile(nextCriteria));
+      adoptSettings(nextSettings);
+      setPrefsError("");
+      return true;
+    } catch (caught) {
+      setPrefsError(caught instanceof Error ? caught.message : "Search preferences were not saved.");
+      return false;
+    }
+  }
+
+  // DISK owns its own saved snapshot, so a successful DISK settings save must refresh ours
+  // too; adopting only `settings` would leave the AGENT editor permanently DIRTY and make
+  // Revert restore the pre-DISK values.
+  function adoptSettings(value: Settings) {
+    setSettings(value);
+    setSavedSettings(cloneSettings(value));
+  }
+
+  // Sets prefsLoad("loading") in the same batch as pendingScrape(true), so the ask can never
+  // first paint an enabled Yes off a prior "ok" state before the refresh effect runs.
+  function requestScrape() {
+    setPrefsLoad("loading");
+    setPendingScrape(true);
+  }
+
   async function confirmScrape() {
+    if (!(await saveSearchPreferences())) { setToast("Search preferences were not saved. Scrape did not start."); return; }
     setPendingScrape(false);
     try {
       const result = await api<{ runId: string }>("/api/scrape", { method: "POST" });
@@ -272,7 +383,7 @@ export function TrackerApp() {
     const channel = WORKFLOW_CHANNELS.find((item) => item.id === id);
     if (!channel) return;
     if (channel.action === "scrape") {
-      setPendingScrape(true);
+      requestScrape();
       setFilter("all");
       navigate(trackerHref("pattern"));
       return;
@@ -285,8 +396,20 @@ export function TrackerApp() {
   const agentProps = {
     run, events, pendingScrape, scrapeIssues,
     onConfirmScrape: () => void confirmScrape(),
-    onCancelPending: () => setPendingScrape(false),
+    onCancelPending: () => { setPendingScrape(false); setPrefsError(""); },
     navigate, onFilter: setFilter, now,
+    preferences: {
+      criteria, settings, ready: prefsReady, dirty: prefsDirty, error: prefsError,
+      onCriteria: setCriteria,
+      onSettings: setSettings,
+      onError: setPrefsError,
+      onSave: () => void saveSearchPreferences().then((saved) => { if (saved) setToast("Search preferences written to disk."); }),
+      onRevert: () => {
+        if (savedCriteria) setCriteria(cloneProfile(savedCriteria));
+        if (savedSettings) setSettings(cloneSettings(savedSettings));
+        setPrefsError("");
+      },
+    } satisfies SearchPreferencePanel,
   };
 
   return <div className="studio">
@@ -296,8 +419,13 @@ export function TrackerApp() {
         <div><strong>TRACKER</strong><span>local agent · 127.0.0.1</span></div>
       </div>
       <div className="transport-ctrls">
-        <button className="ico play" title="Start scrape" aria-label="Play scrape" onClick={() => { setPendingScrape(true); navigate("#/pattern"); }}>
+        <button className="ico play" title="Start scrape" aria-label="Play scrape" onClick={() => { requestScrape(); navigate("#/pattern"); }}>
           <svg viewBox="0 0 14 14"><path d="M3 1v12l10-6z" /></svg>
+        </button>
+        <button className={`ico mute ${muted ? "is-muted" : ""}`} title={muted ? "Unmute" : "Mute"} aria-label={muted ? "Unmute audio" : "Mute audio"} aria-pressed={muted} onClick={() => setMuted((value) => !value)}>
+          {muted
+            ? <svg viewBox="0 0 14 14"><path d="M1 5h3l4-3v10L4 9H1z" /><path d="M9.4 5.1l.9-.9 1.3 1.3 1.3-1.3.9.9-1.3 1.3 1.3 1.3-.9.9-1.3-1.3-1.3 1.3-.9-.9 1.3-1.3z" /></svg>
+            : <svg viewBox="0 0 14 14"><path d="M1 5h3l4-3v10L4 9H1z" /><path d="M9.6 4.4a3.8 3.8 0 0 1 0 5.2l-.9-.8a2.6 2.6 0 0 0 0-3.6z" /></svg>}
         </button>
         <div className={`meter-wrap ${running || tapeLive ? "live" : ""}`} aria-hidden="true"><i style={{ height: 8 }} /><i style={{ height: 14 }} /><i style={{ height: 6 }} /><i style={{ height: 18 }} /></div>
         <canvas className="osc" ref={osc} width={120} height={28} aria-hidden="true" />
@@ -311,7 +439,7 @@ export function TrackerApp() {
       </div>
     </header>
     <div className="tape-shell">
-      <TapeDeck open={tapeOpen} onToggle={() => setTapeOpen((value) => !value)} onLiveChange={setTapeLive} toast={setToast} />
+      <TapeDeck open={tapeOpen} onToggle={() => setTapeOpen((value) => !value)} onLiveChange={setTapeLive} toast={setToast} muted={muted} />
       <ActiveRunStrip run={run} events={events} now={now} navigate={navigate} onCancel={() => void cancelRun()} />
     </div>
     <nav className="modes" aria-label="Editor">
@@ -321,11 +449,11 @@ export function TrackerApp() {
       {["pattern", "order", "phrase"].includes(route.view) && (
         <WorkflowRack jobs={jobs} route={route} filter={filter} orderFocus={orderFocus} onChannel={activateChannel} />
       )}
-      {route.view === "pattern" && <PatternView jobs={jobs} settings={settings} filter={filter} playIndex={playIndex} running={running} onManualImport={startManualImport} {...agentProps} />}
-      {route.view === "order" && <OrderView jobs={jobs} orderFocus={orderFocus} onGenerate={(ids) => void generate(ids)} navigate={navigate} run={run} onRun={announce} onReload={() => void reloadJobs()} toast={setToast} />}
+      {route.view === "pattern" && <PatternView jobs={jobs} settings={settings} filter={filter} playIndex={playIndex} running={running} onManualImport={startManualImport} onManualBatchImport={startManualBatch} {...agentProps} />}
+      {route.view === "order" && <OrderView jobs={jobs} orderFocus={orderFocus} onGenerate={(ids) => void generate(ids)} navigate={navigate} run={run} onRun={announce} onReload={() => void reloadJobs()} toast={setToast} settings={settings} />}
       {route.view === "phrase" && <PhraseView jobId={route.jobId} navigate={navigate} onRun={announce} toast={setToast} />}
       {route.view === "sample" && <SampleView jobId={route.jobId} settings={settings} navigate={navigate} toast={setToast} onRun={announce} onReload={() => void reloadJobs()} run={run} />}
-      {route.view === "disk" && <DiskView toast={setToast} onSettings={setSettings} run={run} events={events} onRun={announce} />}
+      {route.view === "disk" && <DiskView toast={setToast} onSettings={adoptSettings} onProfileSaved={(profile) => setProfileReady(profileHasSearchContext(profile))} run={run} events={events} onRun={announce} />}
       {route.view === "trace" && <TraceView runId={route.runId} activeRun={run} navigate={navigate} now={now} />}
     </div>
     {toast && <div className="toast" role="status">{toast}</div>}

@@ -158,6 +158,7 @@ appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "detail_star
 appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "detail_completed", timestamp: "2026-08-20T00:00:08.000Z", durationMs: 2000, payload: { attemptId: "detail-3", operation: "detail", status: "completed", source: "freehire", sourceId: "tracker-browser-job", resultId: "tracker-browser-job", postingLength: 86, enrichedCount: 1, promising: true, counts: { discovered: 4, unique: 3, enriched: 1 }, remaining: { maxSearchCalls: 2, maxDetailCalls: 2, maxTotalResults: 1, maxRunDurationMs: 4000 } } });
 appendRunTrajectoryEvent(db, traceRunId, { kind: "error", type: "search_budget_rejected", timestamp: "2026-08-20T00:00:08.500Z", payload: { attemptId: null, operation: "search", status: "rejected", source: "freehire", query: "platform engineer", location: "Remote", reason: "maxSearchCalls", errorCategory: "budget", remaining: { maxSearchCalls: 0, maxDetailCalls: 2, maxTotalResults: 1, maxRunDurationMs: 3500 } } });
 appendRunTrajectoryEvent(db, traceRunId, { kind: "error", type: "detail_provenance_rejected", timestamp: "2026-08-20T00:00:09.000Z", payload: { operation: "detail", source: "freehire", resultIdLength: 120, reason: "not_returned", error: "authorization: Bearer smoke-secret-value" } });
+appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_funnel", timestamp: "2026-08-20T00:00:09.500Z", payload: { enabledSources: ["freehire"], sourceAttempts: { freehire: 2 }, queriesBySource: { freehire: ["backend broad", "platform engineer"] }, pagesBySource: { freehire: [1] }, rawHits: 4, uniqueHits: 3, promisingHits: 2, duplicatesRemoved: 1, candidatesAfterCheapFiltering: 3, detailFetches: 1, selectedJobs: 2, stopReason: "budget_exhausted", sources: { freehire: { searches: 2, queries: ["backend broad", "platform engineer"], pages: [1], rawHits: 4, uniqueHits: 3, promisingHits: 2, duplicatesRemoved: 1, duplicateRate: 0.25, averageYield: 1.5, lastYield: 2, queryHistory: [] } } } });
 appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_finished", timestamp: "2026-08-20T00:00:10.000Z", payload: { reason: "Coverage sufficient after adaptive query.", reasonCategory: "coverage_sufficient", unresolvedGoals: [], counts: { discovered: 4, unique: 3, enriched: 1 }, remaining: { maxSearchCalls: 2, maxDetailCalls: 2, maxTotalResults: 1, maxRunDurationMs: 2000 } } });
 finishRun(db, traceRunId, "succeeded", null, null, null, "2026-08-20T00:00:12.000Z");
 const lifecycleJob = listJobs(db).find((job) => job.source_id === fixtures[2].sourceId);
@@ -185,7 +186,17 @@ const app = await buildServer({
   },
   followUpExecutor: async () => "Thanks for the interview. I appreciated the discussion about reliability and backend systems.",
   availableModels: async () => [{ id: "fixture", name: "Fixture" }],
-  manualImporter: async () => manualImportFixture,
+  manualImporter: async (input) => {
+    const url = input.trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) return manualImportFixture;
+    const suffix = url.endsWith("/one") ? "One" : "Two";
+    return {
+      ...manualImportFixture,
+      inputType: "url",
+      url,
+      job: { ...manualImportFixture.job, company: `Tracker Batch ${suffix}`, sourceUrl: url },
+    };
+  },
   projectRoot: process.cwd(),
 });
 let frontend: ChildProcess | undefined;
@@ -202,7 +213,13 @@ try {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const requestFailures: string[] = [];
-  page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    // The preference-load gate deliberately serves a 500 from /api/criteria; that resource
+    // error is the fixture working as intended, not a regression.
+    if (message.location()?.url?.includes("/api/criteria")) return;
+    consoleErrors.push(message.text());
+  });
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("requestfailed", (request) => {
     const failure = request.failure()?.errorText;
@@ -224,6 +241,18 @@ try {
   await expect(page.locator(".ask").getByRole("heading", { name: "Start scrape?" })).toBeVisible();
   await page.locator(".ask").getByRole("button", { name: "No" }).click();
   await expect(page.locator(".ask")).toHaveCount(0);
+  await page.request.put(`${base}/api/profile`, { data: { profile: createEmptyProfile() } });
+  await page.goto(`${base}/#/disk`);
+  await page.locator(".disk-main").waitFor();
+  await page.getByLabel("Remote-work preference").fill("Remote preferred");
+  await page.getByRole("button", { name: "Write to disk", exact: true }).click();
+  await expect(page.getByText("Profile written to disk.", { exact: true })).toBeVisible();
+  await page.evaluate(() => { window.location.hash = "/pattern"; });
+  await page.locator(".panel-h").filter({ hasText: "PATTERN 00" }).waitFor();
+  await page.getByRole("button", { name: "Play scrape" }).click();
+  await expect(page.locator(".ask").getByRole("button", { name: "Yes · scrape" })).toBeVisible();
+  await page.locator(".ask").getByRole("button", { name: "No" }).click();
+  await page.request.put(`${base}/api/profile`, { data: { profile: smokeProfile } });
 
   const routes = [
     { hash: "#/pattern", marker: ".panel-h", text: "PATTERN 00" },
@@ -243,6 +272,7 @@ try {
   await expect(page.locator(".trace-observability")).toBeVisible();
   await expect(page.locator(".trace-observability")).toContainText("Unique jobs");
   await expect(page.locator(".trace-observability")).toContainText("Search calls");
+  for (const label of ["Discovery funnel", "Enabled sources", "Source attempts", "Queries used", "Pages visited", "Raw hits", "Unique hits", "Promising hits", "Duplicates removed", "Cheap candidates", "Detail fetches", "Selected jobs", "Stop reason"]) await expect(page.locator(".trace-observability")).toContainText(label);
   await expect(page.locator(".trace-observability")).toContainText("platform engineer");
   await expect(page.locator(".trace-observability")).toContainText("Coverage sufficient");
   await expect(page.locator(".trace-observability")).toContainText("budget");
@@ -308,6 +338,24 @@ try {
   await manualDialog.getByRole("button", { name: "Add job", exact: true }).click();
   await expect(manualDialog).toBeHidden();
   await expect(patternTable.locator("tbody tr").filter({ hasText: "Tracker Manual" })).toBeVisible({ timeout: 30_000 });
+  await addJob.click();
+  const batchInput = page.getByLabel("Job links");
+  await batchInput.fill("https://example.test/tracker-browser-batch/one\nhttps://example.test/tracker-browser-batch/two");
+  await manualDialog.getByRole("button", { name: "Import links", exact: true }).click();
+  await expect(manualDialog).toBeHidden();
+  await expect(patternTable.locator("tbody tr").filter({ hasText: "Tracker Batch One" })).toBeVisible({ timeout: 30_000 });
+  await expect(patternTable.locator("tbody tr").filter({ hasText: "Tracker Batch Two" })).toBeVisible({ timeout: 30_000 });
+  await addJob.click();
+  const rejectedBatch = "https://example.test/tracker-browser-batch/one\nftp://example.test/tracker-browser-batch/invalid";
+  await batchInput.fill(rejectedBatch);
+  await manualDialog.getByRole("button", { name: "Import links", exact: true }).click();
+  await expect(manualDialog).toBeVisible();
+  await expect(manualDialog.getByRole("alert")).toContainText("Link 1: A job with this URL already exists.");
+  await expect(batchInput).toHaveValue(rejectedBatch);
+  await expect(manualInput).toHaveAttribute("aria-invalid", "false");
+  await expect(batchInput).toHaveAttribute("aria-invalid", "true");
+  await manualDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(manualDialog).toBeHidden();
 
   await openTracker(page, base, `#/sample/${seededJob.id}`);
   await expect(page.locator(".modes a", { hasText: "SAMPLE" })).toBeVisible();
@@ -354,6 +402,11 @@ try {
   await page.mouse.move(diskSeparatorBox.x - 32, diskSeparatorBox.y + 12);
   await page.mouse.up();
   await expect.poll(async () => Number(await diskSeparator.getAttribute("aria-valuenow"))).toBeGreaterThan(diskBeforeDrag);
+  await page.getByRole("button", { name: "D·PREF", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "BANK D · SEARCH PREFS" })).toBeVisible();
+  for (const label of ["Preferred roles (optional)", "Preferred locations (optional)", "Preferred keywords (optional)", "Preferred employment types (optional)", "Remote-only hard constraint"]) {
+    await expect(page.getByText(label, { exact: true })).toBeVisible();
+  }
 
   await openTracker(page, base, "#/order/follow");
   await page.locator(".order-board").waitFor();
@@ -362,6 +415,158 @@ try {
   await expect(page.locator(".reco .conf")).toHaveCount(0);
   const desktopBoard = await page.locator(".order-list").evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
   if (desktopBoard.scrollWidth <= desktopBoard.clientWidth) throw new Error(`ORDER board is not horizontally scrollable: ${JSON.stringify(desktopBoard)}`);
+
+  // ORDER: RECO/CUT columns, then the row popup replaces navigation to SAMPLE.
+  // RECO holds 4 rows here: the lifecycle fixture (85) plus the three 91-score manual
+  // imports from above. fixtures[0] walked to Applied and fixtures[1] sits in Selected.
+  await openTracker(page, base, "#/order");
+  await page.locator(".order-board").waitFor();
+  await expect(page.locator(".order-slot__title h2", { hasText: "RECO" })).toBeVisible();
+  await expect(page.locator(".order-slot__title h2", { hasText: "CUT" })).toBeVisible();
+  await expect(page.locator(".order-pos", { hasText: "B00" })).toHaveCount(1);
+  await expect(page.locator(".order-pos", { hasText: "B07" })).toHaveCount(1);
+  await expect(page.locator(".order-slot")).toHaveCount(8);
+
+  // Every fixture scores above the 60 threshold, so CUT (last slot, B07) is empty by construction.
+  const cutSlot = page.locator(".order-slot", { has: page.locator(".order-pos", { hasText: "B07" }) });
+  await expect(cutSlot.locator(".order-empty")).toContainText("No discarded rows");
+
+  await page.locator(".order-controls").getByLabel("STAGE").selectOption("Discarded");
+  await expect(page.locator(".order-slot", { has: page.locator(".order-pos", { hasText: "B00" }) }).locator(".order-empty")).toContainText("No recommended rows");
+  await page.locator(".order-controls").getByRole("button", { name: "Clear" }).click();
+
+  const recoSlot = page.locator(".order-slot", { has: page.locator(".order-pos", { hasText: "B00" }) });
+  await expect(recoSlot.locator(".order-table tbody tr")).toHaveCount(4);
+  const recoRow = recoSlot.locator(".order-table tbody tr").filter({ hasText: "Tracker Lifecycle" });
+  await expect(recoRow).toHaveCount(1);
+  await recoRow.click();
+  const popup = page.getByRole("dialog", { name: "SAMPLE job detail" });
+  await expect(popup).toBeVisible();
+  // Same content contract the page-level SAMPLE check uses above.
+  await expect(popup.locator(".sample-panel .sample-verification")).toHaveCount(1);
+  await expect(popup.locator(".sample-panel .sample-document-summary")).toHaveCount(0);
+  await expect(popup.locator(".sample-aside .sample-document-summary")).toHaveCount(1);
+  await expect(popup.getByRole("button", { name: "Select", exact: true })).toBeVisible();
+  // The board is still underneath: opening a job no longer costs a page navigation.
+  await expect(page).toHaveURL(/#\/order$/);
+  await expect(page.locator(".order-board")).toBeVisible();
+  await popup.getByRole("button", { name: "Close job popup" }).click();
+  await expect(popup).toHaveCount(0);
+  await expect(page.locator(".order-board")).toBeVisible();
+
+  // One Escape closes only the nested dialog; the popup survives it.
+  await recoRow.click();
+  await popup.getByRole("button", { name: "Archive" }).click();
+  const archiveDialog = page.getByRole("dialog", { name: "Archive this job?" });
+  await expect(archiveDialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(archiveDialog).toHaveCount(0);
+  await expect(popup).toBeVisible();
+  // Escape with no nested dialog open closes the popup itself.
+  await page.keyboard.press("Escape");
+  await expect(popup).toHaveCount(0);
+  // lifecycleJob was never archived: the dialog was dismissed, not confirmed.
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/jobs/${lifecycleJob.id}`)).json()).stage).toBe("Recommended");
+
+  // Sort control: picking a key resets direction (asc, fit keeps desc), like PatternView.
+  // Name asc/desc reorders RECO deterministically; fit has 91-score ties so it is not used here.
+  await page.locator(".order-controls").getByRole("combobox", { name: "SORT" }).selectOption("name");
+  await expect(recoSlot.locator(".order-table tbody tr").first()).toContainText("Tracker Batch One");
+  await page.locator(".order-controls").getByRole("button", { name: "Sort ascending", exact: true }).click();
+  await expect(recoSlot.locator(".order-table tbody tr").first()).toContainText("Tracker Manual");
+  // Clear resets search, stage, and sort back to the FIT · DESC default.
+  const clearSort = page.locator(".order-controls").getByRole("button", { name: "Clear" });
+  await expect(clearSort).toBeVisible();
+  await clearSort.click();
+  await expect(clearSort).toHaveCount(0);
+  // FIT · DESC again: the three 91-score rows tie, and the stable sort keeps the API's
+  // input order (updated_at desc), so Batch Two — the last import — leads.
+  await expect(recoSlot.locator(".order-table tbody tr").first()).toContainText("Tracker Batch Two");
+
+  // Master mute is persisted, so it survives a reload.
+  // exact: true is required: Playwright name matching is substring + case-insensitive,
+  // so "Mute audio" would also match "Unmute audio" and every assertion below would pass vacuously.
+  const mute = page.getByRole("button", { name: "Mute audio", exact: true });
+  const unmute = page.getByRole("button", { name: "Unmute audio", exact: true });
+  await expect(unmute).toHaveCount(0);
+  await mute.click();
+  await expect(unmute).toHaveAttribute("aria-pressed", "true");
+  // writeMuted runs in a React effect after commit, so poll instead of reading once.
+  await expect.poll(async () => page.evaluate(() => window.localStorage.getItem("tracker.muted"))).toBe("1");
+  await openTracker(page, base, "#/order");
+  await expect(unmute).toHaveAttribute("aria-pressed", "true");
+  await unmute.click();
+  await expect(mute).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(async () => page.evaluate(() => window.localStorage.getItem("tracker.muted"))).toBe("0");
+
+  // Play scrape exposes the search-preference editor and writes it to disk.
+  await openTracker(page, base, "#/pattern");
+  await page.getByRole("button", { name: "Play scrape" }).click();
+  await expect(page.locator(".ask").getByRole("heading", { name: "Start scrape?" })).toBeVisible();
+  const prefs = page.locator(".agent-prefs");
+  await expect(prefs).toBeVisible();
+  for (const label of ["Preferred roles (optional)", "Preferred locations (optional)", "Excluded keywords (hard stop)", "Maximum jobs per scrape", "Remote-only hard constraint"]) {
+    await expect(prefs.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect(prefs.getByRole("slider", { name: "Fit score threshold" })).toBeVisible();
+  await expect(prefs.locator(".disk-source", { hasText: "FreeHire" })).toHaveClass(/armed/);
+  const rolesInput = prefs.getByLabel("Preferred roles (optional)");
+  await rolesInput.fill("Platform Engineer, SRE");
+  // CriteriaFields splits comma lists on blur only; without this the PUT could send the raw string.
+  await rolesInput.blur();
+  await prefs.getByRole("button", { name: "Write to disk", exact: true }).click();
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/criteria`)).json()).roles, { timeout: 30_000 })
+    .toEqual(["Platform Engineer", "SRE"]);
+  await prefs.locator(".disk-source", { hasText: "LinkedIn" }).click();
+  await prefs.getByRole("button", { name: "Write to disk", exact: true }).click();
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/settings`)).json()).enabledSources, { timeout: 30_000 })
+    .toEqual(["freehire", "linkedin"]);
+  await page.locator(".ask").getByRole("button", { name: "No" }).click();
+  await expect(page.locator(".ask")).toHaveCount(0);
+  // DISK reads the same persisted files, so the inline editor is not a second store.
+  await openTracker(page, base, "#/disk");
+  await page.getByRole("button", { name: "D·PREF", exact: true }).click();
+  await expect(page.getByLabel("Preferred roles (optional)")).toHaveValue("Platform Engineer, SRE");
+
+  // A failed preference load must gate the scrape: Yes stays disabled, no POST is possible.
+  // The route is installed before the navigation, and the reload is load-bearing: the goto
+  // from #/disk differs only in the hash, so without it there is no remount and the
+  // criteria loaded earlier (before interception) would keep prefsReady true.
+  await page.route("**/api/criteria", (route) => void route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "smoke criteria outage" }) }));
+  await page.goto(`${base}/#/pattern`);
+  await page.reload();
+  await page.locator(".studio").waitFor();
+  await page.getByRole("button", { name: "Play scrape" }).click();
+  await expect(page.locator(".ask").getByRole("heading", { name: "Start scrape?" })).toBeVisible();
+  await expect(page.locator(".ask")).toContainText("Loading search preferences");
+  // The failure reason must be visible in the loading branch, not an endless spinner.
+  await expect(page.locator(".ask").getByRole("alert")).toContainText("smoke criteria outage");
+  await expect(page.locator(".ask").getByRole("button", { name: "Yes · scrape" })).toBeDisabled();
+  await page.locator(".ask").getByRole("button", { name: "No" }).click();
+  await expect(page.locator(".ask")).toHaveCount(0);
+  await page.unroute("**/api/criteria");
+
+  // The harder gate: preferences already loaded, then the pending-scrape refresh fails.
+  // Snapshots stay non-null, so only the load-lifecycle state can keep Yes disabled.
+  // A full document load (goto + reload) is required: the page is already on #/pattern, so a
+  // bare openTracker would be hash-only, leaving criteria null from the previous outage and
+  // testing the wrong path. This remount must happen while the route is NOT intercepted.
+  await page.goto(`${base}/#/pattern`);
+  await page.reload();
+  await page.locator(".studio").waitFor();
+  await page.getByRole("button", { name: "Play scrape" }).click();
+  await expect(page.locator(".ask").getByRole("heading", { name: "Start scrape?" })).toBeVisible();
+  await expect(page.locator(".ask").getByRole("button", { name: "Yes · scrape" })).toBeEnabled();
+  await page.locator(".ask").getByRole("button", { name: "No" }).click();
+  await expect(page.locator(".ask")).toHaveCount(0);
+  await page.route("**/api/criteria", (route) => void route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "smoke criteria outage" }) }));
+  await page.getByRole("button", { name: "Play scrape" }).click();
+  await expect(page.locator(".ask").getByRole("heading", { name: "Start scrape?" })).toBeVisible();
+  await expect(page.locator(".ask").getByRole("alert")).toContainText("smoke criteria outage");
+  await expect(page.locator(".ask").getByRole("button", { name: "Yes · scrape" })).toBeDisabled();
+  await page.locator(".ask").getByRole("button", { name: "No" }).click();
+  await expect(page.locator(".ask")).toHaveCount(0);
+  await page.unroute("**/api/criteria");
 
   await openTracker(page, base, `#/sample/${selectedJob.id}`);
   await page.locator(".sample-aside").waitFor();
@@ -419,7 +624,9 @@ try {
   await page.getByRole("button", { name: "Start practice", exact: true }).click();
   await expect(page.locator(".msg").filter({ hasText: "Tell me about a reliability improvement you shipped." })).toBeVisible({ timeout: 30_000 });
 
-  await openTracker(page, base, "#/order");
+  // #/order/follow, not #/order: FollowUpView only renders at that focus, and this section
+  // must not depend on orderFocus state leaked from an earlier visit in the same session.
+  await openTracker(page, base, "#/order/follow");
   const followUpEditor = page.getByRole("region", { name: "Follow-up editor" });
   await followUpEditor.getByLabel("Follow-up job").selectOption(lifecycleJob.id);
   await followUpEditor.getByRole("button", { name: "Draft follow-up", exact: true }).click();

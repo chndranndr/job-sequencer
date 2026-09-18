@@ -4,11 +4,12 @@ import { addTapeTrack, formatTapeTime, listTapeTracks, removeTapeTrack, getTapeT
 
 type TapeSource = "demo" | "mp3";
 
-export function TapeDeck({ open, onToggle, onLiveChange, toast }: {
+export function TapeDeck({ open, onToggle, onLiveChange, toast, muted }: {
   open: boolean;
   onToggle: () => void;
   onLiveChange: (live: boolean) => void;
   toast: (message: string) => void;
+  muted: boolean;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const urlRef = useRef<string | null>(null);
@@ -86,8 +87,10 @@ export function TapeDeck({ open, onToggle, onLiveChange, toast }: {
   }, []);
 
   useEffect(() => {
-    audioRef.current && (audioRef.current.volume = volume);
-  }, [volume]);
+    if (!audioRef.current) return;
+    audioRef.current.volume = volume;
+    audioRef.current.muted = muted;
+  }, [volume, muted]);
 
   useEffect(() => {
     if (source === "demo") {
@@ -96,13 +99,13 @@ export function TapeDeck({ open, onToggle, onLiveChange, toast }: {
         urlRef.current = null;
       }
       audioRef.current?.pause();
-      if (playing) startTrackerTune();
+      if (playing && !muted) startTrackerTune();
       else stopTrackerTune();
       return () => stopTrackerTune();
     }
     stopTrackerTune();
     return undefined;
-  }, [source, playing]);
+  }, [source, playing, muted]);
 
   function revokeUrl() {
     if (urlRef.current) {

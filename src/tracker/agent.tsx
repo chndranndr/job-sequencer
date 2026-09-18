@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import type { JobStage, Run, RunTaskRow, TrajectoryEvent } from "../shared.js";
-import { deriveRunTaskRows } from "../shared.js";
+import type { Criteria, JobStage, Run, RunTaskRow, Settings, TrajectoryEvent } from "../shared.js";
+import { deriveRunTaskRows, jobSourceKeys, jobSourceLabel } from "../shared.js";
 import { SurferLoader } from "../surfer-loader.js";
 import { trackerHref } from "./hash.js";
 import { isNarrowLayout, NARROW_LAYOUT_MQ } from "./narrow.js";
+import { CriteriaFields, ProfileSaveBar } from "../profile-editor.js";
+import { enabledSources, toggleEnabledSource } from "../settings-editor.js";
 
 function payloadRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -65,6 +67,19 @@ function clampAgentWidth(value: number) {
   return Math.max(MIN_AGENT_WIDTH, Math.min(MAX_AGENT_WIDTH, value));
 }
 
+export type SearchPreferencePanel = {
+  criteria: Criteria | null;
+  settings: Settings | null;
+  ready: boolean;
+  dirty: boolean;
+  error: string;
+  onCriteria: (value: Criteria) => void;
+  onSettings: (value: Settings) => void;
+  onError: (message: string) => void;
+  onSave: () => void;
+  onRevert: () => void;
+};
+
 export function ActiveRunStrip({ run, events, now, navigate, onCancel }: { run: Run | null; events: TrajectoryEvent[]; now: number; navigate: (href: string) => void; onCancel: () => void }) {
   if (!run) return null;
   const rows = deriveRunTaskRows(events, run.workflow, run.status);
@@ -78,7 +93,7 @@ export function ActiveRunStrip({ run, events, now, navigate, onCancel }: { run: 
 }
 
 export function AgentPane({
-  run, events, pendingScrape, scrapeIssues, onConfirmScrape, onCancelPending, navigate, onFilter, now,
+  run, events, pendingScrape, scrapeIssues, onConfirmScrape, onCancelPending, navigate, onFilter, now, preferences,
 }: {
   run: Run | null;
   events: TrajectoryEvent[];
@@ -89,6 +104,7 @@ export function AgentPane({
   navigate: (href: string) => void;
   onFilter: (stage: JobStage | "all") => void;
   now: number;
+  preferences: SearchPreferencePanel;
 }) {
   const [tab, setTab] = useState<"Steps" | "Reasoning" | "Search">("Steps");
   const [agentWidth, setAgentWidth] = useState(280);
@@ -102,6 +118,7 @@ export function AgentPane({
     media.addEventListener("change", collapseWhenNarrow);
     return () => media.removeEventListener("change", collapseWhenNarrow);
   }, []);
+  useEffect(() => { if (pendingScrape) setAgentCollapsed(false); }, [pendingScrape]);
   const running = run?.status === "running";
   const rows = run ? deriveRunTaskRows(events, run.workflow, run.status) : [];
   const tools = toolNames(events);
@@ -178,8 +195,9 @@ export function AgentPane({
     {pendingScrape && <div className="ask">
       <h2>Start scrape?</h2>
       {scrapeIssues.length ? <p>{scrapeIssues.join(" ")}</p> : <p>Pi will search enabled sources and rank jobs. Nothing is selected for you.</p>}
+      <SearchPreferences {...preferences} />
       <div className="choices">
-        {scrapeIssues.length ? <button onClick={() => navigate("#/disk")}>Open DISK and fix this</button> : <button onClick={onConfirmScrape}>Yes · scrape</button>}
+        {scrapeIssues.length ? <button onClick={() => navigate("#/disk")}>Open DISK and fix this</button> : <button disabled={!preferences.ready} onClick={onConfirmScrape}>Yes · scrape</button>}
         <button onClick={onCancelPending}>No</button>
       </div>
     </div>}
@@ -199,9 +217,49 @@ export function AgentPane({
     {tools.length > 0 && <div className="chips">{tools.map((name) => <span className="tchip tool" key={name}><i />{name}</span>)}</div>}
     {!running && !pendingScrape && !run && <div className="stream">
       Arm PLAY to scrape, or press Ctrl+K for commands. Stages never move unless you say so.
-      <div className="sources"><span className="src">@profile</span><span className="src">@criteria</span></div>
+      <div className="sources"><span className="src">@profile</span><span className="src">@preferences</span></div>
       <div className="sel-actions"><button onClick={() => onFilter("Recommended")}>Show Recommended</button></div>
     </div>}
     </div>
   </aside>;
+}
+
+function SearchPreferences({ criteria, settings, dirty, error, onCriteria, onSettings, onError, onSave, onRevert }: SearchPreferencePanel) {
+  // The error must render in this branch too: a failed GET leaves criteria null, and the
+  // normal error slot below is unreachable from the early return. Loading without a failure
+  // reason would otherwise look like an endless load.
+  if (!criteria || !settings) return <div className="agent-prefs">
+    <p className="empty">Loading search preferences…</p>
+    {error && <p className="disk-settings-error" role="alert">{error}</p>}
+  </div>;
+  // const binding so the narrowing survives the closures below.
+  const current = settings;
+  const armed = enabledSources(current);
+  function arm(source: string, next: boolean) {
+    const result = toggleEnabledSource(current, source, next);
+    if (!result.value) { onError(result.error); return; }
+    onError("");
+    onSettings(result.value);
+  }
+  return <div className="agent-prefs">
+    <ProfileSaveBar dirty={dirty} label="Search preferences" onSave={onSave} onDiscard={onRevert} variant="tracker" />
+    <CriteriaFields criteria={criteria} setCriteria={onCriteria} error="" variant="tracker" />
+    <div className="slats">
+      <div className="slat"><span>FIT</span><input type="range" min={1} max={99} aria-label="Fit score threshold" value={current.scoreThreshold} onChange={(event) => onSettings({ ...current, scoreThreshold: Number(event.target.value) })} /><span>{current.scoreThreshold}</span></div>
+    </div>
+    <div className="disk-source-rack">
+      {jobSourceKeys.map((source) => <label className={`disk-source disk-source--custom ${armed.includes(source) ? "armed" : ""}`} key={source}>
+        <input type="checkbox" checked={armed.includes(source)} onChange={(event) => arm(source, event.target.checked)} />
+        <span className="disk-source__led" aria-hidden="true" />
+        <span className="disk-source__name">{jobSourceLabel(source, current.customSources ?? [])}</span>
+      </label>)}
+      {(current.customSources ?? []).map((custom) => <label className={`disk-source disk-source--custom ${armed.includes(custom.key) ? "armed" : ""}`} key={custom.key}>
+        <input type="checkbox" checked={armed.includes(custom.key)} onChange={(event) => arm(custom.key, event.target.checked)} />
+        <span className="disk-source__led" aria-hidden="true" />
+        <span className="disk-source__name">{custom.label} <small>({custom.key})</small></span>
+      </label>)}
+    </div>
+    <p className="agent-prefs__note">Yes · scrape writes these preferences first, then starts the run. Per-source MAX age stays on DISK.</p>
+    {error && <p className="disk-settings-error" role="alert">{error}</p>}
+  </div>;
 }

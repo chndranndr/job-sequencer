@@ -81,7 +81,7 @@ export function WorkflowRack({
         );
       })}
       <p className="workflow-note">
-        Tab atas = editor. Kolom ini = alur kerja. SCRAPE/RANK/SELECT buka PATTERN. DOCS/APPLY/FOLLOW buka ORDER di posisi berbeda (B00–B04).
+        Tab atas = editor. Kolom ini = alur kerja. SCRAPE/RANK/SELECT buka PATTERN. DOCS/APPLY/FOLLOW buka ORDER di posisi berbeda (B01–B05).
       </p>
       </div>
     </aside>

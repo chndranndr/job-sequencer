@@ -88,6 +88,9 @@ test("Tracker PATTERN manual add uses the shared manual import flow", () => {
 
   assert.match(pattern, /ADD JOB/);
   assert.match(pattern, /onManualImport: \(input: string\) => Promise<void>/);
+  assert.match(pattern, /onManualBatchImport: \(inputs: string\[\]\) => Promise<ManualBatchResult>/);
+  assert.match(pattern, /aria-label="Job links"/);
+  assert.match(pattern, /one HTTP\(S\) URL per line/);
   assert.match(pattern, /Add job manually/);
   assert.match(pattern, /role="dialog"/);
   assert.match(pattern, /aria-modal="true"/);
@@ -95,15 +98,23 @@ test("Tracker PATTERN manual add uses the shared manual import flow", () => {
   assert.match(pattern, /required/);
   assert.match(pattern, /noValidate/);
   assert.match(pattern, /event\.key === "Escape"/);
-  assert.match(pattern, /setSubmitting\(true\)/);
+  assert.match(pattern, /setSubmitting\("single"\)/);
+  assert.match(pattern, /setSubmitting\("batch"\)/);
+  assert.match(pattern, /errorField === "single"/);
+  assert.match(pattern, /errorField === "batch"/);
   assert.match(pattern, /sample-dialog-error/);
 
   assert.match(app, /async function startManualImport\(input: string\)/);
+  assert.match(app, /async function startManualBatch\(urls: string\[\]\): Promise<ManualBatchResult>/);
+  assert.match(app, /await api<ManualBatchResult>\("\/api\/jobs\/manual\/batch"/);
+  assert.match(app, /runId: string \| null/);
+  assert.match(app, /if \(result\.reused\)/);
   assert.match(app, /await api<\{ runId: string \}>\("\/api\/jobs\/manual"/);
   assert.match(app, /workflow: "manual_import"/);
   assert.match(app, /onManualImport=\{startManualImport\}/);
+  assert.match(app, /onManualBatchImport=\{startManualBatch\}/);
   assert.match(app, /if \(text\.startsWith\("\/import"\)\) \{[\s\S]*?await startManualImport\(input\)/);
-  assert.equal((app.match(/\/api\/jobs\/manual/g) ?? []).length, 1);
+  assert.equal((app.match(/\/api\/jobs\/manual/g) ?? []).length, 2);
 });
 
 test("Tracker browser smoke covers the manual add flow with isolated fixtures", () => {
@@ -115,6 +126,10 @@ test("Tracker browser smoke covers the manual add flow with isolated fixtures", 
   assert.match(smoke, /getByRole\("button", \{ name: "ADD JOB" \}\)/);
   assert.match(smoke, /getByRole\("dialog", \{ name: "Add job manually" \}\)/);
   assert.match(smoke, /getByLabel\("Job URL or pasted posting"\)/);
+  assert.match(smoke, /getByLabel\("Job links"\)/);
+  assert.match(smoke, /Import links/);
+  assert.match(smoke, /tracker-browser-batch\/invalid/);
+  assert.match(smoke, /toHaveValue\(rejectedBatch\)/);
   assert.match(smoke, /Enter a posting URL or paste job text/);
   assert.match(smoke, /Tracker Manual/);
   assert.match(smoke, /rm\(dataDir, \{ recursive: true, force: true \}\)/);
@@ -267,7 +282,8 @@ test("DISK bank A hosts resume import and LOAD bank is gone", () => {
   assert.match(disk, /workflow: "profile_import"/);
   assert.match(disk, /IdentityConflictDialog/);
   assert.match(disk, /processedImportRunId/);
-  assert.match(app, /DiskView toast=\{setToast\} onSettings=\{setSettings\} run=\{run\} events=\{events\} onRun=\{announce\}/);
+  assert.match(disk, /onProfileSaved\?\.\(result\.profile\)/);
+  assert.match(app, /DiskView toast=\{setToast\} onSettings=\{adoptSettings\} onProfileSaved=\{\(profile\) => setProfileReady\(profileHasSearchContext\(profile\)\)\} run=\{run\} events=\{events\} onRun=\{announce\}/);
   assert.match(editor, /deriveRunTaskRows\(events, "profile_import"/);
   assert.match(trace, /workflow === "profile_import"\) return "PROFILE IMPORT"/);
   assert.doesNotMatch(disk, /label: "LOAD"/);
@@ -286,4 +302,57 @@ test("DISK bank A hosts resume import and LOAD bank is gone", () => {
   assert.match(disk, /<h2>DOCUMENT SETTINGS<\/h2>/);
   assert.match(disk, /<h2>ACTIONS<\/h2>/);
   assert.match(disk, /<h2>STATUS<\/h2>/);
+});
+
+test("Tracker master mute, ORDER sample popup, and AGENT search preferences are wired", () => {
+  const app = readFileSync(new URL("../src/tracker/App.tsx", import.meta.url), "utf8");
+  const order = readFileSync(new URL("../src/tracker/order.tsx", import.meta.url), "utf8");
+  const sample = readFileSync(new URL("../src/tracker/sample.tsx", import.meta.url), "utf8");
+  const agent = readFileSync(new URL("../src/tracker/agent.tsx", import.meta.url), "utf8");
+  const cues = readFileSync(new URL("../src/workflow-cues.ts", import.meta.url), "utf8");
+  const deck = readFileSync(new URL("../src/tracker/tape-deck.tsx", import.meta.url), "utf8");
+  const studio = readFileSync(new URL("../src/tracker/studio.css", import.meta.url), "utf8");
+
+  assert.match(app, /useState\(readMuted\)/);
+  assert.match(app, /useWorkflowCues\(run, muted\)/);
+  assert.match(app, /aria-label=\{muted \? "Unmute audio" : "Mute audio"\}/);
+  assert.match(app, /aria-pressed=\{muted\}/);
+  assert.match(cues, /useWorkflowCues\(run: Pick<Run, "id" \| "status"> \| null, muted: boolean\)/);
+  assert.match(cues, /if \(!run \|\| muted\) \{/);
+  assert.match(deck, /if \(playing && !muted\) startTrackerTune\(\);/);
+  assert.match(deck, /audioRef\.current\.muted = muted;/);
+
+  assert.match(order, /export const orderSlots/);
+  assert.match(order, /<SamplePopup/);
+  assert.doesNotMatch(order, /navigate\(trackerHref\("sample", job\.id\)\)/);
+  assert.match(sample, /export function SamplePopup/);
+  assert.match(sample, /sample-popup-backdrop/);
+  assert.match(sample, /document\.querySelector\("\.sample-dialog-backdrop"\)/);
+  // SampleDialog owns its Escape on window now; the old backdrop onKeyDown is gone.
+  assert.match(sample, /if \(!open\) return;\s*\n\s*const onKey = \(event: KeyboardEvent\)/);
+  assert.doesNotMatch(sample, /sample-dialog-backdrop" role="presentation" onKeyDown/);
+  assert.match(order, /import \{ type OrderFocus \} from "\.\/hash\.js";/);
+  assert.match(studio, /\.sample-popup \{/);
+  assert.match(studio, /\.ico\.mute\.is-muted \{/);
+
+  assert.match(agent, /export type SearchPreferencePanel = \{/);
+  assert.match(agent, /<SearchPreferences \{\.\.\.preferences\} \/>/);
+  assert.match(agent, /<CriteriaFields criteria=\{criteria\} setCriteria=\{onCriteria\} error="" variant="tracker" \/>/);
+  assert.match(agent, /if \(pendingScrape\) setAgentCollapsed\(false\);/);
+  assert.match(agent, /<button disabled=\{!preferences\.ready\} onClick=\{onConfirmScrape\}>Yes · scrape<\/button>/);
+  assert.match(app, /if \(!\(await saveSearchPreferences\(\)\)\)/);
+  assert.match(app, /const prefsReady = prefsLoad === "ok" && Boolean\(criteria && savedCriteria && settings && savedSettings\);/);
+  assert.match(app, /if \(prefsLoad !== "ok" \|\| !criteria \|\| !settings \|\| !savedCriteria \|\| !savedSettings\) \{/);
+  assert.doesNotMatch(app, /if \(!criteria \|\| !settings\) return true;/);
+  // A failed refresh keeps the old snapshots non-null, so the lifecycle state is the only gate.
+  assert.match(app, /setPrefsLoad\("failed"\);/);
+  assert.match(app, /function requestScrape\(\) \{\n    setPrefsLoad\("loading"\);\n    setPendingScrape\(true\);\n  \}/);
+  assert.doesNotMatch(app, /onClick=\{\(\) => \{ setPendingScrape\(true\); navigate\("#\/pattern"\); \}\}/);
+  // The loading branch must surface the failure reason, not an endless load.
+  assert.match(agent, /\{error && <p className="disk-settings-error" role="alert">\{error\}<\/p>\}/);
+  assert.match(app, /function adoptSettings\(value: Settings\) \{/);
+  assert.match(app, /onSettings=\{adoptSettings\}/);
+  assert.match(sample, /const closeRef = useRef\(onClose\);/);
+  assert.match(sample, /closeRef\.current\(\);/);
+  assert.match(studio, /\.studio \.agent-prefs \.pe-two \{ grid-template-columns: 1fr;/);
 });

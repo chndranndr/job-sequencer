@@ -16,7 +16,7 @@ export function cueForRunStatus(status: Run["status"]): WorkflowCue | null {
   return null;
 }
 
-export function useWorkflowCues(run: Pick<Run, "id" | "status"> | null) {
+export function useWorkflowCues(run: Pick<Run, "id" | "status"> | null, muted: boolean) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const prevRef = useRef<{ id: string; status: Run["status"] } | null>(null);
 
@@ -37,6 +37,11 @@ export function useWorkflowCues(run: Pick<Run, "id" | "status"> | null) {
     const previous = prevRef.current;
     prevRef.current = run ? { id: run.id, status: run.status } : null;
     if (!audio) return;
+    audio.muted = muted;
+    if (!run || muted) {
+      audio.pause();
+      return;
+    }
 
     async function play(player: HTMLAudioElement, src: string, loop: boolean) {
       window.dispatchEvent(new Event("greenfield:workflow-cue"));
@@ -47,13 +52,7 @@ export function useWorkflowCues(run: Pick<Run, "id" | "status"> | null) {
       try { await player.play(); } catch { /* autoplay blocked until a click starts a run */ }
     }
 
-    if (!run) {
-      audio.pause();
-      return;
-    }
-
     if (run.status === "running") {
-      if (previous?.id === run.id && previous.status === "running") return;
       void play(audio, WORKFLOW_CUES.running, true);
       return;
     }
@@ -65,7 +64,6 @@ export function useWorkflowCues(run: Pick<Run, "id" | "status"> | null) {
     }
     if (justFinished && (run.status === "failed" || run.status === "cancelled" || run.status === "timed_out")) {
       void play(audio, WORKFLOW_CUES.failed, false);
-      return;
     }
-  }, [run?.id, run?.status]);
+  }, [run?.id, run?.status, muted]);
 }

@@ -1,27 +1,45 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Job, JobStage, Run } from "../shared.js";
-import { type OrderFocus, trackerHref } from "./hash.js";
+import { jobStages, type Job, type JobStage, type Run, type Settings } from "../shared.js";
+import { type OrderFocus } from "./hash.js";
 import { rowHex, scoreToSignal } from "./notes.js";
 import { FollowUpView } from "./follow-up.js";
+import { SamplePopup } from "./sample.js";
 
-const slots = [
-  { key: "Selected", pos: "B00", pattern: "P-SEL", title: "SELECT", hint: "Gate · tunggu dokumen", focus: "draft" as const, gate: true },
-  { key: "Drafting", pos: "B01", pattern: "P-DRF", title: "DRAFT", hint: "Pi · generate + verify", focus: "draft" as const, gate: false },
-  { key: "Ready", pos: "B02", pattern: "P-RDY", title: "READY", hint: "Gate · submit manual", focus: "ready" as const, gate: true },
-  { key: "Applied", pos: "B03", pattern: "P-APP", title: "APPLIED", hint: "Submitted", focus: "follow" as const, gate: false },
-  { key: "Interview", pos: "B04", pattern: "P-INT", title: "PHRASE", hint: "Interview nyata", focus: "follow" as const, gate: false },
-  { key: "Outcomes", pos: "B05", pattern: "P-OUT", title: "OUT", hint: "Offer / rejected / archived", focus: undefined, gate: false },
+export const orderSlots = [
+  { key: "Recommended", pos: "B00", pattern: "P-REC", title: "RECO", hint: "Di atas ambang FIT", focus: undefined, gate: false },
+  { key: "Selected", pos: "B01", pattern: "P-SEL", title: "SELECT", hint: "Gate · tunggu dokumen", focus: "draft" as const, gate: true },
+  { key: "Drafting", pos: "B02", pattern: "P-DRF", title: "DRAFT", hint: "Pi · generate + verify", focus: "draft" as const, gate: false },
+  { key: "Ready", pos: "B03", pattern: "P-RDY", title: "READY", hint: "Gate · submit manual", focus: "ready" as const, gate: true },
+  { key: "Applied", pos: "B04", pattern: "P-APP", title: "APPLIED", hint: "Submitted", focus: "follow" as const, gate: false },
+  { key: "Interview", pos: "B05", pattern: "P-INT", title: "PHRASE", hint: "Interview nyata", focus: "follow" as const, gate: false },
+  { key: "Outcomes", pos: "B06", pattern: "P-OUT", title: "OUT", hint: "Offer / rejected / archived", focus: undefined, gate: false },
+  { key: "Discarded", pos: "B07", pattern: "P-CUT", title: "CUT", hint: "Di bawah ambang FIT", focus: undefined, gate: false },
 ] as const;
 
 const focusTitles: Record<OrderFocus, string> = {
-  draft: "DOCS · posisi B00–B01",
-  ready: "APPLY · posisi B02",
-  follow: "FOLLOW · posisi B03–B04",
+  draft: "DOCS · posisi B01–B02",
+  ready: "APPLY · posisi B03",
+  follow: "FOLLOW · posisi B04–B05",
 };
 
-export function orderSlotJobs(jobs: readonly Job[], key: (typeof slots)[number]["key"]) {
+export type OrderSortKey = "fit" | "name" | "created" | "updated";
+export type OrderSort = { key: OrderSortKey; dir: "asc" | "desc" };
+
+export function orderSlotJobs(jobs: readonly Job[], key: (typeof orderSlots)[number]["key"], sort: OrderSort = { key: "fit", dir: "desc" }) {
   const rows = jobs.filter((job) => key === "Outcomes" ? job.stage === "Offer" || job.stage === "Rejected" || job.stage === "Archived" : job.stage === key);
-  return rows.sort((left, right) => right.score - left.score);
+  const direction = sort.dir === "asc" ? 1 : -1;
+  const compare = (left: Job, right: Job) => {
+    if (sort.key === "name") {
+      // Case-insensitive like pattern-sort's compareText; Array#sort is stable, so ties keep input order.
+      const a = left.company.toLocaleLowerCase();
+      const b = right.company.toLocaleLowerCase();
+      return a < b ? -1 : a > b ? 1 : 0;
+    }
+    if (sort.key === "created") return Date.parse(left.first_seen_at) - Date.parse(right.first_seen_at);
+    if (sort.key === "updated") return Date.parse(left.updated_at) - Date.parse(right.updated_at);
+    return left.score - right.score;
+  };
+  return rows.sort((left, right) => direction * compare(left, right));
 }
 
 export type OrderMetadata = {
@@ -83,12 +101,15 @@ function fxTone(job: Job) {
   return "stage-o";
 }
 
-export function OrderView({ jobs, orderFocus, onGenerate, navigate, run, onRun, onReload, toast }: { jobs: Job[]; orderFocus: OrderFocus; onGenerate: (ids: string[]) => void; navigate: (href: string) => void; run: Run | null; onRun: (run: Pick<Run, "id" | "workflow" | "status">) => void; onReload: () => void; toast: (message: string) => void }) {
+export function OrderView({ jobs, orderFocus, onGenerate, navigate, run, onRun, onReload, toast, settings }: { jobs: Job[]; orderFocus: OrderFocus; onGenerate: (ids: string[]) => void; navigate: (href: string) => void; run: Run | null; onRun: (run: Pick<Run, "id" | "workflow" | "status">) => void; onReload: () => void; toast: (message: string) => void; settings: Settings | null }) {
   const slotRefs = useRef<Record<string, HTMLElement | null>>({});
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState<JobStage | "all">("all");
+  const [sort, setSort] = useState<OrderSort>({ key: "fit", dir: "desc" });
+  const [popupJobId, setPopupJobId] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLTableRowElement | null>(null);
   useEffect(() => {
-    const target = slots.find((slot) => slot.focus === orderFocus);
+    const target = orderSlots.find((slot) => slot.focus === orderFocus);
     if (!target) return;
     slotRefs.current[target.key]?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
   }, [orderFocus]);
@@ -98,17 +119,24 @@ export function OrderView({ jobs, orderFocus, onGenerate, navigate, run, onRun, 
   return <section className="panel order-panel">
     <div className="panel-h">
       ORDER LIST
-      <span>{focusTitles[orderFocus]} · posisi = stage · klik baris untuk SAMPLE · follow-up editor</span>
+      <span>{focusTitles[orderFocus]} · posisi = stage · klik baris untuk popup SAMPLE · follow-up editor</span>
     </div>
     <div className="order-controls" role="search" aria-label="Filter ORDER rows">
       <label><span>SEARCH</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Company, role, stage…" /></label>
-      <label><span>STAGE</span><select value={stage} onChange={(event) => setStage(event.target.value as JobStage | "all")}><option value="all">ALL APPLICATIONS</option>{["Selected", "Drafting", "Ready", "Applied", "Interview", "Offer", "Rejected", "Archived"].map((value) => <option key={value}>{value}</option>)}</select></label>
-      {(query || stage !== "all") && <button type="button" onClick={() => { setQuery(""); setStage("all"); }}>Clear</button>}
+      <label><span>STAGE</span><select value={stage} onChange={(event) => setStage(event.target.value as JobStage | "all")}><option value="all">ALL APPLICATIONS</option>{jobStages.map((value) => <option key={value}>{value}</option>)}</select></label>
+      <label><span>SORT</span><select value={sort.key} onChange={(event) => { const key = event.target.value as OrderSortKey; setSort({ key, dir: key === "fit" ? "desc" : "asc" }); }}>
+        <option value="fit">FIT SCORE</option>
+        <option value="name">NAME</option>
+        <option value="created">CREATED DATE</option>
+        <option value="updated">UPDATED DATE</option>
+      </select></label>
+      <button type="button" aria-label={sort.dir === "asc" ? "Sort ascending" : "Sort descending"} aria-pressed={sort.dir === "asc"} onClick={() => setSort((value) => ({ ...value, dir: value.dir === "asc" ? "desc" : "asc" }))}>{sort.dir === "asc" ? "ASC ↑" : "DESC ↓"}</button>
+      {(query || stage !== "all" || sort.key !== "fit" || sort.dir !== "desc") && <button type="button" onClick={() => { setQuery(""); setStage("all"); setSort({ key: "fit", dir: "desc" }); }}>Clear</button>}
     </div>
     <div className="order-list" role="list" aria-label="Song order list">
       <div className="order-board">
-      {slots.map((slot) => {
-        const rows = orderSlotJobs(visibleJobs, slot.key);
+      {orderSlots.map((slot) => {
+        const rows = orderSlotJobs(visibleJobs, slot.key, sort);
         const focused = slot.focus === orderFocus;
         return <article className={`order-slot ${focused ? "focus" : ""} ${slot.gate ? "gate" : ""}`} key={slot.key} ref={(node) => { slotRefs.current[slot.key] = node; }}>
             <header className="order-slot__head">
@@ -124,7 +152,7 @@ export function OrderView({ jobs, orderFocus, onGenerate, navigate, run, onRun, 
                 <thead><tr><th>ROW</th><th>APPLICATION</th><th>FX</th></tr></thead>
                 <tbody>
                   {rows.length === 0 ? <tr><td colSpan={3} className="order-empty">{slot.key === "Outcomes" ? "No outcomes yet" : `No ${slot.key.toLowerCase()} rows`}</td></tr> : rows.map((job, index) => (
-                    <OrderRow key={job.id} job={job} index={index} navigate={navigate} />
+                    <OrderRow key={job.id} job={job} index={index} onOpen={(row) => { triggerRef.current = row; setPopupJobId(job.id); }} />
                   ))}
                 </tbody>
               </table>
@@ -142,14 +170,26 @@ export function OrderView({ jobs, orderFocus, onGenerate, navigate, run, onRun, 
         <button onClick={() => navigate("#/pattern")}>Hold</button>
       </div>
     </div>}
+    {popupJobId && <SamplePopup
+      jobId={popupJobId}
+      settings={settings}
+      navigate={navigate}
+      toast={toast}
+      onRun={(detail) => onRun(detail)}
+      onReload={onReload}
+      run={run}
+      onClose={() => { setPopupJobId(null); triggerRef.current?.focus(); }}
+    />}
   </section>;
 }
 
-function OrderRow({ job, index, navigate }: { job: Job; index: number; navigate: (href: string) => void }) {
+function OrderRow({ job, index, onOpen }: { job: Job; index: number; onOpen: (row: HTMLTableRowElement) => void }) {
   const summary = orderRowSummary(job);
   return <tr
+    tabIndex={0}
     className={job.stage === "Drafting" && job.verification?.success === false ? "fail" : ""}
-    onClick={() => navigate(trackerHref("sample", job.id))}
+    onClick={(event) => onOpen(event.currentTarget)}
+    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(event.currentTarget); } }}
   >
     <td className="hex">{rowHex(index)}</td>
     <td><strong>{job.company}</strong><div className="order-role">{job.role}</div><dl className="order-meta">
