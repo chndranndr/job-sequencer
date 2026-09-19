@@ -480,7 +480,8 @@ try {
   await clearSort.click();
   await expect(clearSort).toHaveCount(0);
   // FIT · DESC again: the three 91-score rows tie, and the stable sort keeps the API's
-  // input order (updated_at desc), so Batch Two — the last import — leads.
+  // input order (listJobs: ORDER BY score DESC, first_seen_at DESC), so Batch Two — the
+  // last import — leads.
   await expect(recoSlot.locator(".order-table tbody tr").first()).toContainText("Tracker Batch Two");
 
   // Master mute is persisted, so it survives a reload.
