@@ -7,7 +7,8 @@ import { randomUUID } from "node:crypto";
 import { createEmptyProfile, defaultGenerationDirection, type ProjectEntry, type SkillEntry } from "../src/shared.js";
 import { parseRevisionDirectives, renderCVDocument } from "../src/server/rendering/cv.js";
 import { evidenceRef, type CVDocument } from "../src/server/agents/types.js";
-import { buildGenerationPrompt, estimateCvPages, filterComplementaryBullets, generateJob, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, validateGenerationOutput } from "../src/server/generation.js";
+import { buildGenerationPrompt, estimateCvPages, filterComplementaryBullets, generateJob, letterBullets, renderStructuredProfile, selectExperienceBullets, selectRelevantProjects, selectRelevantSkills, stripRevisionNoteLeaks, summaryEchoesIdentity, validateGenerationOutput } from "../src/server/generation.js";
+import { buildEvidenceBank } from "../src/server/agents/evidence.js";
 import { openDatabase, updateJobDirection } from "../src/server/db.js";
 import { defaultSettings } from "../src/server/config.js";
 import type { CommandRunner } from "../src/server/documents.js";
@@ -619,6 +620,93 @@ test("generateJob applies revisionNotes to current/cv.tex on revise", async () =
     assert.match(currentCvTex, /Java/);
     assert.doesNotMatch(currentCvTex, /Kubernetes|Alibaba Cloud/);
     assert.doesNotMatch(currentCvTex, /\\section\{Selected Projects\}/);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+const emptyDocument = (summary: { text: string; evidenceRefs: never[] }): CVDocument => ({ summary, experiences: [], skillIds: [], projects: [], coverLetter: { subject: "", paragraphs: [] } });
+
+test("summaryEchoesIdentity flags near-verbatim profile summary reuse only", () => {
+  const profile = createEmptyProfile();
+  profile.identity.summary = "Backend engineer focused on reliable Java payment platforms and event-driven services.";
+  const bank = buildEvidenceBank(profile);
+  assert.equal(summaryEchoesIdentity(emptyDocument({ text: "Backend engineer focused on reliable Java payment platforms and event-driven services", evidenceRefs: [] }), bank), true);
+  assert.equal(summaryEchoesIdentity(emptyDocument({ text: "Backend engineer focused on reliable Java platforms", evidenceRefs: [] }), bank), true);
+  assert.equal(summaryEchoesIdentity(emptyDocument({ text: "Java payments engineer who shipped event-driven ledger services for this platform role.", evidenceRefs: [] }), bank), false);
+  assert.equal(summaryEchoesIdentity(emptyDocument({ text: "Backend engineer.", evidenceRefs: [] }), bank), false);
+  assert.equal(summaryEchoesIdentity(emptyDocument({ text: "Backend engineer focused on reliable Java payment platforms and event-driven services", evidenceRefs: [] }), buildEvidenceBank(createEmptyProfile())), false);
+  const shortProfile = createEmptyProfile();
+  shortProfile.identity.summary = "Java engineer for platforms and payments.";
+  assert.equal(summaryEchoesIdentity(emptyDocument({ text: "Java engineer for platforms and payments.", evidenceRefs: [] }), buildEvidenceBank(shortProfile)), false);
+});
+
+test("summary echoing the static profile summary forces one tailored revision", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-summary-echo-"));
+  const db = openDatabase(":memory:");
+  const jobId = randomUUID();
+  const now = "2026-09-08T00:00:00.000Z";
+  db.prepare(`
+    INSERT INTO jobs(id, source_id, source, url, company, role, posting, score, rank_json, stage, first_seen_at, updated_at)
+    VALUES (?, 's-1', 'freehire', 'https://example.test/job', 'Acme', 'Engineer', 'Java payments posting', 85, '{}', 'Drafting', ?, ?)
+  `).run(jobId, now, now);
+
+  const candidate = createEmptyProfile();
+  Object.assign(candidate.identity, { firstName: "Ada", lastName: "Lovelace", email: "ada@example.test", phone: "+1 555 0100", summary: "Backend engineer focused on reliable Java payment platforms and event-driven services." });
+  candidate.experience = [{ id: "exp", title: "Backend Engineer", company: "Example", employmentType: "Full-time", location: "Remote", startMonth: "", startYear: "2024", endMonth: "", endYear: "", currentRole: true, description: "Built Java payment services." }];
+  candidate.skills = [skill("Java")];
+
+  const identityRef = evidenceRef("identity:summary");
+  const bulletRef = evidenceRef("experience:exp:bullet:0");
+  const echoed = "Backend engineer focused on reliable Java payment platforms and event-driven services.";
+  const tailored = "Java payments engineer who shipped event-driven ledger services for this platform role.";
+
+  const runner: CommandRunner = async (executable, args, _timeout, cwd) => {
+    if (executable === "lualatex") await writeFile(join(cwd!, "cv.pdf"), "cv-bytes");
+    if (executable === "xelatex") await writeFile(join(cwd!, "cover-letter.pdf"), "letter-bytes");
+    if (executable === "pdfinfo") return { code: 0, stdout: `Pages: ${args[0] === "cv.pdf" ? 2 : 1}\n`, stderr: "" };
+    if (executable === "pdftotext") return { code: 0, stdout: "Example 2024 ada@example.test +1 555 0100", stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+
+  let revisionCalls = 0;
+  let reviserNotes: string[] = [];
+
+  try {
+    await generateJob({
+      db,
+      dataDir: dir,
+      jobId,
+      runId: "echo-run-1",
+      profile: JSON.stringify(candidate),
+      settings: defaultSettings,
+      allowDrafting: true,
+      runner,
+      execute: async () => { throw new Error("legacy path not used"); },
+      signal: new AbortController().signal,
+      strategist: async () => ({ positioning: "Payments platform engineer.", targetRole: "Engineer", primarySellingPoints: [{ angle: "Java payments", evidenceRefs: [bulletRef] }], requirements: [{ requirement: "Java", importance: "critical", candidateFit: "strong", evidenceRefs: [bulletRef] }], narrativeGuidance: ["Lead with payments."], deEmphasize: [], genuineGaps: [], rankDisagreements: [] }),
+      writer: async () => ({
+        summary: { text: echoed, evidenceRefs: [identityRef] },
+        experiences: [{ experienceId: "exp", bullets: [{ text: "Built Java payment services.", evidenceRefs: [bulletRef], transformation: "rewrite" }] }],
+        skillIds: ["java"],
+        projects: [],
+        coverLetter: { subject: "Engineer", paragraphs: [{ text: "Letter text.", evidenceRefs: [bulletRef] }] },
+      }),
+      auditor: async () => ({ issues: [] }),
+      critic: async () => ({ score: 8, issues: [], summary: "Ready." }),
+      reviser: async input => {
+        revisionCalls += 1;
+        reviserNotes = input.critique.issues.map(issue => issue.note);
+        return { ...input.document, summary: { text: tailored, evidenceRefs: [bulletRef] } };
+      },
+    });
+
+    assert.equal(revisionCalls, 1);
+    assert.ok(reviserNotes.some(note => /restates the static identity:summary/.test(note)), `reviser saw notes: ${JSON.stringify(reviserNotes)}`);
+    const currentCvTex = await readFile(join(dir, "applications", jobId, "current", "cv.tex"), "utf8");
+    assert.match(currentCvTex, /Java payments engineer who shipped event-driven ledger services/);
+    assert.doesNotMatch(currentCvTex, /Backend engineer focused on reliable Java payment platforms/);
   } finally {
     db.close();
     await rm(dir, { recursive: true, force: true });

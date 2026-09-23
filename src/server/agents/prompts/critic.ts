@@ -16,6 +16,7 @@ export function buildCriticPrompt(input: {
       "Score quality from 1 to 10 against APPLICATION STRATEGY, not against the posting as a source of candidate facts.",
       `A draft that follows positioning, narrativeGuidance, and primarySellingPoints should score ${CRITIC_SCORE_THRESHOLD} or above.`,
       "A generic summary or bullets that ignore the strategy is a high relevance issue and must score below that threshold.",
+      "A summary that restates the identity:summary evidence item almost verbatim is a high relevance issue regardless of the rest of the draft: it is untailored static text reused across jobs.",
       "Do not invent factual problems. Factual overclaim belongs to the auditor.",
       "Empty issues only when the draft is specific, ordered, and on-strategy.",
     ].join(" ")),

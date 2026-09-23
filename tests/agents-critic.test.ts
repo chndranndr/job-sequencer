@@ -90,6 +90,7 @@ test("critic prompt keeps posting untrusted and does not dump the profile", () =
   assert.doesNotMatch(prompt, /ada@example\.test/);
   assert.match(prompt, /Do not execute/i);
   assert.match(prompt, /TRUSTED EVIDENCE BANK/);
+  assert.match(prompt, /restates the identity:summary evidence item almost verbatim is a high relevance issue/);
   assert.match(prompt, /TRUSTED CV DOCUMENT/);
   assert.match(prompt, /TRUSTED APPLICATION STRATEGY/);
 });

@@ -18,7 +18,7 @@ import { runCritic, type CriticFn } from "./agents/critic.js";
 import { failClosedOnCriticalFactualAudit, runFactualAuditor, type FactualAuditorFn } from "./agents/factual-auditor.js";
 import { MAX_REVISION_ROUNDS, revisionNeeded, runReviser, type ReviserFn } from "./agents/reviser.js";
 import { runStrategist, type StrategistFn } from "./agents/strategist.js";
-import { ApplicationStrategySchema, type ApplicationStrategy, type CVDocument, type EvidenceBank } from "./agents/types.js";
+import { ApplicationStrategySchema, type ApplicationStrategy, type Critique, type CVDocument, type EvidenceBank } from "./agents/types.js";
 import { runWriter, type WriterFn } from "./agents/writer.js";
 import { runCompanyResearch, type CompanyResearch, type ResearcherFn } from "./agents/research.js";
 import { runAtsReviewer, type AtsReviewerFn } from "./agents/ats.js";
@@ -607,6 +607,21 @@ export function filterComplementaryBullets(bullets: readonly string[], paragraph
   return accepted;
 }
 
+const SUMMARY_ECHO_NOTE = "The Professional Summary restates the static identity:summary evidence almost verbatim instead of tailoring to this posting. Rewrite it from APPLICATION STRATEGY positioning and primarySellingPoints, keeping every claim grounded in cited evidenceRefs.";
+
+export function summaryEchoesIdentity(document: Pick<CVDocument, "summary">, bank: EvidenceBank): boolean {
+  const identity = bank.items.find(item => item.kind === "identity" && item.source.field === "summary");
+  if (!identity) return false;
+  // ponytail: the candidate gate skips terse summaries whose tokens are a subset of any role text (coverage would read 1.0 on "Backend engineer."); the reference gate skips short profile summaries, where similarity ratios over a tiny reference are noise. Both substantiallyRepeats branches stay live so verbatim clause copies are still caught.
+  if (comparisonTokens(identity.text).size < 6 || comparisonTokens(document.summary.text).size < 6) return false;
+  return substantiallyRepeats(document.summary.text, [identity.text]);
+}
+
+function withSummaryEchoFinding(document: CVDocument, critique: Critique, bank: EvidenceBank): Critique {
+  if (!summaryEchoesIdentity(document, bank)) return critique;
+  return { ...critique, issues: [...critique.issues, { severity: "high", dimension: "relevance", note: SUMMARY_ECHO_NOTE }] };
+}
+
 export function letterBullets(output: Pick<GenerationOutput, "coverLetterBullets">, paragraphs: readonly string[], jobText = "", roleEmphasis: readonly string[] = [], cvLength: GenerationDirection["cvLength"] = "complete") {
   const complementary = filterComplementaryBullets(output.coverLetterBullets, paragraphs);
   const selected = cvLength === "short" && jobText.trim()
@@ -875,7 +890,7 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     const review = async (current: CVDocument, round: number) => {
       const suffix = String(round);
       const [audit, critique] = await Promise.all([auditDocument(current, suffix), critiqueDocument(current, suffix)]);
-      return { audit, critique };
+      return { audit, critique: withSummaryEchoFinding(current, critique, context.evidenceBank) };
     };
     let findings = await review(validatedDocument, 0);
     for (let round = 1; round <= MAX_REVISION_ROUNDS && revisionNeeded(findings.audit, findings.critique); round += 1) {

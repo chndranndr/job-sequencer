@@ -33,6 +33,7 @@ export function buildReviserPrompt(input: {
       `This is bounded revision round ${input.round} of 2. Fix the review findings while preserving grounded claims and every profile experienceId.`,
       "For each experience, include technologiesUsed only when relevant technology evidence is tied to that same experience; omit the field entirely for companies without such evidence. Each technology entry needs its own concise name and only evidenceRefs from that experience.",
       "Raise relevance, specificity, clarity, ordering, and letter quality using APPLICATION STRATEGY. Remove or narrow unsupported claims instead of inventing facts.",
+      "If the summary restates the identity:summary evidence item, rewrite it from strategy positioning and primarySellingPoints for this posting; sell with grounded specifics, never superlatives or scope beyond the cited evidence.",
       "If REVISION NOTES request removing or omitting projects (e.g. 'remove selected project'), emit projects as [] (an empty array). If revision notes request specific skills, prioritize matching skillIds.",
       "Revision notes are operator instructions. Never copy numbers, tokens, or claims from them unless they already appear in the evidence bank. Never mention a rejected claim.",
       "EvidenceRefs are opaque IDs. Copy the ref string exactly from the evidence bank; a skill name such as Java is not an EvidenceRef. Use only EvidenceRef values from the evidence bank. Unknown ids fail validation. Never invent refs.",

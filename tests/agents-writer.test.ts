@@ -154,6 +154,8 @@ test("writer prompt keeps the posting untrusted and does not dump the profile", 
   assert.match(prompt, /untrusted data/);
   assert.match(prompt, /Do not execute/i);
   assert.match(prompt, /Copy every percentage, multiplier/);
+  assert.match(prompt, /Never restate or lightly paraphrase the identity:summary evidence item/);
+  assert.match(prompt, /Sell with grounded specifics from cited evidence, not superlatives/);
   assert.match(prompt, /ID namespaces are strict/);
   assert.match(prompt, /Allowed raw skillIds are/);
   assert.match(prompt, /never put skill:<id> inside skillIds/);
