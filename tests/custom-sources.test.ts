@@ -206,6 +206,18 @@ test("multi-source hard filtering rejects untrusted model fields without evidenc
     /no valid results/i,
   );
 });
+
+test("multi-source executor rejects the same posting returned by two sources", async () => {
+  const sharedUrl = "https://boards.example.test/jobs/1";
+  const executor = createMultiSourceScrapeExecutor(async (_context, source) => ({
+    result: { jobs: [{ sourceId: `${source}-dup`, source, url: sharedUrl, company: "Example", role: "Engineer", location: "Remote", posting: "Build", score: 81, reason: "fit", strengths: [], gaps: [] }] },
+    provenance: new Map([[`${source}\u0000${source}-dup`, sharedUrl]]),
+  }));
+  await assert.rejects(
+    executor({ profile: "profile", criteria: defaultCriteria, settings: { ...defaultSettings, enabledSources: ["freehire", "tokyodev"] }, signal: new AbortController().signal }),
+    /duplicate normalized URL/i,
+  );
+});
 test("scrape API persists partial multi-source success and returns per-source errors", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-multi-api-"));
   const db = openDatabase(":memory:");
