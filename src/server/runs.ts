@@ -757,11 +757,12 @@ export function createMultiSourceScrapeExecutor(sourceExecutor?: SourceScrapeExe
       const taskId = `scrape:search:${key}`;
       tasks.start({ taskId, label: `Search ${label}`, detail: label });
       try {
+        const output = await executeSource(context, key, custom);
+        const validated = validateScrapeResult(output.result, output.provenance, context.criteria.maxJobsPerRun, key);
         const filtered = hardSearchJobs(validated.jobs, hardCriteria, output.evidence);
         const eligible = filtered.jobs;
         if (filtered.constraintRemoved > 0) warnings.push(`${filtered.constraintRemoved} ${label} job(s) removed by hard search preferences.`);
         if (filtered.missingEvidence > 0) warnings.push(`${filtered.missingEvidence} ${label} job(s) skipped because the source returned no verifiable posting or location for hard-constraint checks.`);
-        if (removed > 0) warnings.push(`${removed} ${label} job(s) removed by hard search preferences.`);
         if (!eligible.length && !output.errors?.length) appendSourceMessages(errors, label, ["no valid results from source query."]);
         const remaining = context.criteria.maxJobsPerRun - jobs.length;
         for (const job of eligible.slice(0, Math.max(0, remaining))) {
@@ -782,9 +783,9 @@ export function createMultiSourceScrapeExecutor(sourceExecutor?: SourceScrapeExe
       }
     }
     if (!jobs.length) throw new AllSourcesFailedError(errors, warnings);
-    return { result, provenance, ...(evidence.size ? { evidence } : {}), errors, warnings, hardFiltered: true };
+    const result = { jobs };
     validateScrapeResult(result, provenance, context.criteria.maxJobsPerRun, undefined, sources.map((source) => source.key));
-    return { result, provenance, ...(evidence.size ? { evidence } : {}), errors, warnings };
+    return { result, provenance, ...(evidence.size ? { evidence } : {}), errors, warnings, hardFiltered: true };
   };
 }
 
@@ -831,14 +832,14 @@ export class RunManager {
       const enabled = configuredSourceKeys(context.settings);
       tasks.start({ taskId: "scrape:validate", label: "Validate and score results" });
       let result: ScrapeResult;
+      try {
+        result = validateScrapeResult(output.result, output.provenance, context.criteria.maxJobsPerRun, undefined, enabled);
         if (!output.hardFiltered) {
           const hardCriteria = effectiveSearchCriteria(context.criteria, deriveProfileSearchHints(context.profile, context.criteria));
           const filtered = hardSearchJobs(result.jobs, hardCriteria, output.evidence);
           result = { jobs: filtered.jobs };
           if (filtered.constraintRemoved > 0) output.warnings = [...(output.warnings ?? []), `${filtered.constraintRemoved} job(s) removed by hard search preferences.`];
           if (filtered.missingEvidence > 0) output.warnings = [...(output.warnings ?? []), `${filtered.missingEvidence} job(s) skipped because the source returned no verifiable posting or location for hard-constraint checks.`];
-        }
-          output.warnings = [...(output.warnings ?? []), `${beforeHardFilter - result.jobs.length} job(s) removed by hard search preferences.`];
         }
         tasks.complete("scrape:validate", `${result.jobs.length} result(s) validated`);
       } catch (error) {
