@@ -39,7 +39,7 @@ There is:
 - no organization/workspace switcher;
 - no onboarding wizard.
 
-If required profile or criteria data is missing, the relevant action explains what is missing and links directly to **Profile & Criteria**.
+If the required profile or provider data is missing, the relevant action explains what is missing and links directly to **Profile & Criteria**.
 
 ## 3. Main navigation
 
@@ -226,7 +226,7 @@ The canonical **Scrape Jobs** action is in Jobs.
 Before starting, show a confirmation summary containing:
 
 - active profile status;
-- active search criteria summary;
+- active search preferences summary;
 - enabled source labels;
 - active provider and model;
 - configured fit threshold;
@@ -236,14 +236,12 @@ Available actions:
 
 - **Start scrape**
 - **Cancel**
-- **Edit profile or criteria**
+- **Edit profile or search preferences**
 - **Open Settings**
 
 Disable **Start scrape** when:
 
 - the profile is missing or empty;
-- no target role is configured;
-- no search location is configured;
 - the provider/model is incomplete;
 - another Pi run is active.
 
@@ -646,7 +644,7 @@ This menu contains two independently saved sections:
 1. Profile
 2. Search Criteria
 
-It also provides a shortcut to start Scrape Jobs after both sections are valid.
+It also provides a shortcut to start Scrape Jobs after both sections are saved. Search preferences may be empty because the reviewed profile drives discovery.
 
 ### 8.1 Profile
 
@@ -749,14 +747,14 @@ Actions:
 
 Validation behavior:
 
-- require at least one target role;
-- require at least one location;
 - require a positive maximum-job limit;
+- treat target roles, locations, keywords, and employment types as optional preferences;
+- enforce excluded keywords and remote-only as hard constraints;
 - explain invalid fields before saving.
 
 ### 8.3 Scrape shortcut
 
-When Profile and Criteria are both saved and valid, provide:
+When Profile and Criteria are both saved, provide:
 
 - **Scrape Jobs**
 
@@ -792,7 +790,7 @@ API credentials remain outside the dashboard. If credentials are missing, explai
 The user can configure:
 
 - enabled built-in source checkboxes;
-- an accessible maximum-age-in-days control beside each built-in source; defaults are effectively unlimited for FreeHire/LinkedIn and 45 days for TokyoDev/Japan Dev;
+- an accessible maximum-age-in-days control beside each built-in source; defaults are effectively unlimited for FreeHire, LinkedIn, Relocate.me, Y Combinator Remote, and Indeed Indonesia, and 45 days for TokyoDev and Japan Dev;
 - custom source list with add, edit, enable/disable, and remove actions;
 - bounded HTTP(S) URL templates and declarative JSON/HTML parser configuration only; no arbitrary commands or user code;
 - fit threshold;
@@ -921,7 +919,7 @@ Applications
 | Page or section | Empty-state behavior |
 |---|---|
 | Jobs, no profile | Explain that a profile is required; link to Profile & Criteria |
-| Jobs, no criteria | Explain that search criteria are required; link to Profile & Criteria |
+| Jobs, no criteria | Explain that the saved profile drives discovery; offer optional preferences in Profile & Criteria and allow Scrape Jobs |
 | Jobs, no jobs | Offer Scrape Jobs after prerequisites are valid |
 | Recommended, no matches | State that no jobs passed the configured threshold; offer View Discarded or Scrape again |
 | Discarded, empty | State that no jobs were discarded |

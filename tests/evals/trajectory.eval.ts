@@ -15,6 +15,7 @@ import {
 import { defaultCriteria, defaultSettings } from "../../src/server/config.js";
 import { createScrapeTools } from "../../src/server/scrape.js";
 import { createAgentSearchExecutor } from "../../src/server/runs.js";
+import { createAgentSearchTools } from "../../src/server/search/tools.js";
 import { runBoundedPi } from "../../src/server/pi.js";
 import type { AgentSearchSnapshot } from "../../src/server/search/state.js";
 import { deriveRunTrajectoryObservability } from "../../src/trajectory.js";
@@ -116,7 +117,7 @@ export type AgentEvalReport = AgentEvalRun & {
 };
 const boundedBudget: SearchBudget = { maxSearchCalls: 2, maxDetailCalls: 2, maxTotalResults: 10, maxRunDurationMs: 30_000 };
 
-const baseBudget: SearchBudget = { maxSearchCalls: 5, maxDetailCalls: 5, maxTotalResults: 10, maxRunDurationMs: 30_000 };
+const baseBudget: SearchBudget = { maxSearchCalls: 5, maxDetailCalls: 5, maxTotalResults: 10, maxRunDurationMs: 30_000, maxQueryVariantsPerSource: 1 };
 const baseCriteria = { ...defaultCriteria, roles: ["Backend Engineer"], locations: ["Remote"], keywords: ["TypeScript"], remoteOnly: true, maxJobsPerRun: 5 };
 
 function result(sourceId: string, title: string, source: JobSource, location = "Remote"): AgentEvalSearchResult {
@@ -357,9 +358,18 @@ class DeterministicFauxAgent {
   }
 
   private nextBaseline() {
+    const unusedSource = this.scenario.goal.enabledSources.findIndex(source => !this.searchedSources.has(source));
+    if (unusedSource >= 0) {
+      this.sourceIndex = unusedSource;
+      this.query = roleSeed(this.scenario.goal.criteria);
+      return this.call("searchJobs", { kind: "search", source: this.scenario.goal.enabledSources[this.sourceIndex]!, query: this.query, location: this.scenario.goal.criteria.locations[0] ?? "", limit: 5 }, { source: this.scenario.goal.enabledSources[this.sourceIndex]!, query: this.query, location: this.scenario.goal.criteria.locations[0] ?? "", limit: 5 });
+    }
     const hits = [...this.hits.values()];
-    const next = hits.find((hit) => !this.details.has(`${hit.source}\u0000${hit.sourceId}`));
-    if (next) return this.call("fetchJobDetails", { kind: "detail", source: next.source, resultId: next.sourceId }, { source: next.source, resultId: next.sourceId });
+    const primarySource = this.scenario.goal.enabledSources[0];
+    const next = hits.find((hit) => hit.source === primarySource && !this.details.has(`${hit.source}\u0000${hit.sourceId}`));
+    if (next) {
+      return this.call("fetchJobDetails", { kind: "detail", source: next.source, resultId: next.sourceId }, { source: next.source, resultId: next.sourceId });
+    }
     return this.finish(hits.length ? "candidates_sufficient" : "no_results");
   }
 
@@ -409,7 +419,11 @@ class DeterministicFauxAgent {
       if (this.mode === "baseline") return this.nextBaseline();
       if (this.scenario.id === "bounded-execution") {
         const source = this.scenario.goal.enabledSources[this.sourceIndex]!;
-        return this.call("searchJobs", { kind: "search", source, query: this.query, location: this.scenario.goal.criteria.locations[0] ?? "", limit: 5 }, { source, query: this.query, location: this.scenario.goal.criteria.locations[0] ?? "", limit: 5 });
+        const query = this.calls.filter((action) => action.kind === "search").length === 1
+          ? expandedQuery(this.scenario.goal.criteria)
+          : this.query;
+        this.query = query;
+        return this.call("searchJobs", { kind: "search", source, query, location: this.scenario.goal.criteria.locations[0] ?? "", limit: 5 }, { source, query, location: this.scenario.goal.criteria.locations[0] ?? "", limit: 5 });
       }
       if (this.scenario.id === "provenance-protection" && !this.forgedAttempted) {
         this.forgedAttempted = true;
@@ -536,6 +550,7 @@ async function runScenario(scenario: AgentEvalScenario, mode: "agent" | "baselin
       if (!plugin) throw new Error(`Missing fixture plugin for ${source}`);
       return createScrapeTools({ ...(options ?? {}), source, plugin });
     },
+    createTools: (options) => createAgentSearchTools({ ...options, adaptive: mode === "agent" }),
     createSession: async (_settings, value) => {
       const created = await createAgentSession({
         cwd: process.cwd(),
@@ -626,7 +641,7 @@ export const trajectoryEvalScenarios: readonly AgentEvalScenario[] = [
   {
     id: "adaptive-query",
     goal: { criteria: baseCriteria, enabledSources: ["freehire"] },
-    budget: baseBudget,
+    budget: { ...baseBudget, maxQueryVariantsPerSource: 2 },
     searchFixtures: [{ source: "freehire", query: "backend", location: "Remote", results: [low] }, { source: "freehire", query: "backend typescript", location: "Remote", results: [good] }],
     detailFixtures: [detailFor("freehire", low, "PHP maintenance."), detailFor("freehire", good, "Backend Engineer TypeScript APIs.")],
     expected: { searches: [{ source: "freehire", query: "backend typescript", location: "Remote" }], minSearches: 2, requiredDetailIds: ["good-1"], requiredRankedIds: ["good-1"], expectsAdaptation: true, termination: "candidates_sufficient" },
@@ -672,7 +687,7 @@ export const trajectoryEvalScenarios: readonly AgentEvalScenario[] = [
     id: "bounded-execution",
     goal: { criteria: baseCriteria, enabledSources: ["freehire"] },
     budget: boundedBudget,
-    searchFixtures: [{ source: "freehire", query: "backend", location: "Remote", results: [good] }],
+    searchFixtures: [{ source: "freehire", query: "backend", location: "Remote", results: [good] }, { source: "freehire", query: "backend typescript", location: "Remote", results: [good] }],
     detailFixtures: [detailFor("freehire", good, "Backend Engineer TypeScript APIs.")],
     expected: { minSearches: 2, maxSearches: 2, requiredRejectedOperations: ["search"], expectedPolicyEvents: ["search_budget_rejected"], termination: "budget_exhausted" },
     relevance: { "good-1": true },

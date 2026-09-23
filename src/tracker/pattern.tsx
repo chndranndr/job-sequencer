@@ -50,8 +50,15 @@ function stageTone(stage: JobStage) {
   return "stage-o";
 }
 
+type ManualBatchResult = {
+  runId: string | null;
+  accepted: Array<{ index: number; input: string; url: string }>;
+  rejected: Array<{ index: number; input: string; url?: string; error: string }>;
+  reused: boolean;
+};
+
 export function PatternView({
-  jobs, settings, filter, onFilter, playIndex, running, now, navigate, onManualImport, ...agent
+  jobs, settings, filter, onFilter, playIndex, running, now, navigate, onManualImport, onManualBatchImport, ...agent
 }: {
   jobs: Job[];
   settings: Settings | null;
@@ -61,6 +68,7 @@ export function PatternView({
   running: boolean;
   navigate: (href: string) => void;
   onManualImport: (input: string) => Promise<void>;
+  onManualBatchImport: (inputs: string[]) => Promise<ManualBatchResult>;
 } & Omit<Parameters<typeof AgentPane>[0], "navigate" | "onFilter">) {
   const [sortKey, setSortKey] = useState<PatternSortKey | null>(null);
   const [sortDirection, setSortDirection] = useState<PatternSortDirection>("ascending");
@@ -129,67 +137,124 @@ export function PatternView({
       </div>
     </section>
     <AgentPane {...agent} navigate={navigate} onFilter={onFilter} now={now} />
-    <ManualAddDialog open={manualOpen} running={running} onClose={() => setManualOpen(false)} onManualImport={onManualImport} />
+    <ManualAddDialog open={manualOpen} running={running} onClose={() => setManualOpen(false)} onManualImport={onManualImport} onManualBatchImport={onManualBatchImport} />
   </>;
 }
 
-function ManualAddDialog({ open, running, onClose, onManualImport }: { open: boolean; running: boolean; onClose: () => void; onManualImport: (input: string) => Promise<void> }) {
+function ManualAddDialog({ open, running, onClose, onManualImport, onManualBatchImport }: {
+  open: boolean;
+  running: boolean;
+  onClose: () => void;
+  onManualImport: (input: string) => Promise<void>;
+  onManualBatchImport: (inputs: string[]) => Promise<ManualBatchResult>;
+}) {
   const [input, setInput] = useState("");
+  const [links, setLinks] = useState("");
   const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [errorField, setErrorField] = useState<"single" | "batch" | null>(null);
+  const [submitting, setSubmitting] = useState<"single" | "batch" | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const linksRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (!open) return;
     setInput("");
+    setLinks("");
     setError("");
+    setErrorField(null);
     inputRef.current?.focus();
   }, [open]);
 
   function close() {
     if (submitting) return;
     setInput("");
+    setLinks("");
     setError("");
+    setErrorField(null);
     onClose();
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  async function submitSingle(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitting || running) return;
     const value = input.trim();
     if (!value) {
       setError("Enter a posting URL or paste job text.");
+      setErrorField("single");
       inputRef.current?.focus();
       return;
     }
-    setSubmitting(true);
+    setSubmitting("single");
     setError("");
+    setErrorField(null);
     try {
       await onManualImport(value);
       setInput("");
       onClose();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Manual import failed.");
+      setErrorField("single");
       inputRef.current?.focus();
     } finally {
-      setSubmitting(false);
+      setSubmitting(null);
+    }
+  }
+
+  async function submitBatch() {
+    if (submitting || running) return;
+    const values = links.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    if (!values.length) {
+      setError("Enter at least one HTTP(S) job link.");
+      setErrorField("batch");
+      linksRef.current?.focus();
+      return;
+    }
+    setSubmitting("batch");
+    setError("");
+    setErrorField(null);
+    try {
+      const result = await onManualBatchImport(values);
+      if (result.rejected.length) {
+        const rejectedIndexes = new Set(result.rejected.map(({ index }) => index));
+        setLinks(values.filter((_, index) => rejectedIndexes.has(index)).join("\n"));
+        setError(result.rejected.map(({ index, error }) => `Link ${index + 1}: ${error}`).join(" "));
+        setErrorField("batch");
+        linksRef.current?.focus();
+        return;
+      }
+      setLinks("");
+      onClose();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Batch import failed.");
+      setErrorField("batch");
+      linksRef.current?.focus();
+    } finally {
+      setSubmitting(null);
     }
   }
 
   if (!open) return null;
+  const busy = submitting !== null;
   return <div className="sample-dialog-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) close(); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); close(); } }}>
-    <form className="sample-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-add-dialog-title" aria-describedby="manual-add-dialog-copy" noValidate onSubmit={(event) => void submit(event)}>
-      <div className="sample-dialog-head"><h2 id="manual-add-dialog-title">Add job manually</h2><button type="button" aria-label="Close add job dialog" disabled={submitting} onClick={close}>×</button></div>
+    <form className="sample-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-add-dialog-title" aria-describedby="manual-add-dialog-copy" noValidate onSubmit={(event) => void submitSingle(event)}>
+      <div className="sample-dialog-head"><h2 id="manual-add-dialog-title">Add job manually</h2><button type="button" aria-label="Close add job dialog" disabled={busy} onClick={close}>×</button></div>
       <div className="sample-dialog-body">
-        <p id="manual-add-dialog-copy" className="sample-dialog-copy">Paste a full job posting or enter one HTTP(S) job URL. The reviewed profile and provider checks still apply.</p>
+        <p id="manual-add-dialog-copy" className="sample-dialog-copy">Paste a full job posting or enter one HTTP(S) job URL. To import several postings, use the batch field below.</p>
         <label className="field" htmlFor="manual-job-input">
           <span>Job URL or pasted posting</span>
-          <textarea ref={inputRef} id="manual-job-input" aria-label="Job URL or pasted posting" aria-describedby={error ? "manual-add-dialog-copy manual-add-dialog-error" : "manual-add-dialog-copy"} aria-invalid={Boolean(error)} value={input} onChange={(event) => setInput(event.target.value)} placeholder="https://jobs.example.com/role or paste the posting" required rows={8} />
+          <textarea ref={inputRef} id="manual-job-input" aria-label="Job URL or pasted posting" aria-describedby={errorField === "single" ? "manual-add-dialog-copy manual-add-dialog-error" : "manual-add-dialog-copy"} aria-invalid={errorField === "single"} value={input} onChange={(event) => setInput(event.target.value)} placeholder="https://jobs.example.com/role or paste the posting" required rows={8} />
         </label>
+        <div className="sample-dialog-batch">
+          <label className="field" htmlFor="manual-job-links">
+            <span>Job links · one HTTP(S) URL per line</span>
+            <textarea ref={linksRef} id="manual-job-links" aria-label="Job links" aria-describedby={errorField === "batch" ? "manual-add-dialog-copy manual-add-dialog-error" : "manual-add-dialog-copy"} aria-invalid={errorField === "batch"} value={links} onChange={(event) => setLinks(event.target.value)} placeholder={"https://jobs.example.com/one\nhttps://jobs.example.com/two"} rows={5} />
+          </label>
+          <button type="button" className="sample-confirm" disabled={running || busy} onClick={() => void submitBatch()}>{submitting === "batch" ? "Importing links…" : running ? "Run active" : "Import links"}</button>
+        </div>
         {error && <p id="manual-add-dialog-error" className="sample-dialog-error" role="alert">{error} Check the input and try again.</p>}
         {running && <p className="sample-dialog-copy">Another AI run is active. Wait for it to finish before adding a job.</p>}
       </div>
-      <div className="sample-dialog-actions"><button type="button" disabled={submitting} onClick={close}>Cancel</button><button type="submit" className="sample-confirm" disabled={running || submitting}>{submitting ? "Adding job…" : running ? "Run active" : "Add job"}</button></div>
+      <div className="sample-dialog-actions"><button type="button" disabled={busy} onClick={close}>Cancel</button><button type="submit" className="sample-confirm" disabled={running || busy}>{submitting === "single" ? "Adding job…" : running ? "Run active" : "Add job"}</button></div>
     </form>
   </div>;
 }

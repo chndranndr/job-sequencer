@@ -335,7 +335,7 @@ test("historical memory bounds and labels external role, location, and query tex
     profile: "Platform engineer",
     criteria: { ...defaultCriteria, locations: ["Tokyo"], maxJobsPerRun: 1 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
-    searchBudget: { maxSearchCalls: 2, maxDetailCalls: 1, maxTotalResults: 2 },
+    searchBudget: { maxSearchCalls: 2, maxDetailCalls: 1, maxTotalResults: 2, maxQueryVariantsPerSource: 1 },
     signal: new AbortController().signal,
     runId: "hostile-prompt-run",
     db,
@@ -427,7 +427,7 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
     profile: "Platform engineer",
     criteria: { ...defaultCriteria, roles: ["Platform Engineer"], maxJobsPerRun: 5 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
-    searchBudget: { maxSearchCalls: 5, maxDetailCalls: 5, maxTotalResults: 10 },
+    searchBudget: { maxSearchCalls: 5, maxDetailCalls: 5, maxTotalResults: 10, maxQueryVariantsPerSource: 2 },
     signal: new AbortController().signal,
     runId: "run-1",
     db,
@@ -490,7 +490,7 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
     profile: "Platform engineer",
     criteria: { ...defaultCriteria, roles: ["Platform Engineer"], maxJobsPerRun: 5 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
-    searchBudget: { maxSearchCalls: 5, maxDetailCalls: 5, maxTotalResults: 10 },
+    searchBudget: { maxSearchCalls: 5, maxDetailCalls: 5, maxTotalResults: 10, maxQueryVariantsPerSource: 1 },
     signal: new AbortController().signal,
     runId: "run-2",
     db,
@@ -600,7 +600,7 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
     profile: "Developer",
     criteria: { ...defaultCriteria, maxJobsPerRun: 1 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
-    searchBudget: { maxSearchCalls: 3, maxDetailCalls: 1, maxTotalResults: 4 },
+    searchBudget: { maxSearchCalls: 3, maxDetailCalls: 1, maxTotalResults: 4, maxQueryVariantsPerSource: 2 },
     signal: new AbortController().signal,
     runId: "retry-run",
     db,
@@ -611,16 +611,15 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
   assert.match(prompt, /Prefer positive historical signals/i);
   assert.match(prompt, /Deprioritize repeatedly negative or low-yield strategies when alternatives exist/i);
   assert.match(prompt, /Negative history is not a ban; retry a negative strategy when the current context materially changes/i);
-  const retried = listSearchAttempts(db)
-    .filter(attempt => attempt.runId === "retry-run")
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  const retried = listSearchAttempts(db).filter(attempt => attempt.runId === "retry-run");
   assert.equal(retried.length, 2);
-  assert.deepEqual(retried.map(attempt => attempt.query), ["java developer", "php developer"]);
+  assert.equal(retried.find(attempt => attempt.id === "retry-run:search-1")?.query, "java developer");
+  assert.equal(retried.find(attempt => attempt.id === "retry-run:search-2")?.query, "php developer");
 
 
 });
 
-test("hard criteria keep the agent in Tokyo when memory favors Singapore", async () => {
+test("search preferences remain visible when memory favors Singapore", async () => {
   const db = openDatabase(":memory:");
   for (let i = 0; i < 3; i++) {
     insertSearchAttempt(db, {
@@ -666,7 +665,7 @@ test("hard criteria keep the agent in Tokyo when memory favors Singapore", async
     runPi: async (options) => {
       prompt = options.prompt;
       await options.createSession();
-      const criteria = prompt.match(/TRUSTED SEARCH CRITERIA\n---\n([\s\S]*?)\n---/)?.[1] ?? "";
+      const criteria = prompt.match(/TRUSTED SEARCH PREFERENCES\n---\n([\s\S]*?)\n---/)?.[1] ?? "";
       const location = criteria.includes('"locations":["Tokyo"]') ? "Tokyo" : "Singapore";
       await tools!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location, limit: 1 }, undefined, undefined, undefined as never);
       await tools!.finishSearch.execute("f-1", { reason: "Criteria fixture complete." }, undefined, undefined, undefined as never);
@@ -678,14 +677,14 @@ test("hard criteria keep the agent in Tokyo when memory favors Singapore", async
     profile: "Platform engineer",
     criteria: { ...defaultCriteria, locations: ["Tokyo"], excludeKeywords: ["Singapore"], maxJobsPerRun: 1 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
-    searchBudget: { maxSearchCalls: 2, maxDetailCalls: 1, maxTotalResults: 2 },
+    searchBudget: { maxSearchCalls: 2, maxDetailCalls: 1, maxTotalResults: 2, maxQueryVariantsPerSource: 1 },
     signal: new AbortController().signal,
     runId: "hard-criteria-run",
     db,
   });
 
   assert.match(prompt, /UNTRUSTED HISTORICAL SEARCH MEMORY[\s\S]*Singapore/i);
-  assert.match(prompt, /TRUSTED SEARCH CRITERIA[\s\S]*"locations":\["Tokyo"\]/i);
+  assert.match(prompt, /TRUSTED SEARCH PREFERENCES[\s\S]*"locations":\["Tokyo"\]/i);
   const attempt = listSearchAttempts(db).find((entry) => entry.runId === "hard-criteria-run");
   assert.ok(attempt);
   assert.equal(attempt.location, "Tokyo");

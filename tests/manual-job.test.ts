@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { buildServer } from "../src/server/app.js";
 import { openDatabase, persistManualJob } from "../src/server/db.js";
 import { writeSettings, writeStructuredProfile } from "../src/server/config.js";
-import { createEmptyProfile } from "../src/shared.js";
-import { MAX_MANUAL_FETCH_BYTES, importManualJob, ManualJobRunManager, parseManualJobText, validateManualUrl, type ManualJobImportResult } from "../src/server/manual-job.js";
+import { createEmptyProfile, defaultSourceMaxAgeDays } from "../src/shared.js";
+import { MAX_MANUAL_BATCH_SIZE, MAX_MANUAL_FETCH_BYTES, importManualJob, ManualJobRunManager, parseManualJobText, validateManualUrl, type ManualJobImportResult } from "../src/server/manual-job.js";
 import type { PiSessionLike } from "../src/server/pi.js";
 
 const settings = {
@@ -16,7 +16,7 @@ const settings = {
   source: "freehire" as const,
   enabledSources: ["freehire"],
   customSources: [],
-  sourceMaxAgeDays: { freehire: 9999, linkedin: 9999, tokyodev: 45, "japan-dev": 45 },
+  sourceMaxAgeDays: { ...defaultSourceMaxAgeDays },
   scoreThreshold: 60,
   maxResults: 50,
   cvPages: 2,
@@ -373,6 +373,196 @@ test("manual run queues overlap and leaves no job on importer failure", async ()
     const failedEvents = (await app.inject({ url: `/api/runs/${failed.json().runId}/trajectory` })).json().events;
     assert.ok(failedEvents.some((event: { type: string }) => event.type === "task_failed"));
   } finally { await app.close(); db.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("manual batch validates links and records partial outcomes in one run", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-manual-batch-"));
+  const db = openDatabase(":memory:");
+  await writeSettings(dir, settings);
+  await writeStructuredProfile(dir, createEmptyProfile());
+  const existingUrl = "https://jobs.example.test/existing";
+  persistManualJob(db, { ...fixtureImport, inputType: "url", url: existingUrl }, 60);
+  const imported: string[] = [];
+  let app = await buildServer({
+    dataDir: dir,
+    db,
+    manualImporter: async (input) => {
+      if (input === "https://jobs.example.test/failed") throw new Error("provider unavailable");
+      imported.push(input);
+      return { ...fixtureImport, inputType: "url", url: input, job: { ...fixtureImport.job, company: "Accepted Co" } };
+    },
+  });
+  try {
+    const valid = "https://jobs.example.test/accepted";
+    const failed = "https://jobs.example.test/failed";
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/jobs/manual/batch",
+      payload: { urls: [valid, failed, existingUrl, "ftp://jobs.example.test/invalid", valid] },
+    });
+    assert.equal(response.statusCode, 202);
+    const body = response.json() as {
+      runId: string | null;
+      accepted: Array<{ index: number; input: string; url: string }>;
+      rejected: Array<{ index: number; input: string; url?: string; error: string }>;
+      reused: boolean;
+    };
+    assert.equal(body.reused, false);
+    assert.ok(body.runId);
+    assert.deepEqual(body.accepted, [{ index: 0, input: valid, url: valid }, { index: 1, input: failed, url: failed }]);
+    assert.deepEqual(body.rejected.map(({ index, input, url }) => ({ index, input, url })), [
+      { index: 2, input: existingUrl, url: existingUrl },
+      { index: 3, input: "ftp://jobs.example.test/invalid", url: undefined },
+      { index: 4, input: valid, url: valid },
+    ]);
+    assert.match(body.rejected[0]?.error ?? "", /already exists/i);
+    assert.match(body.rejected[1]?.error ?? "", /HTTP/i);
+    assert.match(body.rejected[2]?.error ?? "", /duplicate/i);
+
+    const done = await waitForRun(app, body.runId);
+    assert.equal(done.status, "succeeded");
+    const summary = (done as typeof done & {
+      summary: {
+        status: string;
+        total: number;
+        accepted: number;
+        rejected: number;
+        succeeded: number;
+        failed: number;
+        cancelled: number;
+        items: Array<{ index: number; status: string; jobId?: string; error?: string }>;
+      };
+    }).summary;
+    assert.equal(summary.status, "partial");
+    assert.deepEqual({ total: summary.total, accepted: summary.accepted, rejected: summary.rejected, succeeded: summary.succeeded, failed: summary.failed, cancelled: summary.cancelled }, { total: 5, accepted: 2, rejected: 3, succeeded: 1, failed: 1, cancelled: 0 });
+    assert.deepEqual(summary.items.map(({ index, status }) => ({ index, status })), [
+      { index: 0, status: "succeeded" },
+      { index: 1, status: "failed" },
+      { index: 2, status: "rejected" },
+      { index: 3, status: "rejected" },
+      { index: 4, status: "rejected" },
+    ]);
+    assert.ok(summary.items.find((item) => item.index === 0)?.jobId);
+    assert.match(summary.items.find((item) => item.index === 1)?.error ?? "", /Manual job import failed/i);
+    const trajectory = (await app.inject({ url: `/api/runs/${body.runId}/trajectory` })).json();
+    const taskIds = new Set(trajectory.events.filter((event: { type: string }) => event.type.startsWith("task_")).map((event: { payload?: { taskId?: string } }) => event.payload?.taskId));
+    assert.ok(taskIds.has("manual_import:link-0:prepare"));
+    assert.ok(taskIds.has("manual_import:link-1:prepare"));
+    assert.deepEqual(imported, [valid]);
+    assert.equal((await app.inject({ url: "/api/jobs" })).json().jobs.length, 2);
+
+    const idempotencyKey = "manual-batch-request";
+    const idempotentUrl = "https://jobs.example.test/idempotent";
+    const changedUrl = "https://jobs.example.test/changed";
+    const first = await app.inject({ method: "POST", url: "/api/jobs/manual/batch", headers: { "idempotency-key": idempotencyKey }, payload: { urls: [idempotentUrl] } });
+    const firstBody = first.json() as {
+      runId: string;
+      accepted: Array<{ index: number; input: string; url: string }>;
+      rejected: Array<{ index: number; input: string; url?: string; error: string }>;
+      reused: boolean;
+    };
+    assert.equal(first.statusCode, 202);
+    assert.equal(firstBody.reused, false);
+    assert.deepEqual(firstBody.accepted, [{ index: 0, input: idempotentUrl, url: idempotentUrl }]);
+    assert.deepEqual(firstBody.rejected, []);
+    const second = await app.inject({ method: "POST", url: "/api/jobs/manual/batch", headers: { "idempotency-key": idempotencyKey }, payload: { urls: [changedUrl] } });
+    assert.equal(second.statusCode, 202);
+    assert.deepEqual(second.json(), { runId: firstBody.runId, accepted: firstBody.accepted, rejected: firstBody.rejected, reused: true });
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM runs WHERE idempotency_key=?").get(idempotencyKey) as { count: number }).count, 1);
+    await waitForRun(app, firstBody.runId);
+    assert.equal(imported.includes(changedUrl), false);
+    await app.close();
+    app = await buildServer({ dataDir: dir, db, manualImporter: async () => fixtureImport });
+    const replay = await app.inject({ method: "POST", url: "/api/jobs/manual/batch", headers: { "idempotency-key": idempotencyKey }, payload: { urls: [changedUrl] } });
+    assert.equal(replay.statusCode, 202);
+    assert.deepEqual(replay.json(), { runId: firstBody.runId, accepted: firstBody.accepted, rejected: firstBody.rejected, reused: true });
+
+    const tooMany = await app.inject({
+      method: "POST",
+      url: "/api/jobs/manual/batch",
+      payload: { urls: Array.from({ length: MAX_MANUAL_BATCH_SIZE + 1 }, (_, index) => `https://jobs.example.test/${index}`) },
+    });
+    assert.equal(tooMany.statusCode, 400);
+  } finally {
+    await app.close();
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("manual batch cancellation stops one aggregate run without deleting successes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-manual-batch-cancel-"));
+  const db = openDatabase(":memory:");
+  await writeSettings(dir, settings);
+  await writeStructuredProfile(dir, createEmptyProfile());
+  let started = false;
+  const app = await buildServer({
+    dataDir: dir,
+    db,
+    manualImporter: async (_input, _settings, options) => {
+      started = true;
+      await new Promise<never>((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      throw new Error("unreachable");
+    },
+  });
+  try {
+    const response = await app.inject({ method: "POST", url: "/api/jobs/manual/batch", payload: { urls: ["https://jobs.example.test/one", "https://jobs.example.test/two"] } });
+    const { runId } = response.json() as { runId: string };
+    for (let attempt = 0; attempt < 100 && !started; attempt++) await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.equal(started, true);
+    assert.equal((await app.inject({ method: "POST", url: `/api/runs/${runId}/cancel` })).statusCode, 200);
+    const done = await waitForRun(app, runId);
+    assert.equal(done.status, "cancelled");
+    const summary = (done as typeof done & { summary: { status: string; items: Array<{ status: string }> } }).summary;
+    assert.equal(summary.status, "cancelled");
+    assert.deepEqual(summary.items.map((item) => item.status), ["cancelled", "cancelled"]);
+    assert.equal((await app.inject({ url: "/api/jobs" })).json().jobs.length, 0);
+  } finally {
+    await app.close();
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("queued manual batch cancellation keeps its persisted admission mapping", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-manual-batch-queued-cancel-"));
+  const db = openDatabase(":memory:");
+  await writeSettings(dir, settings);
+  await writeStructuredProfile(dir, createEmptyProfile());
+  let blockerStarted = false;
+  const app = await buildServer({
+    dataDir: dir,
+    db,
+    manualImporter: async (input, _settings, options) => {
+      if (input === "blocker text") {
+        blockerStarted = true;
+        await new Promise<never>((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+        throw new Error("unreachable");
+      }
+      return { ...fixtureImport, inputType: "url", url: input };
+    },
+  });
+  try {
+    const blocker = await app.inject({ method: "POST", url: "/api/jobs/manual", payload: { input: "blocker text" } });
+    const blockerRunId = blocker.json().runId as string;
+    for (let attempt = 0; attempt < 100 && !blockerStarted; attempt++) await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.equal(blockerStarted, true);
+    const batch = await app.inject({ method: "POST", url: "/api/jobs/manual/batch", payload: { urls: ["https://jobs.example.test/queued-one", "https://jobs.example.test/queued-two"] } });
+    const batchBody = batch.json() as { runId: string; accepted: Array<{ index: number; input: string; url: string }>; rejected: unknown[] };
+    assert.equal((await app.inject({ url: `/api/runs/${batchBody.runId}` })).json().status, "queued");
+    assert.equal((await app.inject({ method: "POST", url: `/api/runs/${batchBody.runId}/cancel` })).statusCode, 200);
+    const done = await waitForRun(app, batchBody.runId);
+    assert.equal(done.status, "cancelled");
+    const summary = (done as typeof done & { summary: { admission: { accepted: typeof batchBody.accepted; rejected: unknown[] }; items: Array<{ status: string }> } }).summary;
+    assert.deepEqual(summary.admission.accepted, batchBody.accepted);
+    assert.deepEqual(summary.admission.rejected, batchBody.rejected);
+    assert.deepEqual(summary.items.map((item) => item.status), ["queued", "queued"]);
+    await app.inject({ method: "POST", url: `/api/runs/${blockerRunId}/cancel` });
+    await waitForRun(app, blockerRunId);
+  } finally {
+    await app.close();
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("manual API checks the reviewed structured profile before creating a run", async () => {

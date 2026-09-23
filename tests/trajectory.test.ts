@@ -6,6 +6,7 @@ import { appendRunTrajectoryEvent, createTaskReporter, createTrajectoryRecorder,
 import { runBoundedPi, type PiSessionLike } from "../src/server/pi.js";
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createMultiSourceScrapeExecutor, RunManager } from "../src/server/runs.js";
+import { provenanceKey } from "../src/server/scrape.js";
 import { deriveRunTaskRows } from "../src/shared.js";
 import { deriveRunTrajectoryObservability } from "../src/trajectory.js";
 import type { TrajectoryEvent } from "../src/shared.js";
@@ -39,7 +40,7 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
   appendRunTrajectoryEvent(db, runId, { kind: "assistant", type: "assistant_message", payload: { text: "private answer", usage: { totalTokens: 3 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "thinking", type: "assistant_thinking", payload: { text: "private reasoning" } });
   appendRunTrajectoryEvent(db, runId, { kind: "thinking", type: "model_internal", payload: { text: "arbitrary reasoning marker" } });
-  appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_started", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", intent: "apiKey=sk-secret-value", metadata: { note: "sk-live-secret pk-x rk-y" }, credentials: { apiKey: { value: "nested-secret" } }, clientSecret: { value: "client-secret-marker" }, refreshToken: "refresh-token-marker", repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 4, maxRunDurationMs: 1000 } } });
+  appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_started", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", intent: "apiKey=sk-secret-value", metadata: { note: "sk-live-secret pk-x rk-y" }, credentials: { apiKey: { value: "nested-secret" } }, clientSecret: { value: "client-secret-marker" }, authorizationHeader: "header-secret", clientSecretValue: "value-secret", refreshToken: "refresh-token-marker", repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 4, maxRunDurationMs: 1000 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_completed", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 0, counts: { discovered: 2, unique: 1 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 900 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_state_inspected", payload: { counts: { discovered: 2, unique: 1, enriched: 0 }, coverage: { "role:backend": "medium" }, coverageSufficient: false, marginalUtility: { status: "low", score: 0, recentSearches: 1, recentUniqueJobs: 1, recentPromisingJobs: 0, repeatedZeroYieldSearches: 0, recommendation: "Vary query." }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 800 }, termination: null } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_finished", payload: { reason: "No more useful results.", reasonCategory: "marginal_utility_low", unresolvedGoals: ["compensation"], counts: { discovered: 2, unique: 1, enriched: 0 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 700 } } });
@@ -59,7 +60,7 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
     assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_message")?.payload, null);
     assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_thinking")?.payload, null);
     assert.equal(body.events.find((event: { type: string }) => event.type === "model_internal")?.payload, null);
-    assert.doesNotMatch(JSON.stringify(body), /sk-secret-value|sk-live-secret|pk-x|rk-y|nested-secret|client-secret-marker|refresh-token-marker|private reasoning|private answer/);
+    assert.doesNotMatch(JSON.stringify(body), /sk-secret-value|sk-live-secret|pk-x|rk-y|nested-secret|client-secret-marker|header-secret|value-secret|refresh-token-marker|private reasoning|private answer/);
     assert.equal((await app.inject({ url: "/api/runs/missing/trajectory" })).statusCode, 404);
     assert.equal((await app.inject({ url: "/api/runs?limit=1" })).json().runs.length, 1);
 
@@ -159,6 +160,34 @@ test("terminal search finish merges source stats and budget without inspect", ()
   assert.equal(observability.states[0]?.marginalUtility?.status, "medium");
   assert.equal(observability.states[0]?.termination?.unresolvedGoalCount, 1);
 });
+test("terminal search finish preserves coverage status without other state", () => {
+  const run = {
+    workflow: "scrape",
+    status: "succeeded",
+    started_at: "2026-08-20T00:00:00.000Z",
+    finished_at: "2026-08-20T00:00:05.000Z",
+    error: null,
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    estimated_cost: null,
+  } satisfies Parameters<typeof deriveRunTrajectoryObservability>[0];
+  const event: TrajectoryEvent = {
+    runId: "terminal-coverage-status",
+    sequence: 1,
+    kind: "lifecycle",
+    type: "search_finished",
+    timestamp: "2026-08-20T00:00:01.000Z",
+    startedAt: null,
+    endedAt: null,
+    durationMs: null,
+    payload: { coverageSufficient: true },
+  };
+  const observability = deriveRunTrajectoryObservability(run, [event]);
+  assert.equal(observability.states.length, 1);
+  assert.equal(observability.states[0]?.coverageSufficient, true);
+});
+
 test("trajectory budget separates consumed calls from rejected attempts", () => {
   const run = {
     workflow: "scrape",
@@ -347,6 +376,66 @@ test("scrape manager records enabled-source tasks and cancelled active tasks nev
     assert.equal(deriveRunTaskRows([], "follow_up", "cancelled")[0]?.detail, "Run cancelled.");
   } finally { db.close(); }
 });
+test("scrape funnel telemetry reports final selected jobs after hard filtering", async () => {
+  const db = openDatabase(":memory:");
+  const remote = { sourceId: "remote", source: "freehire", url: "https://jobs.example.test/remote", company: "Example", role: "Backend Engineer", location: "Remote", posting: "Build APIs.", score: 81, reason: "Strong fit", strengths: ["APIs"], gaps: [] };
+  const office = { sourceId: "office", source: "freehire", url: "https://jobs.example.test/office", company: "Example", role: "Backend Engineer", location: "Office", posting: "Build APIs.", score: 80, reason: "Location mismatch", strengths: [], gaps: ["Remote"] };
+  const context = {
+    profile: "{}",
+    criteria: { ...defaultCriteria, remoteOnly: true, maxJobsPerRun: 5 },
+    settings: { ...defaultSettings, enabledSources: ["freehire"] },
+  };
+  const evidence = new Map([
+    [provenanceKey(remote.source, remote.sourceId), { source: remote.source, sourceId: remote.sourceId, url: remote.url, title: remote.role, company: remote.company, location: remote.location, posting: remote.posting }],
+    [provenanceKey(office.source, office.sourceId), { source: office.source, sourceId: office.sourceId, url: office.url, title: office.role, company: office.company, location: office.location, posting: office.posting }],
+  ]);
+  const executor = async () => ({
+    result: { jobs: [remote, office] },
+    provenance: new Map([[remote.sourceId, remote.url], [office.sourceId, office.url]]),
+    evidence,
+    funnel: {
+      enabledSources: ["freehire"],
+      sourceAttempts: { freehire: 1 },
+      queriesBySource: { freehire: ["backend"] },
+      pagesBySource: { freehire: [1] },
+      rawHits: 2,
+      uniqueHits: 2,
+      promisingHits: 2,
+      duplicatesRemoved: 0,
+      candidatesAfterCheapFiltering: 1,
+      detailFetches: 0,
+      selectedJobs: 2,
+      stopReason: "target_reached",
+      sources: {
+        freehire: {
+          searches: 1,
+          queries: ["backend"],
+          pages: [1],
+          rawHits: 2,
+          uniqueHits: 2,
+          promisingHits: 2,
+          duplicatesRemoved: 0,
+          duplicateRate: 0,
+          averageYield: 2,
+          lastYield: 2,
+          queryHistory: [],
+        },
+      },
+    },
+  });
+  const manager = new RunManager(db, executor, async () => context, createTrajectoryRecorder(db));
+  try {
+    const runId = await manager.start();
+    for (let attempt = 0; attempt < 100 && (manager.get(runId) as { status?: string } | undefined)?.status === "running"; attempt++) await Promise.resolve();
+    const run = manager.get(runId) as { status?: string; summary?: { jobsFound?: number; funnel?: { selectedJobs?: number } } } | undefined;
+    assert.equal(run?.status, "succeeded");
+    assert.equal(run?.summary?.jobsFound, 1);
+    assert.equal(run?.summary?.funnel?.selectedJobs, 1);
+    const funnels = listRunTrajectoryEvents(db, runId).filter((event) => event.type === "search_funnel");
+    assert.equal((funnels.at(-1)?.payload as { selectedJobs?: number } | undefined)?.selectedJobs, 1);
+  } finally { db.close(); }
+});
+
 
 class TrajectoryFakeSession implements PiSessionLike {
   private listener: ((event: unknown) => void) | null = null;
@@ -408,4 +497,110 @@ test("runBoundedPi persists prompts, aggregated assistant/thinking, tools, and t
     else process.env.TELEMETRY_MODE = previousMode;
     db.close();
   }
+});
+test("trajectory observability keeps adaptive paths, source funnel maps, and aggregate stats", () => {
+  const run = {
+    workflow: "scrape",
+    status: "succeeded",
+    started_at: "2026-08-20T00:00:00.000Z",
+    finished_at: "2026-08-20T00:00:05.000Z",
+    error: null,
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    estimated_cost: null,
+  } satisfies Parameters<typeof deriveRunTrajectoryObservability>[0];
+  const event = (sequence: number, type: string, payload: unknown): TrajectoryEvent => ({
+    runId: "adaptive-observability",
+    sequence,
+    kind: "lifecycle",
+    type,
+    timestamp: `2026-08-20T00:00:0${sequence}.000Z`,
+    startedAt: null,
+    endedAt: null,
+    durationMs: null,
+    payload,
+  });
+  const budget = { targetUniqueJobs: 10, maxSearchCalls: 4, maxDetailCalls: 2, maxTotalResults: 20, maxRunDurationMs: 1_000, minSearchesPerSource: 1, maxSearchesPerSource: 4, maxPagesPerQuery: 2, maxQueryVariantsPerSource: 2 };
+  const attempts = [
+    event(1, "search_started", { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", page: 1, requestedLimit: 2, budget }),
+    event(2, "search_completed", { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", page: 1, resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 1, pageInfo: { page: 1, hasMore: true, nextPage: 2, nextCursor: "opaque-next", total: 4 }, budget }),
+    event(3, "search_started", { attemptId: "search-2", operation: "search", source: "freehire", query: "backend", location: "Remote", page: 2, cursor: "opaque-cursor", requestedLimit: 2, budget }),
+    event(4, "search_completed", { attemptId: "search-2", operation: "search", source: "freehire", query: "backend", location: "Remote", page: 2, resultCount: 1, uniqueResultCount: 1, duplicateCount: 0, promisingResultCount: 0, pageInfo: { page: 2, hasMore: false, total: 4 }, budget }),
+    event(5, "search_finished", {
+      reason: "Pagination exhausted.",
+      sourceCoverage: { required: ["freehire", "linkedin"], searched: ["freehire"], unavailable: [], unsearched: ["linkedin"] },
+      reasonCategory: "no_results",
+      budget,
+      sourceStats: {
+        freehire: {
+          searches: 2,
+          searchCalls: 2,
+          detailCalls: 0,
+          rawHits: 3,
+          uniqueHits: 2,
+          duplicateCount: 1,
+          duplicateRate: 1 / 3,
+          promisingHits: 1,
+          enrichedCount: 0,
+          failures: 0,
+          averageYield: 1,
+          lastYield: 1,
+          pagesVisited: [1, 2],
+          queryHistory: [
+            { source: "freehire", query: "backend", location: "Remote", page: 1, returnedHits: 2, uniqueHits: 1, hasMore: true, nextPage: 2, nextCursor: "opaque-history" },
+            { source: "freehire", query: "backend", location: "Remote", page: 2, cursor: "opaque-cursor", returnedHits: 1, uniqueHits: 1, hasMore: false },
+          ],
+        },
+      },
+      paths: [
+        { source: "freehire", query: "backend", location: "Remote", page: 1, searches: 1, completed: true, pagesVisited: [1], averageYield: 1, lastYield: 1 },
+        { path: "freehire\u0001backend\u0001Remote\u0001\u0001opaque-cursor", source: "freehire", query: "backend", location: "Remote", page: 2, cursor: "opaque-cursor", searches: 1, completed: true, pagesVisited: [2], averageYield: 1, lastYield: 1 },
+      ],
+    }),
+    event(6, "search_funnel", {
+      enabledSources: ["freehire"],
+      sourceAttempts: { freehire: 2 },
+      queriesBySource: { freehire: ["backend"] },
+      pagesBySource: { freehire: [1, 2] },
+      rawHits: 3,
+      uniqueHits: 2,
+      promisingHits: 1,
+      duplicatesRemoved: 1,
+      candidatesAfterCheapFiltering: 2,
+      detailFetches: 1,
+      selectedJobs: 1,
+      stopReason: "paths_exhausted",
+      sources: {
+        freehire: {
+          searches: 2,
+          uniqueHits: 2,
+          promisingHits: 1,
+          averageYield: 1,
+          lastYield: 1,
+          pagesVisited: [1, 2],
+          queryHistory: [{ query: "backend", location: "Remote", page: 1, uniqueHits: 1 }],
+        },
+      },
+    }),
+  ];
+  const observability = deriveRunTrajectoryObservability(run, attempts);
+  assert.equal(observability.attempts[0]?.page, 1);
+  assert.equal(observability.attempts[1]?.cursor, "[redacted]");
+  assert.equal(observability.attempts[0]?.nextCursor, "[redacted]");
+  assert.deepEqual(observability.states[0]?.sourceCoverage, { required: ["freehire", "linkedin"], searched: ["freehire"], unavailable: [], unsearched: ["linkedin"] });
+  assert.equal(observability.sourceStats.freehire?.queryHistory?.[0]?.nextCursor, "[redacted]");
+  assert.doesNotMatch(JSON.stringify(observability), /opaque-(?:next|history|cursor)/);
+  assert.equal(observability.attempts[0]?.nextPage, 2);
+  assert.equal(observability.attempts[0]?.hasMore, true);
+  assert.equal(observability.attempts[1]?.page, 2);
+  assert.equal(observability.sourceStats.freehire?.searches, 2);
+  assert.equal(observability.sourceStats.freehire?.averageYield, 1);
+  assert.deepEqual(observability.sourceStats.freehire?.pagesVisited, [1, 2]);
+  assert.equal(observability.sourceStats.freehire?.queryHistory?.length, 2);
+  assert.deepEqual(observability.funnel?.queriesBySource, { freehire: ["backend"] });
+  assert.deepEqual(observability.funnel?.pagesBySource, { freehire: [1, 2] });
+  assert.equal(observability.funnel?.promisingHits, 1);
+  assert.equal(observability.funnel?.candidatesAfterCheapFiltering, 2);
+  assert.deepEqual(observability.funnel?.sourceAttempts, { freehire: 2 });
 });

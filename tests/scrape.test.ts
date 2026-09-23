@@ -173,6 +173,26 @@ test("searchJobs wraps the vendored FreeHire CLI and records provenance", async 
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
+test("non-paginated sources reject continuation requests", async () => {
+  let calls = 0;
+  const tools = createScrapeTools({
+    source: "linkedin",
+    runCli: async () => {
+      calls++;
+      return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) };
+    },
+  });
+  await assert.rejects(
+    tools.searchJobs.execute("page-2", { query: "backend", location: "Remote", limit: 1, page: 2 }, undefined, undefined, undefined as never),
+    /does not support pagination/i,
+  );
+  await assert.rejects(
+    tools.searchJobs.execute("cursor", { query: "backend", location: "Remote", limit: 1, cursor: "opaque" }, undefined, undefined, undefined as never),
+    /does not support pagination/i,
+  );
+  assert.equal(calls, 0);
+});
+
 
 test("LinkedIn search uses the required location and normalizes detail provenance", async () => {
   const calls: string[][] = [];

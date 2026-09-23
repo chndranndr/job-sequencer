@@ -1,4 +1,4 @@
-import { isJsonRecord, type Run, type RunTrajectoryAdaptation, type RunTrajectoryAttempt, type RunTrajectoryAttemptStatus, type RunTrajectoryBudget, type RunTrajectoryCounts, type RunTrajectoryObservability, type RunTrajectoryPolicyEvent, type RunTrajectoryResources, type RunTrajectorySourceStats, type RunTrajectoryStateSnapshot, type RunTrajectoryTermination, type TrajectoryEvent } from "./shared.js";
+import { isJsonRecord, type Run, type RunTrajectoryAdaptation, type RunTrajectoryAttempt, type RunTrajectoryAttemptStatus, type RunTrajectoryBudget, type RunTrajectoryCounts, type RunTrajectoryFunnel, type RunTrajectoryNextSearch, type RunTrajectoryObservability, type RunTrajectoryPath, type RunTrajectoryPolicyEvent, type RunTrajectoryQueryRecord, type RunTrajectoryResources, type RunTrajectorySourceCoverage, type RunTrajectorySourceStats, type RunTrajectoryStateSnapshot, type RunTrajectoryTermination, type TrajectoryEvent } from "./shared.js";
 
 type Payload = Record<string, unknown>;
 type AttemptOperation = RunTrajectoryAttempt["operation"];
@@ -16,6 +16,13 @@ type SourceAccumulator = {
   failures: number | null;
   latencyTotal: number;
   latencySamples: number;
+  searches: number | null;
+  uniqueHits: number | null;
+  promisingHits: number | null;
+  averageYield: number | null;
+  lastYield: number | null;
+  pagesVisited: number[] | null;
+  queryHistory: RunTrajectoryQueryRecord[] | null;
 };
 
 const MAX_ATTEMPTS = 500;
@@ -25,6 +32,11 @@ const MAX_POLICY_EVENTS = 250;
 const MAX_SOURCES = 100;
 const MAX_SOURCE_LENGTH = 80;
 const MAX_ID_LENGTH = 200;
+const MAX_CURSOR_LENGTH = 500;
+const MAX_QUERY_HISTORY = 250;
+const MAX_PAGES_VISITED = 100;
+const MAX_PAGE_VALUE = 100_000;
+const MAX_TELEMETRY_COUNT = 1_000_000;
 const MAX_QUERY_LENGTH = 200;
 const MAX_LOCATION_LENGTH = 120;
 const MAX_INTENT_LENGTH = 200;
@@ -44,7 +56,7 @@ export function redactTelemetryText(value: string) {
     .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]+\b/gi, "[redacted]")
     .replace(/\b(?:system|user|assistant)[ _-](?:prompt|message|thinking|content)\s*[:=]\s*[^|;]+/gi, "[redacted]");
 }
-const omittedVisiblePayloadKeys = new Set(["text", "content", "prompt", "systemprompt", "userprompt", "assistantmessage", "thinking", "reasoning", "posting", "description", "body", "raw", "rawtext", "result", "results", "summary", "data", "output", "outputs", "apikey", "token", "secret", "password", "authorization", "credential", "credentials", "cookie", "privatekey", "accesstoken", "bearer", "auth", "clientsecret", "refreshtoken"]);
+const omittedVisiblePayloadKeys = new Set(["text", "content", "prompt", "systemprompt", "userprompt", "assistantmessage", "thinking", "reasoning", "posting", "description", "body", "raw", "rawtext", "result", "results", "summary", "data", "output", "outputs", "apikey", "token", "secret", "password", "authorization", "credential", "credentials", "cookie", "privatekey", "accesstoken", "bearer", "auth", "clientsecret", "refreshtoken", "cursor", "nextcursor"]);
 const MAX_VISIBLE_PAYLOAD_DEPTH = 6;
 const MAX_VISIBLE_PAYLOAD_KEYS = 80;
 const MAX_VISIBLE_PAYLOAD_ITEMS = 50;
@@ -124,6 +136,40 @@ function payloadText(payload: Payload | null, key: string, limit: number): strin
   return text(payload?.[key], limit);
 }
 
+function boundedCount(value: unknown): number | null {
+  const parsed = count(value);
+  return parsed === null ? null : Math.min(MAX_TELEMETRY_COUNT, parsed);
+}
+function pageNumber(value: unknown): number | null {
+  const parsed = boundedCount(value);
+  return parsed === null || parsed < 1 ? null : Math.min(MAX_PAGE_VALUE, parsed);
+}
+
+function rate(value: unknown): number | null {
+  const parsed = finite(value);
+  return parsed === null ? null : Math.min(1, Math.max(0, parsed));
+}
+
+function yieldValue(value: unknown): number | null {
+  const parsed = finite(value);
+  return parsed === null ? null : Math.min(MAX_TELEMETRY_COUNT, Math.max(0, parsed));
+}
+
+function payloadPage(payload: Payload | null, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const value = pageNumber(payload?.[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function payloadBoundedCount(payload: Payload | null, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const value = boundedCount(payload?.[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
 function payloadNumber(payload: Payload | null, ...keys: string[]): number | null {
   for (const key of keys) {
     const value = finite(payload?.[key]);
@@ -159,12 +205,203 @@ function mergeCounts(current: RunTrajectoryCounts, next: RunTrajectoryCounts) {
 function parseBudget(value: unknown): RunTrajectoryBudget | null {
   const payload = record(value);
   if (!payload) return null;
+  const targetUniqueJobs = payloadBoundedCount(payload, "targetUniqueJobs");
+  const minSearchesPerSource = payloadBoundedCount(payload, "minSearchesPerSource");
+  const maxSearchesPerSource = payloadBoundedCount(payload, "maxSearchesPerSource");
+  const maxPagesPerQuery = payloadBoundedCount(payload, "maxPagesPerQuery");
+  const maxQueryVariantsPerSource = payloadBoundedCount(payload, "maxQueryVariantsPerSource");
   return {
-    maxSearchCalls: payloadCount(payload, "maxSearchCalls"),
-    maxDetailCalls: payloadCount(payload, "maxDetailCalls"),
-    maxTotalResults: payloadCount(payload, "maxTotalResults"),
+    maxSearchCalls: payloadBoundedCount(payload, "maxSearchCalls"),
+    maxDetailCalls: payloadBoundedCount(payload, "maxDetailCalls"),
+    maxTotalResults: payloadBoundedCount(payload, "maxTotalResults"),
     maxRunDurationMs: duration(payloadNumber(payload, "maxRunDurationMs")),
+    ...(targetUniqueJobs === null ? {} : { targetUniqueJobs }),
+    ...(minSearchesPerSource === null ? {} : { minSearchesPerSource }),
+    ...(maxSearchesPerSource === null ? {} : { maxSearchesPerSource }),
+    ...(maxPagesPerQuery === null ? {} : { maxPagesPerQuery }),
+    ...(maxQueryVariantsPerSource === null ? {} : { maxQueryVariantsPerSource }),
   };
+}
+function parseAdaptiveAttemptFields(payload: Payload | null): Partial<RunTrajectoryAttempt> {
+  const pageInfo = record(payload?.pageInfo);
+  const page = payloadPage(payload, "page") ?? payloadPage(pageInfo, "page");
+  const cursor = payloadText(payload, "cursor", MAX_CURSOR_LENGTH) ?? payloadText(pageInfo, "cursor", MAX_CURSOR_LENGTH);
+  const hasMore = bool(payload?.hasMore) ?? bool(pageInfo?.hasMore);
+  const nextPage = payloadPage(payload, "nextPage") ?? payloadPage(pageInfo, "nextPage");
+  const nextCursor = payloadText(payload, "nextCursor", MAX_CURSOR_LENGTH) ?? payloadText(pageInfo, "nextCursor", MAX_CURSOR_LENGTH);
+  const total = payloadBoundedCount(payload, "total") ?? payloadBoundedCount(pageInfo, "total");
+  return {
+    ...(page === null ? {} : { page }),
+    ...(cursor === null ? {} : { cursor: "[redacted]" }),
+    ...(hasMore === null ? {} : { hasMore }),
+    ...(nextPage === null ? {} : { nextPage }),
+    ...(nextCursor === null ? {} : { nextCursor: "[redacted]" }),
+    ...(total === null ? {} : { total }),
+  };
+}
+
+function parsePages(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const pages = value.map(pageNumber).filter((item): item is number => item !== null);
+  return pages.length ? [...new Set(pages)].slice(0, MAX_PAGES_VISITED) : null;
+}
+
+function parseQueryRecord(value: unknown, fallbackSource: string | null = null): RunTrajectoryQueryRecord | null {
+  const payload = record(value);
+  if (!payload) return null;
+  const source = payloadText(payload, "source", MAX_SOURCE_LENGTH) ?? fallbackSource;
+  const query = payloadText(payload, "query", MAX_QUERY_LENGTH);
+  const location = payloadText(payload, "location", MAX_LOCATION_LENGTH);
+  const { page, cursor, hasMore, nextPage, nextCursor, total } = parseAdaptiveAttemptFields(payload);
+  const returnedHits = payloadBoundedCount(payload, "returnedHits", "resultCount", "rawHits", "raw");
+  const uniqueHits = payloadBoundedCount(payload, "uniqueHits", "uniqueResultCount", "uniqueCount", "unique");
+  const duplicateRate = rate(payload?.duplicateRate);
+  const fields: RunTrajectoryQueryRecord = {
+    ...(source === null ? {} : { source }),
+    ...(query === null ? {} : { query }),
+    ...(location === null ? {} : { location }),
+    ...(page === undefined ? {} : { page }),
+    ...(cursor === undefined ? {} : { cursor }),
+    ...(returnedHits === null ? {} : { returnedHits }),
+    ...(uniqueHits === null ? {} : { uniqueHits }),
+    ...(duplicateRate === null ? {} : { duplicateRate }),
+    ...(hasMore === undefined ? {} : { hasMore }),
+    ...(nextPage === undefined ? {} : { nextPage }),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+    ...(total === undefined ? {} : { total }),
+  };
+  return Object.keys(fields).length ? fields : null;
+}
+
+function parsePath(value: unknown): RunTrajectoryPath | null {
+  const payload = record(value);
+  if (!payload) return null;
+  const recordValue = parseQueryRecord(payload);
+  const path = payloadText(payload, "path", MAX_ID_LENGTH);
+  const safePath = path !== null && (recordValue?.cursor !== undefined || recordValue?.nextCursor !== undefined) ? "[redacted]" : path;
+  const searches = payloadBoundedCount(payload, "searches");
+  const completed = bool(payload.completed);
+  const pagesVisited = parsePages(payload.pagesVisited);
+  const raw = payloadBoundedCount(payload, "raw");
+  const unique = payloadBoundedCount(payload, "unique");
+  const duplicate = payloadBoundedCount(payload, "duplicate");
+  const averageYield = yieldValue(payload.averageYield);
+  const lastYield = yieldValue(payload.lastYield);
+  if (!recordValue && safePath === null && searches === null && completed === null && pagesVisited === null && raw === null && unique === null && duplicate === null && averageYield === null && lastYield === null) return null;
+  return {
+    ...(recordValue ?? {}),
+    ...(safePath === null ? {} : { path: safePath }),
+    ...(searches === null ? {} : { searches }),
+    ...(completed === null ? {} : { completed }),
+    ...(pagesVisited === null ? {} : { pagesVisited }),
+    ...(raw === null ? {} : { raw }),
+    ...(unique === null ? {} : { unique }),
+    ...(duplicate === null ? {} : { duplicate }),
+    ...(averageYield === null ? {} : { averageYield }),
+    ...(lastYield === null ? {} : { lastYield }),
+  };
+}
+
+function parsePaths(value: unknown): RunTrajectoryPath[] | null {
+  if (!Array.isArray(value)) return null;
+  const paths = value.map(parsePath).filter((item): item is RunTrajectoryPath => item !== null);
+  return paths.length ? paths.slice(0, MAX_QUERY_HISTORY) : null;
+}
+
+function parseNextSearch(value: unknown): RunTrajectoryNextSearch | null {
+  const payload = record(value);
+  if (!payload) return null;
+  const recordValue = parseQueryRecord(payload);
+  if (!recordValue) return null;
+  const limit = payloadBoundedCount(payload, "limit");
+  const reason = text(payload.reason, MAX_REASON_LENGTH);
+  return { ...recordValue, ...(limit === null ? {} : { limit }), ...(reason === null ? {} : { reason }) };
+}
+function parseStateAdaptive(payload: Payload | null): Pick<RunTrajectoryStateSnapshot, "nextSearch" | "plannerStop" | "queryHistory" | "paths"> {
+  const plannerStop = text(payload?.plannerStop, 80);
+  const queryHistory = Array.isArray(payload?.queryHistory)
+    ? payload.queryHistory.map((item) => text(item, MAX_QUERY_LENGTH)).filter((item): item is string => item !== null).slice(0, MAX_QUERY_HISTORY)
+    : null;
+  const nextSearch = parseNextSearch(payload?.nextSearch);
+  const paths = parsePaths(payload?.paths);
+  return {
+    ...(nextSearch ? { nextSearch } : {}),
+    ...(plannerStop ? { plannerStop } : {}),
+    ...(queryHistory?.length ? { queryHistory } : {}),
+    ...(paths ? { paths } : {}),
+  };
+}
+
+
+function parseNumberMap(value: unknown): Record<string, number> | null {
+  if (!isJsonRecord(value)) return null;
+  const result: Record<string, number> = {};
+  for (const [key, item] of Object.entries(value).slice(0, MAX_SOURCES)) {
+    const name = text(key, MAX_SOURCE_LENGTH);
+    const numberValue = boundedCount(item);
+    if (name && numberValue !== null) result[name] = numberValue;
+  }
+  return Object.keys(result).length ? result : null;
+}
+function parseStringMap(value: unknown): Record<string, string[]> | null {
+  if (!isJsonRecord(value)) return null;
+  const result: Record<string, string[]> = {};
+  for (const [key, item] of Object.entries(value).slice(0, MAX_SOURCES)) {
+    const name = text(key, MAX_SOURCE_LENGTH);
+    if (!name || !Array.isArray(item)) continue;
+    const values = item.map(entry => text(entry, MAX_QUERY_LENGTH)).filter((entry): entry is string => entry !== null);
+    if (values.length) result[name] = [...new Set(values)].slice(0, MAX_QUERY_HISTORY);
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+function parsePageMap(value: unknown): Record<string, number[]> | null {
+  if (!isJsonRecord(value)) return null;
+  const result: Record<string, number[]> = {};
+  for (const [key, item] of Object.entries(value).slice(0, MAX_SOURCES)) {
+    const name = text(key, MAX_SOURCE_LENGTH);
+    const pages = parsePages(item);
+    if (name && pages) result[name] = pages;
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+function parseFunnel(payload: Payload | null): RunTrajectoryFunnel | null {
+  const candidate = record(payload?.funnel) ?? payload;
+  if (!candidate) return null;
+  const enabledSources = Array.isArray(candidate.enabledSources)
+    ? candidate.enabledSources.map((item) => text(item, MAX_SOURCE_LENGTH)).filter((item): item is string => item !== null).slice(0, MAX_SOURCES)
+    : null;
+  const sourceAttempts = boundedCount(candidate.sourceAttempts) ?? parseNumberMap(candidate.sourceAttempts);
+  const queriesBySource = parseStringMap(candidate.queriesBySource);
+  const pagesBySource = parsePageMap(candidate.pagesBySource);
+  const sourceValues = new Map<string, SourceAccumulator>();
+  mergeStateSourceStats(sourceValues, candidate.sources);
+  const sources = sourceValues.size
+    ? Object.fromEntries([...sourceValues.entries()].slice(0, MAX_SOURCES).map(([source, value]) => [source, sourceOutput(value)]))
+    : null;
+  const rawHits = boundedCount(candidate.rawHits);
+  const uniqueHits = boundedCount(candidate.uniqueHits);
+  const promisingHits = boundedCount(candidate.promisingHits);
+  const candidatesAfterCheapFiltering = boundedCount(candidate.candidatesAfterCheapFiltering);
+  const detailFetches = boundedCount(candidate.detailFetches);
+  const selectedJobs = boundedCount(candidate.selectedJobs);
+  const stopReason = text(candidate.stopReason ?? candidate.reason, MAX_REASON_LENGTH);
+  const result: RunTrajectoryFunnel = {
+    ...(enabledSources?.length ? { enabledSources } : {}),
+    ...(sourceAttempts ? { sourceAttempts } : {}),
+    ...(queriesBySource ? { queriesBySource } : {}),
+    ...(pagesBySource ? { pagesBySource } : {}),
+    ...(rawHits === null ? {} : { rawHits }),
+    ...(uniqueHits === null ? {} : { uniqueHits }),
+    ...(promisingHits === null ? {} : { promisingHits }),
+    ...(candidatesAfterCheapFiltering === null ? {} : { candidatesAfterCheapFiltering }),
+    ...(detailFetches === null ? {} : { detailFetches }),
+    ...(selectedJobs === null ? {} : { selectedJobs }),
+    ...(stopReason === null ? {} : { stopReason }),
+    ...(sources ? { sources } : {}),
+  };
+  return Object.keys(result).length ? result : null;
 }
 
 function parseMarginalUtility(value: unknown) {
@@ -190,6 +427,19 @@ function parseCoverage(value: unknown): Record<string, string> | null {
     if (name && level) result[name] = level;
   }
   return Object.keys(result).length ? result : null;
+}
+function parseSourceCoverage(value: unknown): RunTrajectorySourceCoverage | null {
+  if (!isJsonRecord(value)) return null;
+  const list = (key: string) => Array.isArray(value[key])
+    ? value[key].map(item => text(item, MAX_SOURCE_LENGTH)).filter((item): item is string => item !== null).slice(0, MAX_SOURCES)
+    : [];
+  if (!["required", "searched", "unavailable", "unsearched"].some(key => Array.isArray(value[key]))) return null;
+  return {
+    required: list("required"),
+    searched: list("searched"),
+    unavailable: list("unavailable"),
+    unsearched: list("unsearched"),
+  };
 }
 
 function parseGoals(value: unknown): string[] {
@@ -306,12 +556,57 @@ function sourceStats(): SourceAccumulator {
     failures: null,
     latencyTotal: 0,
     latencySamples: 0,
+    searches: null,
+    uniqueHits: null,
+    promisingHits: null,
+    averageYield: null,
+    lastYield: null,
+    pagesVisited: null,
+    queryHistory: null,
   };
 }
 
 function increment(value: number | null, amount = 1) {
   return (value ?? 0) + amount;
 }
+function hasAdaptiveAttemptTelemetry(attempt: RunTrajectoryAttempt) {
+  return attempt.page !== undefined || attempt.cursor !== undefined || attempt.hasMore !== undefined || attempt.nextPage !== undefined || attempt.nextCursor !== undefined || attempt.total !== undefined;
+}
+
+function attemptQueryRecord(attempt: RunTrajectoryAttempt): RunTrajectoryQueryRecord | null {
+  if (!hasAdaptiveAttemptTelemetry(attempt)) return null;
+  return parseQueryRecord({
+    source: attempt.source,
+    query: attempt.query,
+    location: attempt.location,
+    page: attempt.page,
+    cursor: attempt.cursor,
+    returnedHits: attempt.resultCount,
+    uniqueHits: attempt.uniqueResultCount,
+    duplicateRate: attempt.duplicateRate,
+    hasMore: attempt.hasMore,
+    nextPage: attempt.nextPage,
+    nextCursor: attempt.nextCursor,
+    total: attempt.total,
+  });
+}
+
+function mergeQueryRecord(stats: SourceAccumulator, next: RunTrajectoryQueryRecord) {
+  const history = stats.queryHistory ?? [];
+  const samePath = (item: RunTrajectoryQueryRecord) => item.source === next.source && item.query === next.query && item.location === next.location && item.page === next.page && item.cursor === next.cursor;
+  const index = history.findIndex(samePath);
+  if (index >= 0) history[index] = { ...history[index], ...next };
+  else history.push(next);
+  stats.queryHistory = history.slice(-MAX_QUERY_HISTORY);
+}
+
+function addPage(stats: SourceAccumulator, page: number | undefined) {
+  if (page === undefined) return;
+  const pages = stats.pagesVisited ?? [];
+  if (!pages.includes(page)) pages.push(page);
+  stats.pagesVisited = pages.slice(-MAX_PAGES_VISITED);
+}
+
 
 function addLatency(stats: SourceAccumulator, value: number | null) {
   if (value === null) return;
@@ -331,6 +626,20 @@ function updateSourceStats(
     if (attempt.uniqueResultCount !== null) stats.uniqueCount = increment(stats.uniqueCount, attempt.uniqueResultCount);
     if (attempt.duplicateCount !== null) stats.duplicateCount = increment(stats.duplicateCount, attempt.duplicateCount);
     if (attempt.promisingResultCount !== null) stats.promisingCount = increment(stats.promisingCount, attempt.promisingResultCount);
+    if (hasAdaptiveAttemptTelemetry(attempt)) {
+      if (status === "started") stats.searches = increment(stats.searches);
+      else if (stats.searches === null) stats.searches = 1;
+      addPage(stats, attempt.page);
+      const recordValue = attemptQueryRecord(attempt);
+      if (recordValue) mergeQueryRecord(stats, recordValue);
+      if (status !== "started" && attempt.uniqueResultCount !== null) {
+        const searches = stats.searches ?? 1;
+        stats.uniqueHits = increment(stats.uniqueHits, attempt.uniqueResultCount);
+        stats.promisingHits = attempt.promisingResultCount === null ? stats.promisingHits : increment(stats.promisingHits, attempt.promisingResultCount);
+        stats.lastYield = attempt.uniqueResultCount;
+        stats.averageYield = ((stats.averageYield ?? 0) * Math.max(0, searches - 1) + attempt.uniqueResultCount) / searches;
+      }
+    }
   } else if (status === "started") {
     stats.detailCalls = increment(stats.detailCalls);
   }
@@ -339,7 +648,6 @@ function updateSourceStats(
   if (stats.rawHits !== null && stats.duplicateCount !== null) stats.duplicateRate = stats.duplicateCount / Math.max(1, stats.rawHits);
   if (attempt.enrichedCount !== null) stats.enrichedCount = Math.max(stats.enrichedCount ?? 0, attempt.enrichedCount);
 }
-
 function mergeStateSourceStats(sources: Map<string, SourceAccumulator>, value: unknown) {
   if (!isJsonRecord(value)) return;
   for (const [sourceName, raw] of Object.entries(value).slice(0, MAX_SOURCES)) {
@@ -347,21 +655,57 @@ function mergeStateSourceStats(sources: Map<string, SourceAccumulator>, value: u
     const stats = record(raw);
     if (!source || !stats) continue;
     const target = sources.get(source) ?? sourceStats();
-    const setCount = (key: keyof SourceAccumulator, next: number | null) => {
+    const setCount = (key: "searchCalls" | "detailCalls" | "rawHits" | "uniqueCount" | "duplicateCount" | "promisingCount" | "enrichedCount" | "failures", next: number | null) => {
       if (next !== null) target[key] = next;
     };
-    setCount("searchCalls", payloadCount(stats, "searchCalls"));
-    setCount("detailCalls", payloadCount(stats, "detailCalls"));
-    setCount("rawHits", payloadCount(stats, "rawHits", "discoveredCount"));
-    setCount("uniqueCount", payloadCount(stats, "uniqueCount", "uniqueJobs"));
-    setCount("duplicateCount", payloadCount(stats, "duplicateCount"));
-    setCount("duplicateRate", finite(stats.duplicateRate));
-    setCount("promisingCount", payloadCount(stats, "promisingJobs", "promisingCount"));
-    setCount("enrichedCount", payloadCount(stats, "enrichedCount"));
-    setCount("failures", payloadCount(stats, "errors", "failures"));
+    setCount("searchCalls", payloadBoundedCount(stats, "searchCalls"));
+    setCount("detailCalls", payloadBoundedCount(stats, "detailCalls"));
+    setCount("rawHits", payloadBoundedCount(stats, "rawHits", "discoveredCount"));
+    setCount("uniqueCount", payloadBoundedCount(stats, "uniqueCount", "uniqueJobs"));
+    setCount("duplicateCount", payloadBoundedCount(stats, "duplicateCount"));
+    const duplicateRate = rate(stats.duplicateRate);
+    if (duplicateRate !== null) target.duplicateRate = duplicateRate;
+    setCount("promisingCount", payloadBoundedCount(stats, "promisingJobs", "promisingCount"));
+    setCount("enrichedCount", payloadBoundedCount(stats, "enrichedCount"));
+    setCount("failures", payloadBoundedCount(stats, "errors", "failures"));
+    const searches = payloadBoundedCount(stats, "searches");
+    const uniqueHits = payloadBoundedCount(stats, "uniqueHits");
+    const promisingHits = payloadBoundedCount(stats, "promisingHits");
+    const averageYield = yieldValue(stats.averageYield);
+    const lastYield = yieldValue(stats.lastYield);
+    const pagesVisited = parsePages(stats.pagesVisited);
+    if (searches !== null) target.searches = searches;
+    if (uniqueHits !== null) target.uniqueHits = uniqueHits;
+    if (promisingHits !== null) target.promisingHits = promisingHits;
+    if (averageYield !== null) target.averageYield = averageYield;
+    if (lastYield !== null) target.lastYield = lastYield;
+    if (pagesVisited !== null) target.pagesVisited = pagesVisited;
+    if (Array.isArray(stats.queryHistory)) {
+      for (const item of stats.queryHistory) {
+        const queryRecord = parseQueryRecord(item, source);
+        if (queryRecord) mergeQueryRecord(target, queryRecord);
+      }
+    }
     sources.set(source, target);
   }
 }
+function mergeStatePaths(sources: Map<string, SourceAccumulator>, value: unknown) {
+  const paths = parsePaths(value);
+  if (!paths) return;
+  for (const path of paths) {
+    const source = text(path.source, MAX_SOURCE_LENGTH);
+    if (!source) continue;
+    const target = sources.get(source) ?? sourceStats();
+    if (target.searches === null && path.searches !== undefined) target.searches = path.searches;
+    if (target.averageYield === null && path.averageYield !== undefined) target.averageYield = path.averageYield;
+    if (target.lastYield === null && path.lastYield !== undefined) target.lastYield = path.lastYield;
+    if (path.pagesVisited) target.pagesVisited = [...new Set([...(target.pagesVisited ?? []), ...path.pagesVisited])].slice(0, MAX_PAGES_VISITED);
+    const queryRecord = parseQueryRecord(path, source);
+    if (queryRecord) mergeQueryRecord(target, queryRecord);
+    sources.set(source, target);
+  }
+}
+
 
 function sourceOutput(value: SourceAccumulator): RunTrajectorySourceStats {
   return {
@@ -375,6 +719,13 @@ function sourceOutput(value: SourceAccumulator): RunTrajectorySourceStats {
     enrichedCount: value.enrichedCount,
     failures: value.failures,
     latencyMs: value.latencySamples ? value.latencyTotal / value.latencySamples : null,
+    ...(value.searches === null ? {} : { searches: value.searches }),
+    ...(value.uniqueHits === null ? {} : { uniqueHits: value.uniqueHits }),
+    ...(value.promisingHits === null ? {} : { promisingHits: value.promisingHits }),
+    ...(value.averageYield === null ? {} : { averageYield: value.averageYield }),
+    ...(value.lastYield === null ? {} : { lastYield: value.lastYield }),
+    ...(value.pagesVisited === null ? {} : { pagesVisited: value.pagesVisited.slice(0, MAX_PAGES_VISITED) }),
+    ...(value.queryHistory === null ? {} : { queryHistory: value.queryHistory.slice(0, MAX_QUERY_HISTORY) }),
   };
 }
 
@@ -534,7 +885,7 @@ export function deriveRunTrajectoryObservability(
     queues.set(key, queue);
     if (identifier) attemptsById.set(identifier, index);
   };
-
+  let funnel: RunTrajectoryFunnel | undefined;
   const sourceFor = (source: string | null) => {
     if (!source) return null;
     const existing = sources.get(source);
@@ -557,6 +908,7 @@ export function deriveRunTrajectoryObservability(
     row.resultId = resultIdValue(payload);
     row.requestedLimit = payloadCount(payload, "requestedLimit", "limit");
     row.repeatCount = payloadCount(payload, "repeatCount");
+    Object.assign(row, parseAdaptiveAttemptFields(payload));
     const index = attempts.push(row) - 1;
     queueAttempt(index, operationValue, row.source, operationValue === "detail" ? row.sourceId ?? row.resultId : null);
     return index;
@@ -601,6 +953,7 @@ export function deriveRunTrajectoryObservability(
     if (uniqueResultCount !== null) attempt.uniqueResultCount = uniqueResultCount;
     if (duplicateCount !== null) attempt.duplicateCount = duplicateCount;
     if (promisingResultCount !== null) attempt.promisingResultCount = promisingResultCount;
+    Object.assign(attempt, parseAdaptiveAttemptFields(payload));
     if (enrichedCount !== null) attempt.enrichedCount = enrichedCount;
     const promising = bool(payload?.promising);
     if (promising !== null) attempt.promising = promising;
@@ -650,6 +1003,9 @@ export function deriveRunTrajectoryObservability(
       const index = resolve("detail", event, payload);
       updateAttempt(index, event, payload, "failed");
       addPolicy(event, payload);
+    } else if (event.type === "search_funnel") {
+      const parsed = parseFunnel(payload);
+      if (parsed) funnel = parsed;
     } else if (event.type === "search_state_inspected") {
       const snapshotCounts = parseCounts(payload);
       mergeCounts(counts, snapshotCounts);
@@ -659,41 +1015,52 @@ export function deriveRunTrajectoryObservability(
         timestamp: eventTimestamp(event),
         counts: snapshotCounts,
         coverage: parseCoverage(payload?.coverage),
+        sourceCoverage: parseSourceCoverage(payload?.sourceCoverage),
         coverageSufficient: bool(payload?.coverageSufficient),
         marginalUtility: parseMarginalUtility(payload?.marginalUtility),
         remaining: parseBudget(payload?.remaining),
         termination: snapshotTermination,
         unresolvedGoalCount: snapshotTermination?.unresolvedGoalCount ?? payloadCount(payload, "unresolvedGoalCount"),
+        ...parseStateAdaptive(payload),
       };
       if (states.length < MAX_STATES) states.push(snapshot);
       mergeStateSourceStats(sources, payload?.sourceStats);
+      mergeStatePaths(sources, payload?.paths);
     } else if (event.type === "search_finished") {
       const termination = parseTermination(payload);
       if (termination) searchTermination = termination;
       const terminalCounts = parseCounts(payload);
       mergeCounts(counts, terminalCounts);
       mergeStateSourceStats(sources, payload?.sourceStats);
+      mergeStatePaths(sources, payload?.paths);
       const terminalSnapshot: RunTrajectoryStateSnapshot = {
         sequence: eventSequence(event, states.length),
         timestamp: eventTimestamp(event),
         counts: terminalCounts,
         coverage: parseCoverage(payload?.coverage),
+        sourceCoverage: parseSourceCoverage(payload?.sourceCoverage),
         coverageSufficient: bool(payload?.coverageSufficient),
         marginalUtility: parseMarginalUtility(payload?.marginalUtility),
         remaining: parseBudget(payload?.remaining),
         termination,
         unresolvedGoalCount: termination?.unresolvedGoalCount ?? payloadCount(payload, "unresolvedGoalCount"),
+        ...parseStateAdaptive(payload),
       };
       if (
         terminalSnapshot.remaining !== null ||
         terminalSnapshot.coverage !== null ||
+        terminalSnapshot.sourceCoverage !== null ||
         terminalSnapshot.coverageSufficient !== null ||
         terminalSnapshot.marginalUtility !== null ||
         terminalSnapshot.termination !== null ||
         terminalSnapshot.unresolvedGoalCount !== null ||
         terminalSnapshot.counts.discovered !== null ||
         terminalSnapshot.counts.unique !== null ||
-        terminalSnapshot.counts.enriched !== null
+        terminalSnapshot.counts.enriched !== null ||
+        terminalSnapshot.nextSearch !== undefined ||
+        terminalSnapshot.plannerStop !== undefined ||
+        terminalSnapshot.queryHistory !== undefined ||
+        terminalSnapshot.paths !== undefined
       ) {
         if (states.length < MAX_STATES) states.push(terminalSnapshot);
         else states[states.length - 1] = terminalSnapshot;
@@ -732,5 +1099,6 @@ export function deriveRunTrajectoryObservability(
     adaptations: deriveAdaptations(attempts),
     termination,
     policyEvents,
+    ...(funnel ? { funnel } : {}),
   };
 }

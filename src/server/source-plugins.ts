@@ -5,12 +5,12 @@ import { z } from "zod";
 import { normalizeUrl } from "./db.js";
 import {
   createCustomSourceAdapter,
+  requestSourceText,
   CUSTOM_SOURCE_TIMEOUT_MS,
   type CustomSourceFetch,
   validateCustomSourceDefinition,
 } from "./custom-source.js";
-import type { CustomJobSource, JobSource } from "../shared.js";
-export type { CustomSourceFetch } from "./custom-source.js";
+import type { CustomJobSource, JobSource, SearchPageInfo } from "../shared.js";
 
 export type SourceCapabilities = Readonly<{
   search: boolean;
@@ -56,6 +56,8 @@ export type SourceSearchRequest = Readonly<{
   query: string;
   location: string;
   limit: number;
+  page?: number;
+  cursor?: string;
   maxAgeDays?: number;
   fallbackQueries?: readonly string[];
 }>;
@@ -72,6 +74,7 @@ export type SourceSearchHit = Readonly<{
 export type SourceSearchResponse = Readonly<{
   meta: { count: number };
   results: SourceSearchHit[];
+  pageInfo?: SearchPageInfo;
 }>;
 
 export type SourceDetail = Readonly<{
@@ -326,6 +329,7 @@ const sourceCliDirectories: Record<string, string> = {
   linkedin: "linkedin-search",
   tokyodev: "japan-boards-search",
   "japan-dev": "japan-boards-search",
+  "relocate-me": "japan-boards-search",
 };
 
 function builtinSource(source: JobSource) {
@@ -387,44 +391,93 @@ const searchJobSchema = z.object({
   company: z.string().nullable(),
   location: z.string().nullable(),
   url: sourceUrlSchema,
-  postedAt: z.string().optional(),
-  postedDate: z.string().optional(),
-  posted_at: z.string().optional(),
-  date: z.string().optional(),
-  createdAt: z.string().optional(),
-  created_at: z.string().optional(),
+  postedAt: z.string().nullable().optional(),
+  postedDate: z.string().nullable().optional(),
+  posted_at: z.string().nullable().optional(),
+  date: z.string().nullable().optional(),
+  createdAt: z.string().nullable().optional(),
+  created_at: z.string().nullable().optional(),
 }).passthrough();
-const searchResultSchema = z.object({ meta: z.object({ count: z.number().int().nonnegative() }).passthrough(), results: z.array(searchJobSchema) });
-const japanSearchResultSchema = z.object({ count: z.number().int().nonnegative(), results: z.array(searchJobSchema) }).passthrough();
+const searchResultSchema = z.object({
+  meta: z.object({
+    count: z.number().int().nonnegative(),
+    page: z.number().int().min(1).optional(),
+    total: z.number().int().nonnegative().optional(),
+    nextCursor: z.string().trim().max(500).nullable().optional(),
+    next_cursor: z.string().trim().max(500).nullable().optional(),
+  }).passthrough(),
+  results: z.array(searchJobSchema),
+});
+const japanSearchResultSchema = z.object({
+  count: z.number().int().nonnegative(),
+  results: z.array(searchJobSchema),
+}).passthrough();
 const detailSchema = z.object({ id: z.string().min(1), title: z.string(), url: sourceUrlSchema, description: z.string().nullable() }).passthrough();
 const japanDetailSchema = z.object({ url: sourceUrlSchema, title: z.string(), text: z.string() }).passthrough();
 
-function toSearchResponse(results: z.infer<typeof searchJobSchema>[], count = results.length): SourceSearchResponse {
+function pageInfo(meta: Record<string, unknown>, request?: SourceSearchRequest, paginated = true, cursorPagination = true): SearchPageInfo | undefined {
+  if (!paginated) return undefined;
+  const total = typeof meta.total === "number" && Number.isInteger(meta.total) && meta.total >= 0 ? meta.total : undefined;
+  const page = typeof meta.page === "number" && Number.isInteger(meta.page) && meta.page >= 1 ? meta.page : request?.page ?? (total === undefined ? undefined : 1);
+  const nextCursor = cursorPagination
+    ? typeof meta.nextCursor === "string" && meta.nextCursor.trim()
+      ? meta.nextCursor.trim()
+      : typeof meta.next_cursor === "string" && meta.next_cursor.trim() ? meta.next_cursor.trim() : undefined
+    : undefined;
+  if (total === undefined && page === undefined && !nextCursor && request?.cursor === undefined) return undefined;
+  const limit = request?.limit;
+  const hasMore = Boolean(nextCursor) || (page !== undefined && total !== undefined && limit !== undefined && page * limit < total);
   return {
-    meta: { count },
-    results: results.map(result => ({
-      ...result,
-      id: result.id,
-      title: result.title,
-      company: result.company,
-      location: result.location,
-      url: result.url,
-      ...(["postedAt", "postedDate", "posted_at", "date", "createdAt", "created_at"] as const).reduce<Record<string, string>>((fields, key) => {
-        if (typeof result[key] === "string" && result[key]) fields[key] = result[key];
-        return fields;
-      }, {}),
-    })),
+    hasMore,
+    ...(hasMore && nextCursor ? { nextCursor } : {}),
+    ...(hasMore && page !== undefined && total !== undefined ? { nextPage: page + 1 } : {}),
+    ...(total !== undefined ? { total } : {}),
+    ...(page !== undefined ? { page } : {}),
+    ...(limit !== undefined ? { limit } : {}),
   };
 }
 
-function parseDefaultSearch(value: unknown) {
-  const parsed = searchResultSchema.parse(value);
-  return toSearchResponse(parsed.results, parsed.meta.count);
+function toSearchResponse(results: z.infer<typeof searchJobSchema>[], count = results.length, info?: SearchPageInfo): SourceSearchResponse {
+  return {
+    meta: { count },
+    ...(info ? { pageInfo: info } : {}),
+    results: results.map(result => {
+      const normalized = { ...result } as Record<string, unknown>;
+      for (const key of ["postedAt", "postedDate", "posted_at", "date", "createdAt", "created_at"]) {
+        if (typeof normalized[key] !== "string" || !normalized[key]) delete normalized[key];
+      }
+      return normalized as SourceSearchHit;
+    }),
+  };
 }
 
-function parseJapanSearch(value: unknown) {
+function parseDefaultSearch(value: unknown, request?: SourceSearchRequest) {
+  const parsed = searchResultSchema.parse(value);
+  return toSearchResponse(parsed.results, parsed.meta.count, pageInfo(parsed.meta as Record<string, unknown>, request));
+}
+function parseFreehireSearch(value: unknown, request?: SourceSearchRequest) {
+  const parsed = searchResultSchema.parse(value);
+  return toSearchResponse(parsed.results, parsed.meta.count, pageInfo(parsed.meta as Record<string, unknown>, request, true, false));
+}
+
+function parseJapanSearch(value: unknown, request?: SourceSearchRequest) {
   const parsed = japanSearchResultSchema.parse(value);
-  return toSearchResponse(parsed.results, parsed.count);
+  return toSearchResponse(parsed.results, parsed.count, pageInfo({}, request, false));
+}
+function relocateSourceId(result: SourceSearchHit) {
+  const url = new URL(result.url);
+  if (url.protocol !== "https:" || url.hostname !== "relocate.me" || url.port || url.username || url.password) throw new Error("Relocate.me result URL is outside the source host");
+  const path = url.pathname.replace(/^\/+/, "");
+  if (!path) throw new Error("Relocate.me result URL has no stable path");
+  return `relocate-me:${encodeURIComponent(path)}`;
+}
+
+function parseRelocateSearch(value: unknown) {
+  const parsed = parseJapanSearch(value);
+  return {
+    meta: parsed.meta,
+    results: parsed.results.map(result => ({ ...result, id: relocateSourceId(result) })),
+  };
 }
 
 function parseDefaultDetail(value: unknown, sourceId: string) {
@@ -488,7 +541,7 @@ function cliFailure(label: string, result: { stderr: string; code: number }) {
 type CliPluginSpec = Readonly<{
   manifest: SourceManifest;
   searchArgs(request: SourceSearchRequest, query: string): string[];
-  parseSearch(value: unknown): SourceSearchResponse;
+  parseSearch(value: unknown, request?: SourceSearchRequest): SourceSearchResponse;
   detailArg(ref: { id: string; url: string }): string;
   parseDetail(value: unknown, sourceId: string): SourceDetail;
   matchesDetailUrl?(sourceId: string, expectedUrl: string, actualUrl: string): boolean;
@@ -506,7 +559,7 @@ function createCliPlugin(spec: CliPluginSpec): JobSourcePlugin {
         const args = spec.searchArgs(request, query);
         const result = await context.request(signal => context.runCli!(args, { signal, env: context.env, source: context.source }));
         if (result.code !== 0) throw cliFailure(spec.manifest.label, result);
-        try { return spec.parseSearch(JSON.parse(result.stdout)); }
+        try { return spec.parseSearch(JSON.parse(result.stdout), request); }
         catch (error) { throw new Error(`${spec.manifest.label} returned an invalid search response: ${error instanceof Error ? error.message : String(error)}`); }
       };
 
@@ -524,7 +577,7 @@ function createCliPlugin(spec: CliPluginSpec): JobSourcePlugin {
         results = dedupeSearchResults([...results, ...fallback.results]);
       }
       const capped = results.slice(0, request.limit);
-      return { meta: { count: capped.length }, results: capped };
+      return { meta: { count: capped.length }, results: capped, ...(initial.pageInfo ? { pageInfo: initial.pageInfo } : {}) };
     },
     async details(ref, context) {
       if (!context.runCli) throw new Error(`${spec.manifest.label} CLI is unavailable`);
@@ -543,6 +596,229 @@ function createCliPlugin(spec: CliPluginSpec): JobSourcePlugin {
     matchesDetailUrl: spec.matchesDetailUrl,
   };
 }
+type HttpPluginSpec = Readonly<{
+  manifest: SourceManifest;
+  searchUrl(request: SourceSearchRequest): string;
+  parseSearch(body: string, request: SourceSearchRequest): SourceSearchResponse;
+  detailUrl(ref: { id: string; url: string }): string;
+  parseDetail(body: string, ref: { id: string; url: string }): SourceDetail;
+  matchesDetailUrl?: (sourceId: string, expectedUrl: string, actualUrl: string) => boolean;
+  redirect?: RequestRedirect;
+  redirectHost?: string;
+}>;
+
+const SOURCE_HTTP_MAX_RESPONSE_BYTES = 1_000_000;
+const SOURCE_HTTP_HEADERS = { Accept: "text/html,application/xhtml+xml", "User-Agent": "Job Sequencer source reader/1.0" };
+
+function createHttpPlugin(spec: HttpPluginSpec): JobSourcePlugin {
+  const label = spec.manifest.label;
+  return {
+    manifest: spec.manifest,
+    async search(request, context) {
+      const url = spec.searchUrl(request);
+      const body = await context.request(signal => requestSourceText(
+        context.fetcher ?? ((input, init) => fetch(input, init)),
+        url,
+        signal,
+        spec.manifest.policy.timeoutMs,
+        SOURCE_HTTP_MAX_RESPONSE_BYTES,
+        { label, redirect: spec.redirect, redirectHost: spec.redirectHost, headers: SOURCE_HTTP_HEADERS },
+      ));
+      try { return spec.parseSearch(body, request); }
+      catch (error) { throw new Error(`${label} returned an invalid search response: ${error instanceof Error ? error.message : String(error)}`); }
+    },
+    async details(ref, context) {
+      const url = spec.detailUrl(ref);
+      const body = await context.request(signal => requestSourceText(
+        context.fetcher ?? ((input, init) => fetch(input, init)),
+        url,
+        signal,
+        spec.manifest.policy.timeoutMs,
+        SOURCE_HTTP_MAX_RESPONSE_BYTES,
+        { label, redirect: spec.redirect, redirectHost: spec.redirectHost, headers: SOURCE_HTTP_HEADERS },
+      ));
+      let detail: SourceDetail;
+      try { detail = spec.parseDetail(body, ref); }
+      catch (error) { throw new Error(`${label} returned an invalid detail response: ${error instanceof Error ? error.message : String(error)}`); }
+      const matches = spec.matchesDetailUrl?.(ref.id, ref.url, detail.url) ?? ref.url === detail.url;
+      if (!matches) throw new Error(`${label} detail provenance mismatch`);
+      return detail;
+    },
+    matchesDetailUrl: spec.matchesDetailUrl,
+  };
+}
+
+function decodeHtml(value: string) {
+  return value
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#(\d+);/g, (_match, code: string) => {
+      const value = Number(code);
+      return Number.isSafeInteger(value) && value >= 0 && value <= 0x10ffff ? String.fromCodePoint(value) : "";
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code: string) => {
+      const value = Number.parseInt(code, 16);
+      return Number.isSafeInteger(value) && value >= 0 && value <= 0x10ffff ? String.fromCodePoint(value) : "";
+    });
+}
+
+function cleanHtml(value: string) {
+  return decodeHtml(value
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript\s*>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function attributeValue(tag: string, name: string) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return tag.match(new RegExp(`(?:^|\\s)${escaped}\\s*=\\s*["']([^"']*)["']`, "i"))?.[1];
+}
+
+function fixedSourceUrl(value: string, base: string, hostname: string, label: string) {
+  let url: URL;
+  try { url = new URL(decodeHtml(value), base); }
+  catch { throw new Error(`${label} URL is invalid`); }
+  if (url.protocol !== "https:" || url.hostname !== hostname || url.port || url.username || url.password) throw new Error(`${label} URL is outside the source host`);
+  return normalizeUrl(url.toString());
+}
+
+function htmlCard(html: string, index: number) {
+  const start = html.lastIndexOf("<li", index);
+  const end = html.indexOf("</li>", index);
+  return start >= 0 && end > start ? html.slice(start, end + 5) : html.slice(Math.max(0, index - 8_000), index + 8_000);
+}
+function htmlElementContent(html: string, opening: RegExp) {
+  const match = opening.exec(html);
+  if (!match || match.index === undefined) return "";
+  const tag = match[1].toLowerCase();
+  const start = match.index + match[0].length;
+  const tokens = /<\/?([A-Za-z][A-Za-z0-9:-]*)\b[^>]*>/g;
+  tokens.lastIndex = start;
+  let depth = 1;
+  let token: RegExpExecArray | null;
+  while ((token = tokens.exec(html))) {
+    if (token[1].toLowerCase() !== tag) continue;
+    if (token[0].startsWith("</")) {
+      depth--;
+      if (!depth) return html.slice(start, token.index);
+    } else if (!/\/\s*>$/.test(token[0]) && !/^(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i.test(tag)) {
+      depth++;
+    }
+  }
+  return html.slice(start);
+}
+
+
+function canonicalUrl(html: string, base: string, hostname: string, label: string) {
+  const tag = [...html.matchAll(/<link\b[^>]*>/gi)].map(match => match[0]).find(value => /\brel\s*=\s*["']canonical["']/i.test(value));
+  const href = tag ? attributeValue(tag, "href") : undefined;
+  return href ? fixedSourceUrl(href, base, hostname, label) : undefined;
+}
+
+function sourceId(value: string, label: string) {
+  const id = decodeHtml(value).trim();
+  if (!id || id.length > 200 || /[\\/\0\r\n]/.test(id) || id.startsWith("-")) throw new Error(`${label} ID is invalid`);
+  return id;
+}
+
+function ycJobId(value: string) {
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.hostname !== "www.ycombinator.com") return undefined;
+  const match = url.pathname.match(/^\/companies\/[^/]+\/jobs\/([^/]+)$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+}
+
+function parseYcSearch(body: string, request: SourceSearchRequest): SourceSearchResponse {
+  const results: SourceSearchHit[] = [];
+  const queryTokens = request.query.toLowerCase().split(/\s+/).filter(Boolean);
+  const pattern = /<a\b[^>]*\bhref\s*=\s*["'](\/companies\/[^"']+\/jobs\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of body.matchAll(pattern)) {
+    const href = decodeHtml(match[1]);
+    const url = fixedSourceUrl(href, "https://www.ycombinator.com/", "www.ycombinator.com", "Y Combinator");
+    const id = sourceId(ycJobId(url) ?? "", "Y Combinator");
+    const card = htmlCard(body, match.index ?? 0);
+    const company = cleanHtml(card.match(/<span\b[^>]*class=["'][^"']*font-bold[^"']*["'][^>]*>([\s\S]*?)<\/span>/i)?.[1] ?? "")
+      .replace(/\s+\([A-Za-z]\d+\)$/, "")
+      .trim();
+    const locations = [...card.matchAll(/<div\b[^>]*class=["'][^"']*break-all[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi)];
+    const location = cleanHtml(locations.at(-1)?.[1] ?? "");
+    const title = cleanHtml(match[2]);
+    const haystack = cleanHtml(card).toLowerCase();
+    if (!title || !queryTokens.every(token => haystack.includes(token))) continue;
+    results.push({ id, title, company: company || null, location: location || null, url });
+    if (results.length >= request.limit) break;
+  }
+  return { meta: { count: results.length }, results };
+}
+
+function parseYcDetail(body: string, ref: { id: string; url: string }): SourceDetail {
+  const title = cleanHtml(body.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "");
+  const url = canonicalUrl(body, ref.url, "www.ycombinator.com", "Y Combinator") ?? ref.url;
+  if (!title || ycJobId(url) !== ref.id) throw new Error("Y Combinator detail is missing its title or stable URL");
+  const description = cleanHtml(body.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1] ?? body).slice(0, 50_000);
+  if (!description) throw new Error("Y Combinator detail is missing its description");
+  return { id: ref.id, title, url, description };
+}
+
+function parseIndeedSearch(body: string, request: SourceSearchRequest): SourceSearchResponse {
+  const results: SourceSearchHit[] = [];
+  const pattern = /<a\b([^>]*\bdata-jk\s*=\s*["'][^"']+["'][^>]*)>([\s\S]*?)<\/a>/gi;
+  for (const match of body.matchAll(pattern)) {
+    const id = sourceId(attributeValue(match[1], "data-jk") ?? "", "Indeed");
+    const card = htmlCard(body, match.index ?? 0);
+    const title = cleanHtml(match[2]);
+    const company = cleanHtml(card.match(/<span\b[^>]*data-testid=["']company-name["'][^>]*>([\s\S]*?)<\/span>/i)?.[1] ?? "");
+    const location = cleanHtml(card.match(/<[^>]*\bdata-testid=["']text-location["'][^>]*>([\s\S]*?)<\/[^>]+>/i)?.[1] ?? "");
+    if (!title) continue;
+    results.push({
+      id,
+      title,
+      company: company || null,
+      location: location || null,
+      url: `https://id.indeed.com/m/viewjob?jk=${encodeURIComponent(id)}`,
+    });
+    if (results.length >= request.limit) break;
+  }
+  return { meta: { count: results.length }, results };
+}
+
+
+function parseIndeedDetail(body: string, ref: { id: string; url: string }): SourceDetail {
+  const title = cleanHtml(body.match(/<h1\b[^>]*data-testid=["']jobsearch-JobInfoHeader-title["'][^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? body.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "");
+  const url = canonicalUrl(body, ref.url, "id.indeed.com", "Indeed") ?? ref.url;
+  if (!title || indeedJobId(url) !== ref.id) throw new Error("Indeed detail is missing its title or stable URL");
+  const description = cleanHtml(htmlElementContent(body, /<([A-Za-z][A-Za-z0-9:-]*)\b[^>]*\bid=["']jobDescriptionText["'][^>]*>/i)).slice(0, 50_000);
+  if (!description) throw new Error("Indeed detail is missing its description");
+  return { id: ref.id, title, url, description };
+}
+
+function matchesYcDetailUrl(sourceIdValue: string, expectedUrl: string, actualUrl: string) {
+  return ycJobId(expectedUrl) === sourceIdValue && ycJobId(actualUrl) === sourceIdValue;
+}
+
+function indeedJobId(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "id.indeed.com" || url.port || url.username || url.password) return undefined;
+    const id = url.searchParams.get("jk");
+    return id && /^[A-Za-z0-9._-]+$/.test(id) ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function matchesIndeedDetailUrl(sourceIdValue: string, expectedUrl: string, actualUrl: string) {
+  return indeedJobId(expectedUrl) === sourceIdValue && indeedJobId(actualUrl) === sourceIdValue;
+}
+
 
 const defaultPolicy: SourcePolicy = { maxRequestsPerRun: 20, maxConcurrentRequests: 1, timeoutMs: 30_000, minimumDelayMs: 0 };
 
@@ -550,7 +826,7 @@ const freehireManifest = manifest({
   id: "freehire",
   label: "FreeHire",
   version: "1.0.0",
-  capabilities: { search: true, detail: true, pagination: false, location: true, freshness: true, remote: true, activeStatus: false },
+  capabilities: { search: true, detail: true, pagination: true, location: true, freshness: true, remote: true, activeStatus: false },
   policy: defaultPolicy,
   defaults: { maxAgeDays: 9_999 },
   guidance: {
@@ -569,8 +845,8 @@ const linkedinManifest = manifest({
   defaults: { maxAgeDays: 9_999 },
   guidance: {
     strengths: ["Large professional network with location-aware discovery."],
-    caveats: ["Every search requires a concrete location and detail URLs may be regional."],
-    query: "LinkedIn requires a non-empty location for every search. Use one of criteria.locations; make separate calls for multiple locations within the five-call budget.",
+    caveats: ["Every search requires a concrete location and detail URLs may be regional; without a profile-derived or optional location, this source cannot be queried."],
+    query: "LinkedIn requires a non-empty location for every search. Use one profile-derived or optional preference location; make separate calls for multiple locations within the five-call budget. If no concrete location exists, skip this source and report it as unresolved rather than inventing one.",
   },
 });
 
@@ -588,6 +864,48 @@ const japanManifest = (id: "tokyodev" | "japan-dev", label: string): SourceManif
     query: "The selected Japan-board adapter already fixes country to Japan. Use one concise role phrase per search call from criteria.roles; do not concatenate every role into one query. Build queries from that role and relevant criteria.keywords/skills only; if useful, add Japan-specific terms only. Do not include non-Japan values from criteria.locations in the source query. Use location, relocation, work authorization, and remote preferences for post-search evaluation/scoring, not as Japan-board query tokens.",
   },
 });
+const relocateManifest = manifest({
+  id: "relocate-me",
+  label: "Relocate.me",
+  version: "1.0.0",
+  capabilities: { search: true, detail: true, pagination: false, location: true, freshness: false, remote: false, activeStatus: false },
+  policy: { ...defaultPolicy, maxRequestsPerRun: 10, minimumDelayMs: 250 },
+  defaults: { maxAgeDays: 9_999 },
+  guidance: {
+    strengths: ["International relocation-focused technology jobs."],
+    caveats: ["Listings are relocation-oriented but may not support remote work; verify visa, location, and posting status from the detail text."],
+    query: "Use one concise role phrase plus relevant criteria.keywords. Relocate.me is international and relocation-focused; use criteria.locations, remote preference, work authorization, and relocation signals for post-search evaluation rather than assuming every listing is remote.",
+  },
+});
+
+const ycombinatorRemoteManifest = manifest({
+  id: "ycombinator-remote",
+  label: "Y Combinator Remote",
+  version: "1.0.0",
+  capabilities: { search: true, detail: true, pagination: false, location: true, freshness: false, remote: true, activeStatus: false },
+  policy: { ...defaultPolicy, maxRequestsPerRun: 10, minimumDelayMs: 250 },
+  defaults: { maxAgeDays: 9_999 },
+  guidance: {
+    strengths: ["Remote roles from Y Combinator startups."],
+    caveats: ["The public page is a bounded first-page snapshot without a posted-date field; verify role availability and location eligibility in the detail text."],
+    query: "Search the fixed Y Combinator all-roles remote page with one concise role phrase plus relevant criteria.keywords. Do not assume every remote role accepts every country; use the result location and fetched posting for country, timezone, and work-authorization evaluation.",
+  },
+});
+
+const indeedIndonesiaManifest = manifest({
+  id: "indeed-id",
+  label: "Indeed Indonesia",
+  version: "1.0.0",
+  capabilities: { search: true, detail: true, pagination: false, location: true, freshness: false, remote: true, activeStatus: false },
+  policy: { ...defaultPolicy, maxRequestsPerRun: 10, minimumDelayMs: 250 },
+  defaults: { maxAgeDays: 9_999 },
+  guidance: {
+    strengths: ["Indonesia-localized job discovery with location-aware search."],
+    caveats: ["Indeed may return HTTP 403 or an anti-bot challenge for automated requests and may change regional result markup; no retry or bypass is attempted. Treat failures as source errors and verify the live posting manually."],
+    query: "Use one concise role phrase and pass criteria.locations as the Indeed location when it is concrete. Keep remote, freshness, and eligibility decisions based on the fetched posting rather than assuming the Indonesia domain implies remote eligibility.",
+  },
+});
+
 
 function linkedinUrlId(value: string) {
   try {
@@ -609,11 +927,13 @@ const freehirePlugin = createCliPlugin({
   manifest: freehireManifest,
   searchArgs: (request, query) => {
     const args = ["search", "--query", query, "--limit", String(request.limit), "--format", "json"];
+    if (request.cursor !== undefined) throw new Error("FreeHire supports page pagination, not cursor pagination.");
+    if (request.page !== undefined) args.push("--page", String(request.page));
     if (request.location) args.push("--city", request.location);
     if (request.maxAgeDays !== undefined) args.push("--jobage", String(request.maxAgeDays));
     return args;
   },
-  parseSearch: parseDefaultSearch,
+  parseSearch: parseFreehireSearch,
   detailArg: ref => {
     if (ref.id.includes("/")) throw new Error("resultId contains an invalid command argument");
     return ref.id;
@@ -649,12 +969,51 @@ function japanPlugin(id: "tokyodev" | "japan-dev", label: string): JobSourcePlug
     parseDetail: parseJapanDetail,
   });
 }
+const relocatePlugin = createCliPlugin({
+  manifest: relocateManifest,
+  searchArgs: (request, query) => {
+    const args = ["search", "--source", "relocate-me", "--query", query, "--limit", String(request.limit), "--format", "json"];
+    if (request.maxAgeDays !== undefined) args.push("--jobage", String(request.maxAgeDays));
+    return args;
+  },
+  parseSearch: parseRelocateSearch,
+  detailArg: ref => ref.url,
+  parseDetail: parseJapanDetail,
+});
+
+const ycombinatorRemotePlugin = createHttpPlugin({
+  manifest: ycombinatorRemoteManifest,
+  searchUrl: () => "https://www.ycombinator.com/jobs/role/all/remote",
+  parseSearch: parseYcSearch,
+  detailUrl: ref => ref.url,
+  parseDetail: parseYcDetail,
+  matchesDetailUrl: matchesYcDetailUrl,
+});
+
+const indeedIndonesiaPlugin = createHttpPlugin({
+  manifest: indeedIndonesiaManifest,
+  searchUrl: request => {
+    const params = new URLSearchParams({ q: request.query });
+    if (request.location) params.set("l", request.location);
+    return `https://id.indeed.com/jobs?${params}`;
+  },
+  parseSearch: parseIndeedSearch,
+  detailUrl: ref => `https://id.indeed.com/m/viewjob?jk=${encodeURIComponent(ref.id)}`,
+  parseDetail: parseIndeedDetail,
+  matchesDetailUrl: matchesIndeedDetailUrl,
+  redirectHost: "id.indeed.com",
+  redirect: "follow",
+});
+
 
 export const builtInSourcePlugins: readonly JobSourcePlugin[] = Object.freeze([
   freehirePlugin,
   linkedinPlugin,
   japanPlugin("tokyodev", "TokyoDev"),
   japanPlugin("japan-dev", "Japan Dev"),
+  relocatePlugin,
+  ycombinatorRemotePlugin,
+  indeedIndonesiaPlugin,
 ]);
 
 export function createDeclarativeSourcePlugin(sourceValue: CustomJobSource): JobSourcePlugin {

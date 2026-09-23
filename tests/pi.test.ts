@@ -380,6 +380,35 @@ test("Pi extracts provider usage and leaves missing usage null", async () => {
   assert.deepEqual(missingUsage, []);
   assert.deepEqual((missingTrajectory.find(({ type }) => type === "assistant_message")?.payload as { usage?: unknown } | undefined)?.usage, null);
 });
+test("Pi records assistant usage once when text and thinking share a message", async () => {
+  const trajectory: Array<{ type: string; payload?: unknown }> = [];
+  const usage = {
+    input: 3,
+    output: 5,
+    totalTokens: 8,
+    cost: { total: 0.3 },
+  };
+  await runBoundedPi({
+    prompt: "mixed assistant message",
+    timeoutMs: 1_000,
+    runId: "mixed-assistant-message",
+    trajectory: (_runId, event) => { trajectory.push(event); },
+    createSession: async () => new FakeSession("ok", [{
+      type: "message_end",
+      message: {
+        role: "assistant",
+        timestamp: 3,
+        content: [{ type: "thinking", thinking: "Plan" }, { type: "text", text: "Done" }],
+        usage,
+      },
+    }]),
+  });
+  const assistant = trajectory.find(({ type }) => type === "assistant_message");
+  const thinking = trajectory.find(({ type }) => type === "assistant_thinking");
+  assert.deepEqual((assistant?.payload as { usage?: unknown } | undefined)?.usage, { inputTokens: 3, outputTokens: 5, totalTokens: 8, estimatedCost: 0.3 });
+  assert.equal((thinking?.payload as { usage?: unknown } | undefined)?.usage, null);
+});
+
 
 test("Pi classifies bounded and provider errors without confusing rejection with cancellation", () => {
   assert.equal(classifyPiError(new PiRunTimeoutError()), "timeout");

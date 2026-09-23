@@ -47,7 +47,7 @@ const DISK_BANKS = [
   { id: "a", label: "A·ID", hint: "identity bank" },
   { id: "b", label: "B·WORK", hint: "experience + education" },
   { id: "c", label: "C·EXTRA", hint: "skills + more" },
-  { id: "d", label: "D·CRIT", hint: "search criteria" },
+  { id: "d", label: "D·PREF", hint: "search preferences" },
 ] as const;
 
 type DiskBankId = (typeof DISK_BANKS)[number]["id"];
@@ -123,12 +123,14 @@ export function DiskView({
   run = null,
   events = [],
   onRun,
+  onProfileSaved,
 }: {
   toast: (message: string) => void;
   onSettings: (settings: Settings) => void;
   run?: Run | null;
   events?: TrajectoryEvent[];
   onRun?: (run: Pick<Run, "id" | "workflow" | "status">) => void;
+  onProfileSaved?: (profile: StructuredProfile) => void;
 }) {
   const [bank, setBank] = useState<DiskBankId>("a");
   const [extra, setExtra] = useState<RepeatableSectionId>("skills");
@@ -262,6 +264,7 @@ export function DiskView({
       const result = await api<{ profile: StructuredProfile }>("/api/profile", { method: "PUT", body: JSON.stringify({ profile }) });
       setProfile(result.profile);
       setSavedProfile(cloneProfile(result.profile));
+      onProfileSaved?.(result.profile);
       toast("Profile written to disk.");
     } catch (caught) { toast(caught instanceof Error ? caught.message : "Profile was not saved."); }
   }
@@ -494,9 +497,9 @@ export function DiskView({
           )}
         </>}
         {bank === "d" && <>
-          <ProfileSaveBar dirty={criteriaDirty} label="Criteria" onSave={() => void saveCriteria()} onDiscard={() => { if (savedCriteria) setCriteria(cloneProfile(savedCriteria)); setCriteriaError(""); }} variant={variant} />
+          <ProfileSaveBar dirty={criteriaDirty} label="Search preferences" onSave={() => void saveCriteria()} onDiscard={() => { if (savedCriteria) setCriteria(cloneProfile(savedCriteria)); setCriteriaError(""); }} variant={variant} />
           <section className="pe-section pe-theme-tracker">
-            <div className="pe-section-head"><h2>BANK D · SEARCH CRIT</h2><span className="pe-eyebrow">SCRAPE TARGETS</span></div>
+            <div className="pe-section-head"><h2>BANK D · SEARCH PREFS</h2><span className="pe-eyebrow">OPTIONAL STEERS</span></div>
             <div className="pe-section-body">
               <CriteriaFields criteria={criteria} setCriteria={setCriteria} error={criteriaError} variant={variant} />
             </div>

@@ -177,33 +177,124 @@ test("source policy spaces concurrent starts by the minimum delay", async () => 
   assert.equal(starts.length, 2);
   assert.ok(starts[1] - starts[0] >= 45, `starts were ${starts[1] - starts[0]}ms apart`);
 });
-test("all built-in plugins preserve their fixture transport contracts", async () => {
+test("all built-in CLI plugins preserve their fixture transport contracts", async () => {
   for (const plugin of builtInSourcePlugins) {
     const source = plugin.manifest.id;
-    const id = source === "linkedin" ? "123456789" : `${source}-fixture`;
-    const url = source === "linkedin" ? `https://www.linkedin.com/jobs/view/${id}` : `https://fixture.example/${source}/jobs/1`;
+    if (source === "ycombinator-remote" || source === "indeed-id") continue;
+    const id = source === "linkedin"
+      ? "123456789"
+      : source === "relocate-me"
+        ? "relocate-me:/spain/example/backend-engineer-1"
+        : `${source}-fixture`;
+    const url = source === "linkedin"
+      ? `https://www.linkedin.com/jobs/view/${id}`
+      : source === "relocate-me"
+        ? "https://relocate.me/spain/example/backend-engineer-1"
+        : `https://fixture.example/${source}/jobs/1`;
+    const japanEnvelope = source === "tokyodev" || source === "japan-dev" || source === "relocate-me";
     const tools = createScrapeTools({
       source,
       plugin,
       runCli: async args => {
         if (args[0] === "search") {
-          const result = { id, title: "Backend Engineer", company: "Fixture Co", location: "Remote", url };
+          const result = { id, source, title: "Backend Engineer", company: "Fixture Co", location: "Remote", url, ...(japanEnvelope ? { postedDate: null } : { date: null }) };
           return {
             code: 0,
             stderr: "",
-            stdout: JSON.stringify(plugin.manifest.preflight ? { count: 1, results: [result] } : { meta: { count: 1 }, results: [result] }),
+            stdout: JSON.stringify(japanEnvelope ? { count: 1, results: [result] } : { meta: { count: 1 }, results: [result] }),
           };
         }
         return {
           code: 0,
           stderr: "",
-          stdout: JSON.stringify(plugin.manifest.preflight ? { url, title: "Backend Engineer", text: "Build reliable APIs." } : { id, title: "Backend Engineer", url, description: "Build reliable APIs." }),
+          stdout: JSON.stringify(japanEnvelope ? { url, title: "Backend Engineer", text: "Build reliable APIs." } : { id, title: "Backend Engineer", url, description: "Build reliable APIs." }),
         };
       },
     });
-    await callSearch(tools);
-    await tools.fetchJobDetails.execute("detail", { resultId: id }, undefined, undefined, undefined as never);
+    const searched = await callSearch(tools);
+    const normalizedResult = searched.results[0] as Record<string, unknown> | undefined;
+    assert.equal("postedDate" in (normalizedResult ?? {}), false);
+    assert.equal("date" in (normalizedResult ?? {}), false);
+    assert.equal("postedAt" in (normalizedResult ?? {}), false);
+    assert.equal(normalizedResult?.source, source);
+    if (source === "relocate-me") assert.equal(searched.results[0]?.id, "relocate-me:spain%2Fexample%2Fbackend-engineer-1");
+    await tools.fetchJobDetails.execute("detail", { resultId: searched.results[0]?.id ?? id }, undefined, undefined, undefined as never);
   }
+});
+
+test("built-in HTML sources parse safe search IDs and detail provenance", async () => {
+  const fixtures = {
+    "ycombinator-remote": {
+      search: `<ul><li class="job-card"><a href="/companies/example/jobs/yc-123-backend-engineer">Backend Engineer</a><span class="block font-bold md:inline">Example Co<!-- --> (S24)</span><div class="break-all md:break-normal">US / Remote</div></li></ul>`,
+      detail: `<html><head><link rel="canonical" href="https://www.ycombinator.com/companies/example/jobs/yc-123-backend-engineer"></head><body><nav>Navigation</nav><h1>Backend Engineer</h1><h2>About the role</h2><p>Build reliable APIs.</p><script>ignore this</script></body></html>`,
+      id: "yc-123-backend-engineer",
+      title: "Backend Engineer",
+      company: "Example Co",
+      location: "US / Remote",
+    },
+    "indeed-id": {
+      search: `<ul><li class="result"><h3><a data-jk="indeed-123" href="/rc/clk?jk=indeed-123"><span title="Backend Engineer">Backend Engineer</span></a></h3><span data-testid="company-name">Example Co</span><div data-testid="text-location">Jakarta</div></li></ul>`,
+      detail: `<html><head><link rel="canonical" href="https://id.indeed.com/viewjob?jk=indeed-123"></head><body><h1 data-testid="jobsearch-JobInfoHeader-title">Backend Engineer</h1><div id="jobDescriptionText"><div><p>Build reliable APIs.</p><p>Keep the second paragraph.</p></div></div></body></html>`,
+      id: "indeed-123",
+      title: "Backend Engineer",
+      company: "Example Co",
+      location: "Jakarta",
+    },
+  } as const;
+
+  for (const [source, fixture] of Object.entries(fixtures) as Array<[keyof typeof fixtures, (typeof fixtures)[keyof typeof fixtures]]>) {
+    const plugin = builtInSourcePlugins.find(candidate => candidate.manifest.id === source);
+    if (!plugin) throw new Error(`missing ${source} plugin`);
+    const tools = createScrapeTools({
+      source,
+      plugin,
+      fetcher: async input => new Response(/\/jobs(?:\/role\/|[?])/.test(String(input))
+        ? fixture.search
+        : fixture.detail,
+        { headers: { "content-type": "text/html" } }),
+    });
+    const searchOutput = await tools.searchJobs.execute("search", { query: "backend", location: fixture.location, limit: 1 }, undefined, undefined, undefined as never);
+    const searchBlock = searchOutput.content[0];
+    if (searchBlock.type !== "text") throw new Error(`${source} search result was not text`);
+    const searchPayload = JSON.parse(searchBlock.text) as { results: Array<{ id: string; title: string; company: string | null; location: string | null; url: string }> };
+    assert.deepEqual(searchPayload.results[0], {
+      id: fixture.id,
+      title: fixture.title,
+      company: fixture.company,
+      location: fixture.location,
+      url: source === "ycombinator-remote"
+        ? "https://www.ycombinator.com/companies/example/jobs/yc-123-backend-engineer"
+        : `https://id.indeed.com/m/viewjob?jk=${fixture.id}`,
+    });
+    const detailOutput = await tools.fetchJobDetails.execute("detail", { resultId: fixture.id }, undefined, undefined, undefined as never);
+    const detailBlock = detailOutput.content[0];
+    if (detailBlock.type !== "text") throw new Error(`${source} detail result was not text`);
+    const detailPayload = JSON.parse(detailBlock.text) as { id: string; title: string; url: string; description: string };
+    assert.equal(detailPayload.id, fixture.id);
+    assert.equal(detailPayload.title, fixture.title);
+    assert.match(detailPayload.description, /Build reliable APIs/);
+    if (source === "indeed-id") assert.match(detailPayload.description, /Keep the second paragraph/);
+  }
+});
+
+test("Indeed rejects redirects that leave its fixed host", async () => {
+  const plugin = builtInSourcePlugins.find(candidate => candidate.manifest.id === "indeed-id");
+  if (!plugin) throw new Error("missing Indeed plugin");
+  const tools = createScrapeTools({
+    source: "indeed-id",
+    plugin,
+    fetcher: async input => /\/jobs\?/.test(String(input))
+      ? new Response(`<ul><li><a data-jk="indeed-redirect" href="/rc/clk?jk=indeed-redirect"><span>Backend Engineer</span></a><span data-testid="company-name">Example Co</span><div data-testid="text-location">Jakarta</div></li></ul>`)
+      : Response.redirect("https://evil.example/job", 302),
+  });
+  const searchOutput = await tools.searchJobs.execute("search", { query: "backend", location: "Jakarta", limit: 1 }, undefined, undefined, undefined as never);
+  const searchBlock = searchOutput.content[0];
+  if (searchBlock.type !== "text") throw new Error("Indeed search result was not text");
+  const searchPayload = JSON.parse(searchBlock.text) as { results: Array<{ id: string }> };
+  await assert.rejects(
+    () => tools.fetchJobDetails.execute("detail", { resultId: searchPayload.results[0]?.id ?? "indeed-redirect" }, undefined, undefined, undefined as never),
+    /allowed host|unsafe redirect/i,
+  );
 });
 test("agent inspection exposes enabled source capabilities and policy", async () => {
   const plugin = fixturePlugin();
@@ -219,4 +310,31 @@ test("agent inspection exposes enabled source capabilities and policy", async ()
   assert.equal(inspected.sources[0]?.id, "fixture");
   assert.equal(inspected.sources[0]?.capabilities.location, true);
   assert.equal(inspected.sources[0]?.policy.maxConcurrentRequests, 1);
+});
+
+test("FreeHire maps page requests and preserves pagination metadata", async () => {
+  const plugin = builtInSourcePlugins.find(candidate => candidate.manifest.id === "freehire");
+  if (!plugin) throw new Error("missing FreeHire plugin");
+  const calls: string[][] = [];
+  const tools = createScrapeTools({
+    source: "freehire",
+    plugin,
+    runCli: async args => {
+      calls.push(args);
+      const results = [{ ...hit, id: "freehire-page-2", url: "https://fixture.example/jobs/page-2" }];
+      return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 1, page: 2, total: 51, nextCursor: null }, results }) };
+    },
+  });
+  const output = await tools.searchJobs.execute("page-2", { query: "backend", location: "Remote", limit: 25, page: 2 }, undefined, undefined, undefined as never);
+  const block = output.content[0];
+  if (block.type !== "text") throw new Error("search result was not text");
+  const parsed = JSON.parse(block.text) as { pageInfo?: { hasMore: boolean; nextPage?: number; total?: number }; results: unknown[] };
+  assert.deepEqual(calls[0], ["search", "--query", "backend", "--limit", "25", "--format", "json", "--page", "2", "--city", "Remote"]);
+  assert.deepEqual(parsed.pageInfo, { hasMore: true, nextPage: 3, total: 51, page: 2, limit: 25 });
+  assert.equal(parsed.results.length, 1);
+  assert.equal(tools.manifest.capabilities.pagination, true);
+  await assert.rejects(
+    () => tools.searchJobs.execute("cursor", { query: "backend", location: "Remote", limit: 25, cursor: "opaque" }, undefined, undefined, undefined as never),
+    /page pagination/i,
+  );
 });

@@ -480,7 +480,7 @@ Summary is formatted as a definition list, not cards:
 
 ```text
 PROFILE       Ready · reviewed 12 Aug
-CRITERIA      Backend, Platform · Remote/APAC
+PREFERENCES   Backend, Platform · Remote/APAC
 SOURCE        FreeHire
 MODEL         Google / Gemini 2.5 Pro
 PASSING RULE  Score > 60
@@ -493,7 +493,7 @@ Footer:
 [Edit Profile & Criteria] [Open Settings]        [Cancel] [Start scrape]
 ```
 
-Missing prerequisites appear as a compact error list above the footer. Start remains disabled.
+Missing profile, provider, or source prerequisites appear as a compact error list above the footer. Start remains disabled.
 
 ### 6.3 Applications
 
@@ -690,7 +690,7 @@ Jun 2020 — Dec 2022
 
 A persistent aside or toolbar action opens **Provider context preview**. It serializes the current structured profile into the exact text/JSON shape sent to Pi, with unsaved values clearly identified. This is a read-only preview; it is not a second editor.
 
-Search Criteria remains a separate structured form with its own save boundary and visible inline validation.
+Search Criteria remains a separate structured form for optional preferences, with its own save boundary and visible inline validation.
 
 ### 6.7 Settings
 
@@ -746,7 +746,7 @@ Structure:
 
 ```text
 NO JOBS YET
-Scrape jobs after your profile and criteria are ready.
+Scrape jobs after your profile is reviewed; preferences are optional.
 [Scrape jobs]
 ```
 

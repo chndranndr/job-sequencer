@@ -1,6 +1,6 @@
 # Job Sequencer
 
-Job Sequencer is a local-first job-search workbench for one person. It turns a reviewed profile and explicit search criteria into a ranked shortlist, then keeps every next step manual.
+Job Sequencer is a local-first job-search workbench for one person. It turns a reviewed profile and optional search preferences into a ranked shortlist, then keeps every next step manual.
 
 The app runs on loopback. Pi handles bounded search and drafting workflows in-process. SQLite keeps the local record. Credentials stay in Pi's auth store or environment variables. The user approves documents and records applications.
 
@@ -18,7 +18,7 @@ The screenshot and animated walkthrough use deterministic fixture data. They sho
 
 ## The product loop
 
-1. Define a profile and search criteria in **DISK**.
+1. Define a profile and optional search preferences in **DISK**.
 2. Start a bounded search from **PATTERN**.
 3. Let Pi refine the query when the first pass is weak.
 4. Review ranked jobs and open their evidence in **SAMPLE**.
@@ -44,7 +44,7 @@ flowchart LR
   API --> Evidence
 ```
 
-The browser owns Tracker views and calls the API through `src/api.ts`. The API owns workflow state, run coordination, SQLite persistence, and approval boundaries. The orchestrator gives Pi typed search and detail tools instead of shell access. Search memory improves later queries without overriding current criteria.
+The browser owns Tracker views and calls the API through `src/api.ts`. The API owns workflow state, run coordination, SQLite persistence, and approval boundaries. The orchestrator gives Pi typed search and detail tools instead of shell access. Search memory improves later queries without overriding current preferences.
 
 ## What the repository demonstrates
 
@@ -79,7 +79,7 @@ From the repository root:
 npm ci
 ```
 
-The application uses Node/TypeScript. The vendored FreeHire, LinkedIn, and Japan board CLIs remain Bun-based.
+The application uses Node/TypeScript. The vendored FreeHire, LinkedIn, and Japan board CLIs remain Bun-based; Relocate.me reuses the Japan-board CLI, while Y Combinator Remote and Indeed Indonesia use bounded public HTML adapters.
 
 ## Configure Pi authentication
 
@@ -200,11 +200,11 @@ Vite proxies `/api` and `/health` to the backend. After changing server-side Typ
 
 ## First-run checklist
 
-1. Open **DISK** and enable the job sources to search (FreeHire, LinkedIn, TokyoDev, or Japan Dev). A scrape searches every checked source; each built-in source has an editable maximum age in days. FreeHire and LinkedIn default to `9999` (effectively no cutoff); TokyoDev and Japan Dev default to 45 days. Increasing a source above 45 days can return older postings and adds a warning asking you to verify that they are still active. Custom sources keep their bounded declarative HTTP(S) controls and do not require a posted-date field.
+1. Open **DISK** and enable the job sources to search (FreeHire, LinkedIn, TokyoDev, Japan Dev, Relocate.me, Y Combinator Remote, or Indeed Indonesia). A scrape searches every checked source; each built-in source has an editable maximum age in days. FreeHire, LinkedIn, Relocate.me, Y Combinator Remote, and Indeed Indonesia default to `9999` (effectively no cutoff); TokyoDev and Japan Dev default to 45 days. Increasing a source above 45 days can return older postings and adds a warning asking you to verify that they are still active. Custom sources keep their bounded declarative HTTP(S) controls and do not require a posted-date field.
 2. Select the Pi provider (`google`, `anthropic`, `openai`, or `openai-codex`).
 3. Choose a model from the authenticated Model dropdown and save settings. The model field is non-secret configuration only.
 4. Click **Test connection**. The credential remains in Pi auth storage/environment variables.
-5. Open **DISK**, review and save the structured profile and search criteria.
+5. Open **DISK**, review and save the structured profile. Add search preferences when useful; they steer discovery but are not required.
 6. Use **PATTERN** to scrape and review jobs. Select jobs manually before generating documents.
 
 The canonical profile is `data/profile.json`. A legacy `data/profile.md` is preserved for review/import and is not overwritten automatically. Runtime data and generated applications are under gitignored `data/`.

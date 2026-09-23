@@ -197,17 +197,20 @@ export type NewRun = {
   provider: string;
   model: string;
   startedAt: string;
+  summary?: unknown;
   idempotencyKey?: string | null;
 };
 
 export function insertRun(db: DatabaseSync, value: NewRun) {
-  db.prepare("INSERT INTO runs(id,workflow,status,job_id,provider,model,started_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?)").run(
+  const summaryJson = value.summary === undefined || value.summary === null ? null : JSON.stringify(value.summary);
+  db.prepare("INSERT INTO runs(id,workflow,status,job_id,provider,model,summary_json,started_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(
     value.id,
     value.workflow,
     value.status ?? "queued",
     value.jobId ?? null,
     value.provider,
     value.model,
+    summaryJson,
     value.startedAt,
     value.idempotencyKey ?? null,
   );
@@ -238,7 +241,7 @@ export function updateRunUsage(db: DatabaseSync, id: string, usage: RunUsage) {
 
 export function finishRun(db: DatabaseSync, id: string, status: Exclude<RunStatus, "queued" | "running">, summary: unknown, error: string | null, errorCode: string | null, finishedAt = new Date().toISOString()) {
   const summaryJson = summary === undefined || summary === null ? null : JSON.stringify(summary);
-  return db.prepare("UPDATE runs SET status=?,summary_json=?,error=?,error_code=COALESCE(?,error_code),finished_at=? WHERE id=? AND status IN ('queued','running')").run(status, summaryJson, error, errorCode, finishedAt, id).changes > 0;
+  return db.prepare("UPDATE runs SET status=?,summary_json=COALESCE(?,summary_json),error=?,error_code=COALESCE(?,error_code),finished_at=? WHERE id=? AND status IN ('queued','running')").run(status, summaryJson, error, errorCode, finishedAt, id).changes > 0;
 }
 
 export function normalizeUrl(value: string) {
@@ -513,14 +516,18 @@ const trajectoryPayloadLimits = {
   error: 50_000,
 } as const;
 
-const trajectorySecretKey = /^(?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|access[_-]?token|bearer|auth|client[_-]?secret|refresh[_-]?token)$/i;
+const trajectorySecretKey = /(?:^|_)(?:api_key|apikey|token|secret|password|authorization|credential|credentials|cookie|private_key|access_token|bearer|auth|client_secret|refresh_token)(?:_|$)/;
+function isTrajectorySecretKey(key: string) {
+  const normalized = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_").toLowerCase();
+  return trajectorySecretKey.test(normalized);
+}
 
 function serializeTrajectoryPayload(value: unknown, limit: number) {
   const seen = new WeakSet<object>();
   let serialized: string;
   try {
     serialized = JSON.stringify(value, (key, current: unknown) => {
-      if (trajectorySecretKey.test(key)) return "[redacted]";
+      if (key && isTrajectorySecretKey(key)) return "[redacted]";
       if (typeof current === "bigint") return `${current}n`;
       if (current instanceof Error) return { name: current.name, message: redactTelemetryText(current.message) };
       if (typeof current === "string") return redactTelemetryText(current);

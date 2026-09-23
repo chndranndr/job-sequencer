@@ -40,6 +40,7 @@ export type RunTask<T = unknown> = {
   provider: string;
   model: string;
   idempotencyKey?: string | null;
+  summary?: unknown;
   execute: (context: RunExecutionContext) => Promise<T>;
   onError?: (error: unknown, context: RunErrorContext) => RunFailure | undefined;
 };
@@ -221,6 +222,7 @@ export class RunCoordinator {
         jobId: task.jobId ?? (resources.length === 1 ? resources[0] : null),
         provider: task.provider,
         model: task.model,
+        summary: task.summary,
         startedAt,
         idempotencyKey,
       });

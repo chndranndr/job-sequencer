@@ -129,7 +129,7 @@ test("trajectory evaluation runs an agent executor and an independent baseline",
       assert.equal(report.totalDetailFetches, 0);
       assert.equal(report.usefulDetailFetches, 0);
       assert.deepEqual(report.rankedCandidates, []);
-      assert.ok(report.actions.includes("search:freehire:backend:Remote:rejected"));
+      assert.ok(report.actions.includes("search:freehire:backend typescript:Remote:rejected"));
     }
     if (scenario.id === "provenance-protection") {
       assert.ok(report.calls.some((action) => action.kind === "detail" && action.resultId === "forged-1"));

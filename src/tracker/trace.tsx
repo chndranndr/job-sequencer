@@ -283,6 +283,18 @@ export function observableBudgetUse(used: number, remaining: number | null | und
 function observableSearchTarget(target: { source: string | null; query: string | null; location: string | null }) {
   return [observableText(target.source), observableText(target.location), observableText(target.query)].join(" · ");
 }
+function observableFunnelMap(value: Record<string, readonly (string | number)[]> | undefined) {
+  if (!value) return "—";
+  const rows = Object.entries(value).map(([source, values]) => `${source}: ${values.join(", ")}`).filter(Boolean);
+  return rows.join(" · ") || "—";
+}
+
+function observableFunnelAttempts(value: number | Record<string, number> | undefined) {
+  if (typeof value === "number") return observableCount(value);
+  if (!value) return "—";
+  return observableCount(Object.values(value).reduce((total, count) => total + (Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0), 0));
+}
+
 
 function TraceLink({ href, navigate, children, className = "" }: { href: string; navigate: (href: string) => void; children: ReactNode; className?: string }) {
   return <a className={className} href={href} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href); }}>{children}</a>;
@@ -482,6 +494,7 @@ function TraceObservabilitySummary({ run, observability }: { run: Run; observabi
   const configuredDetail = observability.configuredBudget?.maxDetailCalls;
   const terminationReason = observableText(observability.termination?.reason ?? observability.termination?.category);
   const unresolvedGoals = observability.termination?.unresolvedGoals.slice(0, 20).map((goal) => observableText(goal, 120)).join(", ");
+  const funnel = observability.funnel;
   return <div className="trace-observability">
     <section className="trace-section" aria-label="Summary">
       <div className="trace-section-head"><h2>Search observability</h2><span>bounded projection</span></div>
@@ -500,6 +513,23 @@ function TraceObservabilitySummary({ run, observability }: { run: Run; observabi
         {unresolvedGoals && <TraceMeta label="Unresolved">{unresolvedGoals}</TraceMeta>}
       </div>
     </section>
+    {funnel && <section className="trace-section" aria-label="Discovery funnel">
+      <div className="trace-section-head"><h2>Discovery funnel</h2><span>{observableText(funnel.stopReason)}</span></div>
+      <div className="trace-observe-cards">
+        <TraceMeta label="Enabled sources">{observableText(funnel.enabledSources?.join(", "))}</TraceMeta>
+        <TraceMeta label="Source attempts">{observableFunnelAttempts(funnel.sourceAttempts)}</TraceMeta>
+        <TraceMeta label="Queries used">{observableFunnelMap(funnel.queriesBySource)}</TraceMeta>
+        <TraceMeta label="Pages visited">{observableFunnelMap(funnel.pagesBySource)}</TraceMeta>
+        <TraceMeta label="Raw hits">{observableCount(funnel.rawHits)}</TraceMeta>
+        <TraceMeta label="Unique hits">{observableCount(funnel.uniqueHits)}</TraceMeta>
+        <TraceMeta label="Promising hits">{observableCount(funnel.promisingHits)}</TraceMeta>
+        <TraceMeta label="Duplicates removed">{observableCount(funnel.duplicatesRemoved)}</TraceMeta>
+        <TraceMeta label="Cheap candidates">{observableCount(funnel.candidatesAfterCheapFiltering)}</TraceMeta>
+        <TraceMeta label="Detail fetches">{observableCount(funnel.detailFetches)}</TraceMeta>
+        <TraceMeta label="Selected jobs">{observableCount(funnel.selectedJobs)}</TraceMeta>
+        <TraceMeta label="Stop reason">{observableText(funnel.stopReason)}</TraceMeta>
+      </div>
+    </section>}
     <section className="trace-section" aria-label="Query adaptation">
       <div className="trace-section-head"><h2>Query adaptation</h2><span>{observableCount(completedSearchCount)} searches · {observableCount(observability.adaptations.length)} transitions</span></div>
       {searchAttempts.length ? <div className="trace-observe-list">{searchAttempts.map((attempt) => <div className="trace-observe-adaptation" key={`${attempt.sequence}-${attempt.attemptId ?? attempt.query ?? "search"}`}><strong>{observableText(attempt.status)}</strong><span>{observableText(attempt.source)} · {observableText(attempt.location)} · {observableText(attempt.query)}</span><small>{observableCount(attempt.resultCount)} results · {observableCount(attempt.uniqueResultCount)} unique · {observableCount(attempt.promisingResultCount)} promising · {observablePercent(attempt.duplicateRate)} duplicate · {observableText(attempt.intent)}</small></div>)}</div> : <p className="empty">No search attempts were captured.</p>}

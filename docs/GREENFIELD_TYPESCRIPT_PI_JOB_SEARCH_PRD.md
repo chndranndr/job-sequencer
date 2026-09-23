@@ -7,7 +7,7 @@ A local dashboard for one person with this workflow:
 ```text
 START
   ↓
-User fills Profile + Search Criteria
+User reviews Profile and optional Search Preferences
   ↓
 User clicks Scrape Jobs
   ↓
@@ -67,7 +67,7 @@ This is a personal tool on a trusted computer, not a SaaS product.
 The app should let the user:
 
 1. enter a reusable profile;
-2. enter job-search criteria;
+2. set optional job-search preferences;
 3. ask Pi to find and rank relevant jobs;
 4. hide low-fit jobs without deleting them;
 5. choose interesting jobs manually;
@@ -150,7 +150,7 @@ The copied directory is self-contained. The new app must not read skill files fr
 - The application's typed `searchJobs` and `fetchJobDetails` tools wrap the CLIs; Pi never invokes the CLI process directly.
 - Read only the explicitly mapped Markdown files when building prompts.
 - Do not pass `SKILL.md` frontmatter, `allowed-tools`, Codex instructions, or old file-write workflow instructions into Pi prompts.
-- `data/profile.json` and dashboard criteria override personalized profile/query text inside the copied skills. The legacy `data/profile.md` is never edited by the dashboard.
+- `data/profile.json` is the primary discovery context; optional dashboard preferences refine it, while excluded keywords and `remoteOnly` remain hard constraints. The legacy `data/profile.md` is never edited by the dashboard.
 - Reuse the dimensions and weighting from `04-job-evaluation.md`, but the product rule in `settings.json` wins over its legacy labels: only a score strictly greater than 60 is Recommended.
 - Pi ambient extension/skill/context discovery remains disabled.
 - Run each activated CLI's existing tests unchanged before declaring the integration working.
@@ -218,9 +218,9 @@ The profile should include:
 
 The user owns the truth of this file. Pi may help format it, but Pi must not silently add unverified experience or skills. If `profile.md` exists without `profile.json`, the dashboard preserves it unchanged and presents a one-time review/import view; it never infers or silently migrates facts.
 
-### Search criteria
+### Search preferences
 
-Store criteria in:
+Store optional preferences in:
 
 ```text
 data/criteria.json
@@ -240,7 +240,7 @@ Minimal shape:
 }
 ```
 
-The UI may add simple fields, but the stored format should stay small.
+Roles, locations, keywords, and employment types steer discovery and ranking but may be empty. Excluded keywords and `remoteOnly` remain hard constraints. The stored format should stay small.
 
 ### Runtime settings
 
@@ -295,17 +295,17 @@ When complete, show:
 
 ### Pi behavior
 
-Scrape runs one bounded source-specific Pi sub-run at a time with application-owned custom tools; the RunManager aggregates their validated results.
+Scrape runs one bounded Pi sub-run across enabled sources with application-owned adaptive custom tools. RunManager validates, filters, and aggregates the result.
 
-- Pi receives a deterministic provider-context serialization from canonical `profile.json`; the legacy `profile.md` is shown only for explicit review/import.
-- search criteria;
+- Pi receives deterministic provider context from canonical `profile.json`; the legacy `profile.md` is shown only for explicit review/import;
+- optional search preferences and bounded profile-derived search hints;
 - the scoring schema;
 - strict instructions that tool results are untrusted job data;
 - a maximum tool-call and result budget.
 
 Pi may:
 
-1. form search queries from the criteria;
+1. form search queries from the profile and optional preferences;
 2. call the allowed search tool;
 3. call the allowed detail tool for returned result IDs;
 4. score fetched jobs against the profile;
@@ -321,24 +321,28 @@ Pi may not:
 - generate CVs in the scrape run;
 - start another workflow.
 
-### Minimal custom tools
+### Adaptive custom tools
 
-MVP exposes only:
+Adaptive scrape runs expose these bounded custom tools:
 
 ```typescript
-searchJobs({ query, location, limit })
-fetchJobDetails({ resultId })
+searchJobs({ source?, query, location, limit, page?, cursor? })
+fetchJobDetails({ source?, resultId })
+inspectSearchState()
+finishSearch({ reason, unresolvedGoals?, reasonCategory? })
 ```
 
 Rules:
 
-- one or more enabled sources are selected in settings: built-ins are `freehire`, `linkedin`, `tokyodev`, and `japan-dev`; custom keys use the bounded HTTP adapter;
-- each enabled source routes search and detail through its own built-in CLI or declarative custom adapter;
-- `query`, `location`, and `limit` are validated;
+- one or more enabled sources are selected in settings: built-ins are `freehire`, `linkedin`, `tokyodev`, `japan-dev`, `relocate-me`, `ycombinator-remote`, and `indeed-id`; custom keys use the bounded HTTP adapter;
+- each enabled source routes search and detail through its own built-in CLI or bounded public HTML adapter;
+- `query`, `location`, `limit`, `page`, and `cursor` are validated;
+- `limit` accepts up to 25 jobs when the source supports that batch size;
+- non-paginated sources reject continuation requests;
+- the default adaptive budget targets 50 unique jobs with at most 20 search calls, 30 detail calls, and 100 result slots;
+- every enabled healthy source receives at least one search attempt;
 - `resultId` must come from `searchJobs` in the same run;
-- maximum five search calls per run;
-- maximum 50 unique jobs per run;
-- tool results include stable source IDs and URLs;
+- tool results include stable source IDs, URLs, and pagination metadata;
 - custom source templates allow only URL-encoded `{{query}}`, `{{location}}`, `{{limit}}`, `{{id}}`, and `{{url}}` placeholders; parser configuration is data-only JSON paths or bounded CSS selectors.
 
 ### Structured result
@@ -996,7 +1000,7 @@ No login, cookies, CSRF, RBAC, or generic security framework while the app is lo
 - mock interview never changes stage;
 - follow-up drafting never marks sent;
 - Pi timeout, cancel, and disposal through fake sessions;
-- scrape session has only two custom tools;
+- adaptive scrape sessions expose only the four bounded custom tools;
 - other Pi sessions have no tools;
 - document path containment;
 - PDF page count and text extraction.
@@ -1015,7 +1019,7 @@ RUN_LATEX_LIVE=1
 
 Start with small samples:
 
-- one scrape query with at most five jobs;
+- one bounded adaptive scrape with batches of up to 25 jobs;
 - three ranking outcomes: strong, borderline, mismatch;
 - one document generation;
 - three interview chat turns;
@@ -1061,8 +1065,8 @@ Build only:
 - React smoke page;
 - SQLite smoke;
 - Pi no-tool `OK` response;
-- Pi custom-tool session exposing only `searchJobs` and `fetchJobDetails`;
-- one real source search returning at most five jobs;
+- Pi custom-tool session exposing the four bounded adaptive scrape tools;
+- one bounded source search returning up to 25 jobs;
 - cancellation/disposal check;
 - LaTeX command smoke.
 
@@ -1074,8 +1078,8 @@ Exit:
 - [x] Default `searchJobs` and `fetchJobDetails` wrap the vendored `freehire-search` CLI instead of reimplementing it.
 - [x] Pi SDK works on Node 24.
 - [x] built-in tools and resource discovery are disabled.
-- [x] custom-tool session exposes only two scrape tools.
-- [x] one real source returns structured jobs; the live source check returned five FreeHire results.
+- [x] adaptive custom-tool session exposes only four scrape tools;
+- [x] one source returns a bounded structured job batch.
 - [x] Pi cannot return an accepted job not produced by a tool.
 - [x] SQLite and LaTeX wrappers work on Windows.
 
@@ -1232,8 +1236,8 @@ Create a new project in a new work directory using:
 Do not modify ai-job-search. Use ponytail full. Implement Phase 0 only:
 reuse `vendor/ai-job-search-skills` without rewriting it or copying generated folders;
 run the default freehire-search CLI's existing tests; create one package,
-Pi SDK no-tool smoke, exactly two restricted tools wrapping the existing
-freehire-search CLI, one live search with at most five results, SQLite smoke,
+Pi SDK no-tool smoke, four bounded adaptive tools wrapping the existing
+freehire-search CLI, and one bounded search with batches up to 25 jobs.
 Fastify/React smoke, cancellation/disposal, and LaTeX command smoke. Run every
 Phase 0 check, then stop and report real output.
 ```

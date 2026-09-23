@@ -4,7 +4,7 @@ import type { CustomHtmlField, CustomJobSource, CustomSourceParser } from "../sh
 
 export const CUSTOM_SOURCE_TIMEOUT_MS = 10_000;
 export const CUSTOM_SOURCE_MAX_RESPONSE_BYTES = 1_000_000;
-export const CUSTOM_SOURCE_MAX_RESULTS = 5;
+export const CUSTOM_SOURCE_MAX_RESULTS = 25;
 
 export type CustomSourceFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -61,13 +61,13 @@ function templateBase(template: string): URL {
   return new URL(template.replace(/\{\{[^{}]+\}\}/g, "placeholder"));
 }
 
-async function readResponse(response: Response, maxBytes: number): Promise<string> {
-  if (!response.ok) throw new Error(`Custom source returned HTTP ${response.status}.`);
+async function readResponse(response: Response, maxBytes: number, label: string): Promise<string> {
+  if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}.`);
   const declared = response.headers.get("content-length");
-  if (declared && Number(declared) > maxBytes) throw new Error("Custom source response is too large.");
+  if (declared && Number(declared) > maxBytes) throw new Error(`${label} response is too large.`);
   if (!response.body) {
     const text = await response.text();
-    if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error("Custom source response is too large.");
+    if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error(`${label} response is too large.`);
     return text;
   }
   const reader = response.body.getReader();
@@ -80,7 +80,7 @@ async function readResponse(response: Response, maxBytes: number): Promise<strin
       total += next.value.byteLength;
       if (total > maxBytes) {
         await reader.cancel();
-        throw new Error("Custom source response is too large.");
+        throw new Error(`${label} response is too large.`);
       }
       chunks.push(next.value);
     }
@@ -90,19 +90,48 @@ async function readResponse(response: Response, maxBytes: number): Promise<strin
   return new TextDecoder().decode(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
 }
 
-async function requestText(fetcher: CustomSourceFetch, url: string, signal: AbortSignal | undefined, timeoutMs: number, maxBytes: number): Promise<string> {
+export async function requestSourceText(
+  fetcher: CustomSourceFetch,
+  url: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  maxBytes: number,
+  options: { label?: string; redirect?: RequestRedirect; redirectHost?: string; headers?: HeadersInit } = {},
+): Promise<string> {
+  const label = options.label ?? "Custom source";
   const controller = new AbortController();
   const onAbort = () => controller.abort(signal?.reason);
-  const timer = setTimeout(() => controller.abort(new Error("Custom source request timed out.")), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new Error(`${label} request timed out.`)), timeoutMs);
   if (signal) {
     if (signal.aborted) onAbort();
     else signal.addEventListener("abort", onAbort, { once: true });
   }
   try {
-    return await readResponse(await fetcher(url, { signal: controller.signal, redirect: "error" }), maxBytes);
+    const redirect = options.redirect ?? "error";
+    let currentUrl = url;
+    let response: Response | undefined;
+    for (let redirects = 0; ; redirects++) {
+      response = await fetcher(currentUrl, {
+        signal: controller.signal,
+        redirect: redirect === "follow" ? "manual" : redirect,
+        headers: options.headers,
+      });
+      if (redirect !== "follow" || response.status < 300 || response.status >= 400) break;
+      if (redirects >= 3) throw new Error(`${label} redirected too many times.`);
+      const location = response.headers.get("location");
+      if (!location || !options.redirectHost) throw new Error(`${label} returned an unsafe redirect.`);
+      let next: URL;
+      try { next = new URL(location, currentUrl); }
+      catch { throw new Error(`${label} returned an invalid redirect.`); }
+      if (next.protocol !== "https:" || next.hostname !== options.redirectHost || next.port || next.username || next.password) throw new Error(`${label} redirect leaves the allowed host.`);
+      await response.body?.cancel();
+      currentUrl = next.toString();
+    }
+    if (!response) throw new Error(`${label} request did not return a response.`);
+    return await readResponse(response, maxBytes, label);
   } catch (error) {
     if (controller.signal.aborted && signal?.aborted) throw error;
-    if (controller.signal.aborted) throw new Error("Custom source request timed out.");
+    if (controller.signal.aborted) throw new Error(`${label} request timed out.`);
     throw error;
   } finally {
     clearTimeout(timer);
@@ -274,13 +303,13 @@ export function createCustomSourceAdapter(sourceValue: CustomJobSource, options:
   return {
     async search(query: string, location: string, limit: number, signal?: AbortSignal) {
       const url = interpolate(source.searchUrlTemplate, { query, location, limit });
-      const body = await requestText(fetcher, url, signal, timeoutMs, maxBytes);
+      const body = await requestSourceText(fetcher, url, signal, timeoutMs, maxBytes);
       const results = parseSearch(source.parser, body, searchBase, limit);
       return { meta: { count: results.length }, results };
     },
     async detail(sourceId: string, expectedUrl: string, signal?: AbortSignal) {
       const url = interpolate(source.detailUrlTemplate, { id: sourceId, url: expectedUrl });
-      const body = await requestText(fetcher, url, signal, timeoutMs, maxBytes);
+      const body = await requestSourceText(fetcher, url, signal, timeoutMs, maxBytes);
       const detail = parseDetail(source.parser, body, detailBase);
       if (detail.id !== sourceId || normalizeUrl(detail.url) !== normalizeUrl(expectedUrl)) throw new Error(`${source.label} detail provenance mismatch`);
       return detail;

@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AllSourcesFailedError, createAgentSearchExecutor, type ScrapeContext } from "../src/server/runs.js";
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
-import { createScrapeTools } from "../src/server/scrape.js";
+import { createScrapeTools, type ScrapeTools, type ScrapeToolsOptions } from "../src/server/scrape.js";
 import { createAgentSearchTools, type AgentSearchTools } from "../src/server/search/tools.js";
-import { AgentSearchState, SearchBudgetExceededError, SearchNotFinishedError, includesCriterion } from "../src/server/search/state.js";
+import { AgentSearchState, SearchBudgetExceededError, SearchCoverageError, SearchNotFinishedError, includesCriterion, passesHardSearchConstraints, resolveSearchBudget } from "../src/server/search/state.js";
 import type { PiSessionLike } from "../src/server/pi.js";
 import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -18,13 +18,19 @@ function textResult(value: unknown) {
 }
 
 function sourceFactory(runCli: (args: string[]) => Promise<{ code: number; stderr: string; stdout: string }>) {
-  return (options: Parameters<typeof createScrapeTools>[0]) => createScrapeTools({ ...options, runCli });
+  return (options: ScrapeToolsOptions) => createScrapeTools({ ...options, runCli });
 }
 
 function makeAgentTools(runCli: (args: string[]) => Promise<{ code: number; stderr: string; stdout: string }>, budget: Record<string, number> = {}) {
   const state = new AgentSearchState({ goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] }, budget });
   return createAgentSearchTools({ state, sourceTools: new Map([["freehire", createScrapeTools({ source: "freehire", runCli })]]) });
 }
+test("default search preferences stay optional for profile-led discovery", () => {
+  assert.deepEqual(defaultCriteria.roles, []);
+  assert.deepEqual(defaultCriteria.locations, []);
+  assert.deepEqual(defaultCriteria.keywords, []);
+  assert.deepEqual(defaultCriteria.employmentTypes, []);
+});
 
 const detail = (id: string, url: string) => ({ id, title: "Backend Engineer", url, description: "Full posting for the selected job." });
 
@@ -135,6 +141,8 @@ test("same-run provenance is qualified by source and trajectory records the harn
   await tools.searchJobs.execute("freehire-search", { source: "freehire", query: "engineer", location: "", limit: 1 }, undefined, undefined, undefined as never);
   await assert.rejects(tools.fetchJobDetails.execute("wrong-source", { source: "linkedin", resultId: "freehire-job" }, undefined, undefined, undefined as never), /was not returned/);
   await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never);
+  const unavailable = state.reserveSearch({ source: "linkedin", query: "engineer", location: "", limit: 1 });
+  state.failSearch(unavailable, new Error("provider unavailable"));
   await tools.finishSearch.execute("finish", { reason: "Enough evidence collected." }, undefined, undefined, undefined as never);
   assert.deepEqual(tools.provenance.get("freehire\u0000freehire-job"), "https://jobs.example.test/freehire");
   assert.ok(events.some((event) => event.type === "search_started"));
@@ -183,12 +191,97 @@ test("search state records adaptive yield, duplicate provenance, coverage, and t
   assert.equal(snapshot.coverage["keyword:typescript"], "medium");
   assert.equal(snapshot.marginalUtility.repeatedZeroYieldSearches, 2);
   assert.match(snapshot.marginalUtility.recommendation, /Avoid repeating/);
-  assert.deepEqual(snapshot.sourceStats.freehire, { calls: 3, searchCalls: 3, detailCalls: 0, discoveredCount: 3, rawHits: 3, uniqueCount: 1, uniqueJobs: 1, duplicateCount: 2, duplicateRate: 2 / 3, promisingJobs: 0, enrichedCount: 0, errors: 0 });
+  const freehireStats = snapshot.sourceStats.freehire;
+  assert.deepEqual({
+    searches: freehireStats.searches,
+    uniqueHits: freehireStats.uniqueHits,
+    promisingHits: freehireStats.promisingHits,
+    averageYield: freehireStats.averageYield,
+    lastYield: freehireStats.lastYield,
+    pagesVisited: freehireStats.pagesVisited,
+  }, { searches: 3, uniqueHits: 1, promisingHits: 0, averageYield: 1 / 3, lastYield: 0, pagesVisited: [] });
+  assert.equal(freehireStats.queryHistory.length, 3);
   state.finish("Coverage is sufficient.", [], "coverage_sufficient");
   assert.equal(state.assertFinished()?.reasonCategory, "coverage_sufficient");
   const empty = new AgentSearchState({ goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] } });
+  const failedEmpty = empty.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 1 });
+  empty.failSearch(failedEmpty, new Error("source unavailable"));
   empty.finish("No relevant jobs found.");
   assert.equal(empty.assertFinished()?.reasonCategory, "no_results");
+});
+test("search telemetry reports only rows consumed by the result budget", () => {
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 1, maxTotalResults: 2 },
+  });
+  const reservation = state.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 5 });
+  state.completeSearch(reservation, [
+    { source: "freehire", sourceId: "job-1", title: "Engineer", url: "https://jobs.example.test/job-1" },
+    { source: "freehire", sourceId: "job-2", title: "Engineer", url: "https://jobs.example.test/job-2" },
+    { source: "freehire", sourceId: "job-3", title: "Engineer", url: "https://jobs.example.test/job-3" },
+  ]);
+  const snapshot = state.snapshot();
+  const attempt = snapshot.attempts[0]!;
+  const stats = snapshot.sourceStats.freehire;
+  assert.equal(snapshot.discoveredCount, 2);
+  assert.equal(attempt.resultCount, 2);
+  assert.equal(attempt.uniqueResultCount, 2);
+  assert.equal(attempt.duplicateCount, 0);
+  assert.equal(stats.rawHits, 2);
+  assert.equal(stats.duplicateRate, 0);
+  assert.equal(stats.queryHistory[0]?.returnedHits, 2);
+  assert.equal(snapshot.paths[0]?.raw, 2);
+});
+
+
+test("finish requires every enabled source or an explicit unavailable-source exception", () => {
+  const events: Array<{ type: string; payload?: unknown }> = [];
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire", "linkedin"] },
+    budget: { maxSearchCalls: 4, maxTotalResults: 4 },
+    runId: "coverage-test",
+    trajectory: (_runId, event) => events.push(event),
+  });
+  const first = state.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 1 });
+  state.completeSearch(first, []);
+  assert.throws(
+    () => state.finish("The budget is exhausted.", [], "budget_exhausted"),
+    /budget_exhausted is valid only/,
+  );
+  assert.equal(state.termination, null);
+  const categoryRejection = events.at(-1);
+  assert.equal(categoryRejection?.type, "search_finish_rejected");
+  assert.equal((categoryRejection?.payload as { reasonCategory?: unknown }).reasonCategory, "budget_exhausted");
+  assert.throws(
+    () => state.finish("One source returned enough candidates.", [], "candidates_sufficient"),
+    error => error instanceof SearchCoverageError && error.unsearchedSources.length === 1 && error.unsearchedSources[0] === "linkedin",
+  );
+  assert.equal(state.termination, null);
+  const inferred = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 4, maxTotalResults: 4 },
+  });
+  const inferredSearch = inferred.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 1 });
+  inferred.completeSearch(inferredSearch, []);
+  inferred.finish("The limit of useful candidates/searches has been reached.");
+  assert.equal(inferred.assertFinished()?.reasonCategory, "other");
+  const available = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 4, maxTotalResults: 4 },
+  });
+  const availableSearch = available.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 1 });
+  available.completeSearch(availableSearch, []);
+  available.finish("The budget remains for another pass.");
+  assert.equal(available.assertFinished()?.reasonCategory, "other");
+  const unavailable = state.reserveSearch({ source: "linkedin", query: "engineer", location: "", limit: 1 });
+  state.failSearch(unavailable, new Error("provider unavailable"));
+  state.finish("No usable source data remained.", [], "no_results");
+  assert.deepEqual(state.snapshot().sourceCoverage, {
+    required: ["freehire", "linkedin"],
+    searched: ["freehire", "linkedin"],
+    unavailable: ["linkedin"],
+    unsearched: [],
+  });
 });
 
 test("unicode criteria keep punctuation and reject empty normalized criteria", () => {
@@ -225,7 +318,16 @@ test("criterion matching respects token boundaries and technology punctuation", 
   assert.equal(includesCriterion(".NET Engineer", ".NET"), true);
 });
 
-test("structured role and location coverage ignores posting narrative", () => {
+test("hard constraints scan full postings and reject negative remote labels", () => {
+  const criteria = { ...defaultCriteria, remoteOnly: true, excludeKeywords: ["PHP"] };
+  const longPosting = `${"x".repeat(32_001)} PHP`;
+  assert.equal(passesHardSearchConstraints({ title: "Backend Engineer", company: "Example", location: "Remote" }, criteria, longPosting), false);
+  assert.equal(passesHardSearchConstraints({ title: "Backend Engineer", company: "Example", location: "Not remote" }, { ...defaultCriteria, remoteOnly: true }), false);
+  assert.equal(passesHardSearchConstraints({ title: "Backend Engineer", company: "Example", location: "non-remote" }, { ...defaultCriteria, remoteOnly: true }), false);
+  assert.equal(passesHardSearchConstraints({ title: "Backend Engineer", company: "Example", location: "Hybrid remote" }, { ...defaultCriteria, remoteOnly: true }), false);
+});
+
+test("soft role and location preferences remain visible in coverage", () => {
   const state = new AgentSearchState({
     goal: {
       criteria: { ...defaultCriteria, roles: ["Backend Engineer"], locations: ["Japan"] },
@@ -246,7 +348,7 @@ test("structured role and location coverage ignores posting narrative", () => {
   assert.equal(snapshot.coverage["role:backend engineer"], "weak");
   assert.equal(snapshot.coverage["location:japan"], "weak");
   assert.equal(snapshot.coverageSufficient, false);
-  assert.equal(snapshot.sourceStats.freehire.promisingJobs, 0);
+  assert.equal(snapshot.sourceStats.freehire.promisingJobs, 1);
 });
 
 test("long detail evidence remains searchable beyond the criterion bound", () => {
@@ -291,7 +393,7 @@ test("keyword coverage stays unknown until every promising candidate has detail"
   assert.equal(state.snapshot().coverage["keyword:java"], "weak");
 });
 
-test("coverage requires each dimension to be satisfied by discovery candidates", () => {
+test("coverage reports each preference dimension for discovery candidates", () => {
   const state = new AgentSearchState({
     goal: {
       criteria: {
@@ -309,15 +411,15 @@ test("coverage requires each dimension to be satisfied by discovery candidates",
     { source: "freehire", sourceId: "c", title: "Platform Engineer", location: "Singapore", url: "https://jobs.example.test/c" },
   ]);
   const snapshot = state.snapshot();
-  assert.equal(snapshot.coverage["role:backend engineer"], "weak");
+  assert.equal(snapshot.coverage["role:backend engineer"], "medium");
   assert.equal(snapshot.coverage["role:platform engineer"], "medium");
-  assert.equal(snapshot.coverage["location:japan"], "weak");
+  assert.equal(snapshot.coverage["location:japan"], "medium");
   assert.equal(snapshot.coverage["location:singapore"], "medium");
-  assert.equal(snapshot.coverageSufficient, false);
+  assert.equal(snapshot.coverageSufficient, true);
 });
 
 
-test("detail evidence drives keyword relevance and refreshes promising yields", () => {
+test("keyword coverage remains a preference signal after detail", () => {
   const state = new AgentSearchState({
     goal: {
       criteria: { ...defaultCriteria, roles: ["Backend Engineer"], keywords: ["TypeScript"] },
@@ -335,8 +437,8 @@ test("detail evidence drives keyword relevance and refreshes promising yields", 
   assert.equal(state.snapshot().attempts[0]?.promisingResultCount, 1);
   const detailReservation = state.reserveDetail({ source: "freehire", resultId: "backend-1" });
   state.completeDetail(detailReservation, "Backend Engineer using Go.");
-  assert.equal(state.snapshot().attempts[0]?.promisingResultCount, 0);
-  assert.equal(state.snapshot().sourceStats.freehire.promisingJobs, 0);
+  assert.equal(state.snapshot().attempts[0]?.promisingResultCount, 1);
+  assert.equal(state.snapshot().sourceStats.freehire.promisingJobs, 1);
   assert.equal(state.snapshot().coverage["keyword:typescript"], "weak");
   const refreshedDetail = state.reserveDetail({ source: "freehire", resultId: "backend-1" });
   state.completeDetail(refreshedDetail, "Backend Engineer using TypeScript.");
@@ -346,7 +448,27 @@ test("detail evidence drives keyword relevance and refreshes promising yields", 
   assert.equal(state.snapshot().coverageSufficient, true);
 });
 
-test("marginal utility reports promising yield instead of unique yield", () => {
+test("detail evidence updates promising hit counters", () => {
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria, excludeKeywords: ["PHP"] }, enabledSources: ["freehire"] },
+  });
+  const search = state.reserveSearch({ source: "freehire", query: "backend", location: "", limit: 1 });
+  state.completeSearch(search, [{
+    source: "freehire",
+    sourceId: "backend-php-detail",
+    title: "Backend Engineer",
+    company: "Example",
+    location: "Remote",
+    url: "https://jobs.example.test/backend-php-detail",
+  }]);
+  assert.equal(state.snapshot().sourceStats.freehire.promisingHits, 1);
+  const detail = state.reserveDetail({ source: "freehire", resultId: "backend-php-detail" });
+  state.completeDetail(detail, "PHP Developer role.");
+  assert.equal(state.snapshot().attempts[0]?.promisingResultCount, 0);
+  assert.equal(state.snapshot().sourceStats.freehire.promisingJobs, 0);
+  assert.equal(state.snapshot().sourceStats.freehire.promisingHits, 0);
+});
+test("marginal utility counts profile-compatible candidates", () => {
   const state = new AgentSearchState({
     goal: { criteria: { ...defaultCriteria, roles: ["Backend Engineer"] }, enabledSources: ["freehire"] },
     budget: { maxSearchCalls: 3, maxTotalResults: 10 },
@@ -358,9 +480,9 @@ test("marginal utility reports promising yield instead of unique yield", () => {
   ]);
   const marginal = state.snapshot().marginalUtility;
   assert.equal(marginal.recentUniqueJobs, 2);
-  assert.equal(marginal.recentPromisingJobs, 0);
-  assert.equal(marginal.score, 0);
-  assert.equal(marginal.status, "low");
+  assert.equal(marginal.recentPromisingJobs, 2);
+  assert.equal(marginal.score, 2);
+  assert.equal(marginal.status, "high");
 });
 
 test("search tools reject an unconfigured enabled source before adapter execution", async () => {
@@ -386,7 +508,7 @@ test("same goal trajectories choose the next source from inspected state", async
   let activeRunId = "";
   let currentTools: AgentSearchTools | undefined;
   const calls: string[] = [];
-  const createSourceTools = (options: Parameters<typeof createScrapeTools>[0]) => createScrapeTools({
+  const createSourceTools = (options: ScrapeToolsOptions) => createScrapeTools({
     ...options,
     runCli: async args => {
       if (args[0] !== "search") {
@@ -419,10 +541,11 @@ test("same goal trajectories choose the next source from inspected state", async
       };
       await call("searchJobs", { source: "freehire", query: "backend", location: "", limit: 1 });
       let inspected = textResult(await call("inspectSearchState", {}));
-      while (!inspected.coverageSufficient) {
+      while (!inspected.coverageSufficient || inspected.sourceCoverage.unsearched.length) {
         if (activeRunId === "trajectory-b" && inspected.sourceStats.freehire.duplicateCount > 0) assert.equal(inspected.marginalUtility.status, "low");
-        const source = inspected.marginalUtility.status === "low" && inspected.sourceStats.freehire.duplicateCount > 0 ? "linkedin" : "freehire";
-        const query = "backend alternate";
+        const uncoveredSource = inspected.coverageSufficient ? inspected.sourceCoverage.unsearched[0] : undefined;
+        const source = uncoveredSource ?? (inspected.marginalUtility.status === "low" && inspected.sourceStats.freehire.duplicateCount > 0 ? "linkedin" : "freehire");
+        const query = uncoveredSource ? "backend" : "backend alternate";
         await call("searchJobs", { source, query, location: source === "linkedin" ? "Remote" : "", limit: 1 });
         inspected = textResult(await call("inspectSearchState", {}));
       }
@@ -448,6 +571,8 @@ test("same goal trajectories choose the next source from inspected state", async
 
   assert.deepEqual(calls.filter(call => call.startsWith("trajectory-a:")).map(call => call.split(":").slice(1, 3)), [
     ["searchJobs", "freehire"],
+    ["inspectSearchState", ""],
+    ["searchJobs", "linkedin"],
     ["inspectSearchState", ""],
     ["finishSearch", ""],
   ]);
@@ -489,17 +614,38 @@ test("agent executor uses one Pi session and rejects a missing finishSearch", as
     },
   });
   const context = {
-    profile: "Backend engineer",
+    profile: JSON.stringify({
+      identity: { headline: "Platform Engineer", city: "Jakarta", country: "Indonesia" },
+      workPreferences: { targetRoles: ["Platform Engineer"], remotePreference: "Remote", dealBreakers: [] },
+      experience: [{ title: "Backend Engineer", location: "Jakarta" }],
+      skills: [{ name: "TypeScript" }],
+    }),
     criteria: { ...defaultCriteria, maxJobsPerRun: 1 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
     signal: new AbortController().signal,
   } satisfies ScrapeContext;
   const output = await run(context);
   assert.equal(sessionCount, 1);
+  assert.deepEqual(tools!.state.goal.criteria.locations, ["Remote"]);
   assert.doesNotMatch(prompt, /fetch every returned/i);
   assert.ok(prompt.includes(`Return only JSON matching ${JSON.stringify({ jobs: [{ sourceId: "", source: "", url: "", company: "", role: "", location: "", posting: "", score: 0, reason: "", strengths: [], gaps: [] }] })}. Maximum jobs: 1. Use only source IDs and URLs returned by the tools.`));
+  assert.match(prompt, /TRUSTED PROFILE SEARCH HINTS/);
+  assert.match(prompt, /Platform Engineer/);
+  assert.match(prompt, /Remote/);
+  assert.match(prompt, /TypeScript/);
   assert.match(prompt, /keyword coverage remains unknown until every promising candidate has detail/i);
   assert.equal((output.result as { jobs: Array<{ posting: string }> }).jobs[0]?.posting, "Full posting for the selected job.");
+  const cityOnlyContext = {
+    ...context,
+    profile: JSON.stringify({
+      identity: { headline: "Platform Engineer", city: "Jakarta", country: "Indonesia" },
+      workPreferences: { targetRoles: ["Platform Engineer"], remotePreference: "", dealBreakers: [] },
+      experience: [{ title: "Backend Engineer", location: "Jakarta" }],
+      skills: [{ name: "TypeScript" }],
+    }),
+  };
+  await run(cityOnlyContext);
+  assert.deepEqual(tools!.state.goal.criteria.locations, ["Jakarta"]);
 
   const missingFinish = createAgentSearchExecutor({
     loadGuidance: async () => "bounded guidance",
@@ -515,6 +661,59 @@ test("agent executor uses one Pi session and rejects a missing finishSearch", as
   assert.throws(() => unfinished.state.assertFinished(), SearchNotFinishedError);
 });
 
+
+test("profile-led multi-source search scales coverage budget across every enabled source", async () => {
+  class EmptySession implements PiSessionLike {
+    subscribe() { return () => {}; }
+    async prompt() {}
+    async abort() {}
+    dispose() {}
+  }
+  const enabledSources = ["freehire", "linkedin", "tokyodev", "japan-dev", "relocate-me", "ycombinator-remote", "indeed-id"] as const;
+  let tools: AgentSearchTools | undefined;
+  let prompt = "";
+  const searched: string[] = [];
+  const createSourceTools = (options: ScrapeToolsOptions) => ({
+    searchJobs: { execute: async () => ({ content: [{ type: "text", text: JSON.stringify({ meta: { count: 0 }, results: [] }) }] }) },
+    fetchJobDetails: { execute: async () => { throw new Error("detail should not be called"); } },
+    manifest: { label: String(options?.source) },
+    warnings: [],
+  } as unknown as ScrapeTools);
+  const run = createAgentSearchExecutor({
+    loadGuidance: async () => "bounded guidance",
+    createSourceTools,
+    createSession: async (_settings, value) => { tools = value; return new EmptySession(); },
+    runPi: async options => {
+      prompt = options.prompt;
+      await options.createSession();
+      for (const source of enabledSources) {
+        searched.push(source);
+        await tools!.searchJobs.execute(`search-${source}`, { source, query: "platform engineer", location: "Remote", limit: 1 }, undefined, undefined, undefined as never);
+      }
+      const inspected = textResult(await tools!.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+      assert.equal(inspected.remaining.maxSearchCalls, 13);
+      assert.deepEqual(inspected.sourceCoverage.unsearched, []);
+      await tools!.finishSearch.execute("finish", { reason: "Every enabled source returned no matches.", reasonCategory: "no_results" }, undefined, undefined, undefined as never);
+      options.onAssistantText?.(JSON.stringify({ jobs: [] }));
+    },
+  });
+  const context = {
+    profile: JSON.stringify({
+      identity: { headline: "Platform Engineer", summary: "Reliable services" },
+      workPreferences: { targetRoles: [], remotePreference: "Remote preferred", dealBreakers: [] },
+      skills: [{ name: "TypeScript" }],
+    }),
+    criteria: { ...defaultCriteria, maxJobsPerRun: enabledSources.length },
+    settings: { ...defaultSettings, enabledSources: [...enabledSources] },
+    searchBudget: { maxQueryVariantsPerSource: 1 },
+    signal: new AbortController().signal,
+  } satisfies ScrapeContext;
+  const output = await run(context);
+  assert.deepEqual(searched, [...enabledSources]);
+  assert.deepEqual((output.result as { jobs: unknown[] }).jobs, []);
+  assert.match(prompt, /saved candidate profile is the primary discovery context/i);
+  assert.match(prompt, /TypeScript/);
+});
 test("agent executor follows a faux Pi observation loop", async () => {
   const calls: string[] = [];
   const events: Array<{ type: string; kind: string; payload?: unknown }> = [];
@@ -672,4 +871,259 @@ test("agent executor still rejects an empty finish when every search action fail
     signal: new AbortController().signal,
   } satisfies ScrapeContext;
   await assert.rejects(run(context), AllSourcesFailedError);
+});
+
+test("resolved search budget exposes bounded exploratory defaults", () => {
+  const budget = resolveSearchBudget({}, 50, 3);
+  assert.deepEqual({
+    targetUniqueJobs: budget.targetUniqueJobs,
+    maxSearchCalls: budget.maxSearchCalls,
+    maxDetailCalls: budget.maxDetailCalls,
+    maxTotalResults: budget.maxTotalResults,
+    minSearchesPerSource: budget.minSearchesPerSource,
+    maxSearchesPerSource: budget.maxSearchesPerSource,
+    maxPagesPerQuery: budget.maxPagesPerQuery,
+    maxQueryVariantsPerSource: budget.maxQueryVariantsPerSource,
+  }, {
+    targetUniqueJobs: 50,
+    maxSearchCalls: 20,
+    maxDetailCalls: 30,
+    maxTotalResults: 100,
+    minSearchesPerSource: 1,
+    maxSearchesPerSource: 12,
+    maxPagesPerQuery: 3,
+    maxQueryVariantsPerSource: 6,
+  });
+});
+
+test("adaptive recommendations cover sources and continue productive pagination", async () => {
+  const calls: Array<{ source: string; args: string[] }> = [];
+  const job = (source: string, id: string) => ({
+    id,
+    title: "Backend Engineer",
+    company: "Example",
+    location: "Remote",
+    url: source === "linkedin" ? `https://www.linkedin.com/jobs/view/${id}` : `https://jobs.example.test/${id}`,
+  });
+  const createSourceTools = (options: ScrapeToolsOptions) => createScrapeTools({
+    ...options,
+    runCli: async args => {
+      calls.push({ source: options.source ?? "", args });
+      if (args[0] !== "search") return { code: 0, stderr: "", stdout: JSON.stringify(detail("fh-1", "https://jobs.example.test/fh-1")) };
+      const pageIndex = args.indexOf("--page");
+      const page = pageIndex >= 0 ? Number(args[pageIndex + 1]) : 1;
+      const source = options.source ?? "";
+      const results = source === "freehire"
+        ? page === 2 ? [job(source, "fh-3"), job(source, "fh-4")] : [job(source, "fh-1"), job(source, "fh-2")]
+        : [job(source, "li-1")];
+      return {
+        code: 0,
+        stderr: "",
+        stdout: JSON.stringify(source === "freehire"
+          ? { meta: { count: results.length, page, total: 26 }, results }
+          : { meta: { count: results.length }, results }),
+      };
+    },
+  });
+  const tools = createAgentSearchTools({
+    sources: [
+      { key: "freehire", querySeeds: ["backend engineer"] },
+      { key: "linkedin", querySeeds: ["backend engineer"] },
+    ],
+    goal: { criteria: { ...defaultCriteria, roles: ["Backend Engineer"], locations: ["Remote"], maxJobsPerRun: 3 }, enabledSources: ["freehire", "linkedin"] },
+    budget: { targetUniqueJobs: 5, maxSearchCalls: 4, maxTotalResults: 20 },
+    createSourceTools,
+  });
+  const inspect = async () => textResult(await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+  let state = await inspect();
+  assert.deepEqual({ source: state.nextSearch.source, query: state.nextSearch.query, reason: state.nextSearch.reason }, { source: "freehire", query: "backend engineer", reason: "source_floor" });
+  await tools.searchJobs.execute("freehire-page-1", { source: "freehire", query: "backend engineer", location: "Remote", limit: 25 }, undefined, undefined, undefined as never);
+  state = await inspect();
+  assert.equal(state.nextSearch.source, "linkedin");
+  assert.equal(state.nextSearch.reason, "source_floor");
+  await tools.searchJobs.execute("linkedin-page-1", { source: "linkedin", query: "backend engineer", location: "Remote", limit: 25 }, undefined, undefined, undefined as never);
+  state = await inspect();
+  assert.deepEqual({ source: state.nextSearch.source, page: state.nextSearch.page, reason: state.nextSearch.reason }, { source: "freehire", page: 2, reason: "paginate" });
+  await assert.rejects(
+    tools.finishSearch.execute("premature-finish", { reason: "Promising candidates found.", reasonCategory: "candidates_sufficient" }, undefined, undefined, undefined as never),
+    /adaptive search still has viable work/i,
+  );
+  await tools.searchJobs.execute("freehire-page-2", { source: "freehire", query: "backend engineer", location: "Remote", limit: 25, page: 2 }, undefined, undefined, undefined as never);
+  state = await inspect();
+  assert.equal(state.plannerStop, "target_reached");
+  assert.equal(state.uniqueCount, 5);
+  const finished = textResult(await tools.finishSearch.execute("finish", { reason: "Target unique jobs reached.", reasonCategory: "candidates_sufficient" }, undefined, undefined, undefined as never));
+  assert.equal(finished.finished, true);
+  const paginationCall = calls.find(call => call.source === "freehire" && call.args.includes("--page"));
+  assert.equal(paginationCall?.args[paginationCall.args.indexOf("--page") + 1], "2");
+});
+test("adaptive planner keeps source fallbacks as planner seeds", () => {
+  let sourceOptions: ScrapeToolsOptions | undefined;
+  const tools = createAgentSearchTools({
+    sources: [{ key: "japan-dev", fallbackQueries: ["backend", "platform"] }],
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["japan-dev"] },
+    budget: { targetUniqueJobs: 5, maxSearchCalls: 2, maxDetailCalls: 1, maxTotalResults: 5, maxQueryVariantsPerSource: 2 },
+    createSourceTools: options => {
+      sourceOptions = options;
+      return createScrapeTools({ ...options, runCli: async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) }) });
+    },
+  });
+  assert.equal(sourceOptions?.fallbackQueries, undefined);
+  assert.equal(tools.state.snapshot().nextSearch?.query, "backend");
+});
+
+test("adaptive finish requires planner exhaustion after candidate enrichment", () => {
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria, roles: ["Backend Engineer"], maxJobsPerRun: 1 }, enabledSources: ["freehire"] },
+    budget: { targetUniqueJobs: 10, maxSearchCalls: 3, maxDetailCalls: 1, maxTotalResults: 10, maxQueryVariantsPerSource: 2 },
+    adaptive: true,
+    querySeeds: new Map([["freehire", ["backend", "platform"]]]),
+  });
+  const search = state.reserveSearch({ source: "freehire", query: "backend", location: "", limit: 1 });
+  state.completeSearch(search, [{ source: "freehire", sourceId: "job-1", title: "Backend Engineer", url: "https://jobs.example.test/job-1" }]);
+  const detailReservation = state.reserveDetail({ source: "freehire", resultId: "job-1" });
+  state.completeDetail(detailReservation, "Backend Engineer platform APIs.");
+  assert.equal(state.snapshot().nextSearch?.query, "platform");
+  assert.throws(() => state.finish("One enriched candidate is sufficient.", [], "candidates_sufficient"), /adaptive search still has viable work/i);
+  const next = state.reserveSearch({ source: "freehire", query: "platform", location: "", limit: 1 });
+  state.completeSearch(next, []);
+  assert.equal(state.snapshot().plannerStop, "paths_exhausted");
+  assert.equal(state.finish("All useful query paths are exhausted.", [], "candidates_sufficient")?.reasonCategory, "candidates_sufficient");
+});
+
+
+test("adaptive recommendations mutate low-yield queries without equivalent repeats", async () => {
+  const queries: string[] = [];
+  const tools = createAgentSearchTools({
+    sources: [{ key: "freehire", querySeeds: ["backend engineer", "backend", "engineer"] }],
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] },
+    budget: { targetUniqueJobs: 10, maxSearchCalls: 4, maxTotalResults: 10 },
+    createSourceTools: options => createScrapeTools({
+      ...options,
+      runCli: async args => {
+        if (args[0] === "search") queries.push(args[args.indexOf("--query") + 1] ?? "");
+        return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) };
+      },
+    }),
+  });
+  const inspect = async () => textResult(await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+  for (let index = 0; index < 3; index += 1) {
+    const state = await inspect();
+    assert.ok(state.nextSearch);
+    await tools.searchJobs.execute(`search-${index}`, {
+      source: state.nextSearch.source,
+      query: state.nextSearch.query,
+      location: state.nextSearch.location,
+      limit: state.nextSearch.limit,
+      ...(state.nextSearch.page ? { page: state.nextSearch.page } : {}),
+    }, undefined, undefined, undefined as never);
+  }
+  const exhausted = await inspect();
+  assert.equal(exhausted.nextSearch, null);
+  assert.equal(exhausted.plannerStop, "paths_exhausted");
+  assert.deepEqual(queries, ["backend engineer", "backend", "engineer"]);
+  await tools.finishSearch.execute("finish", { reason: "All deterministic query variants returned no jobs.", reasonCategory: "no_results" }, undefined, undefined, undefined as never);
+});
+test("adaptive planner derives deterministic query variants from a short seed", () => {
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] },
+    budget: { targetUniqueJobs: 10, maxSearchCalls: 3, maxTotalResults: 10, maxQueryVariantsPerSource: 3 },
+    adaptive: true,
+    querySeeds: { freehire: ["backend engineer"] },
+    sourceCapabilities: { freehire: false },
+  });
+  const first = state.reserveSearch({ source: "freehire", query: "backend engineer", location: "", limit: 25 });
+  state.completeSearch(first, []);
+  assert.equal(state.snapshot().nextSearch?.query, "backend");
+  const second = state.reserveSearch({ source: "freehire", query: "backend", location: "", limit: 25 });
+  state.completeSearch(second, []);
+  assert.equal(state.snapshot().nextSearch?.query, "engineer");
+});
+
+test("adaptive planner allocates productive sources before weaker variants", () => {
+  const hit = (source: string, id: string) => ({
+    source,
+    sourceId: id,
+    title: "Engineer",
+    company: "Example",
+    location: "Remote",
+    url: `https://jobs.example.test/${source}/${id}`,
+  });
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire", "linkedin", "tokyodev"] },
+    budget: { targetUniqueJobs: 50, maxSearchCalls: 8, maxTotalResults: 30, maxSearchesPerSource: 4, maxQueryVariantsPerSource: 3 },
+    adaptive: true,
+    querySeeds: {
+      freehire: ["backend"],
+      linkedin: ["backend"],
+      tokyodev: ["backend", "backend platform"],
+    },
+    sourceCapabilities: { freehire: false, linkedin: false, tokyodev: false },
+  });
+  const search = (source: string, query: string, hits: ReturnType<typeof hit>[]) => {
+    const reservation = state.reserveSearch({ source, query, location: "", limit: 25 });
+    state.completeSearch(reservation, hits);
+  };
+  assert.deepEqual(state.snapshot().nextSearch, {
+    source: "freehire",
+    query: "backend",
+    location: "",
+    limit: 25,
+    reason: "source_floor",
+  });
+  search("freehire", "backend", [hit("freehire", "fh-1")]);
+  assert.equal(state.snapshot().nextSearch?.source, "linkedin");
+  search("linkedin", "backend", []);
+  assert.equal(state.snapshot().nextSearch?.source, "tokyodev");
+  search("tokyodev", "backend", ["td-1", "td-2", "td-3", "td-4"].map(id => hit("tokyodev", id)));
+  assert.deepEqual({
+    source: state.snapshot().nextSearch?.source,
+    query: state.snapshot().nextSearch?.query,
+    reason: state.snapshot().nextSearch?.reason,
+  }, { source: "tokyodev", query: "backend platform", reason: "exploit_source" });
+  search("tokyodev", "backend platform", []);
+  assert.throws(
+    () => state.reserveSearch({ source: "tokyodev", query: "platform backend", location: "", limit: 1 }),
+    /equivalent source\/query\/location\/page path/i,
+  );
+});
+
+test("adaptive pagination follows cursors and enforces path caps", () => {
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria, locations: ["Remote"] }, enabledSources: ["freehire"] },
+    budget: { targetUniqueJobs: 50, maxSearchCalls: 8, maxTotalResults: 30, maxSearchesPerSource: 5, maxPagesPerQuery: 2, maxQueryVariantsPerSource: 2 },
+    adaptive: true,
+    querySeeds: { freehire: ["backend", "platform"] },
+    sourceCapabilities: { freehire: true },
+  });
+  const first = state.reserveSearch({ source: "freehire", query: "backend", location: "Remote", limit: 25 });
+  state.completeSearch(first, [{
+    source: "freehire",
+    sourceId: "fh-1",
+    title: "Backend Engineer",
+    company: "Example",
+    location: "Remote",
+    url: "https://jobs.example.test/fh-1",
+  }], { hasMore: true, nextCursor: "cursor-2", total: 4 });
+  assert.deepEqual(state.snapshot().nextSearch, {
+    source: "freehire",
+    query: "backend",
+    location: "Remote",
+    limit: 25,
+    cursor: "cursor-2",
+    reason: "paginate",
+  });
+  const second = state.reserveSearch({ source: "freehire", query: "backend", location: "Remote", limit: 25, cursor: "cursor-2" });
+  assert.equal(state.attempts.at(-1)?.repeatCount, 0);
+  state.completeSearch(second, [], { hasMore: true, nextCursor: "cursor-3", total: 4 });
+  assert.throws(
+    () => state.reserveSearch({ source: "freehire", query: "backend", location: "Remote", limit: 25, cursor: "cursor-3" }),
+    /maxPagesPerQuery/i,
+  );
+  const variant = state.reserveSearch({ source: "freehire", query: "platform", location: "Remote", limit: 25 });
+  state.completeSearch(variant, []);
+  assert.throws(
+    () => state.reserveSearch({ source: "freehire", query: "another", location: "Remote", limit: 25 }),
+    /maxQueryVariantsPerSource/i,
+  );
 });

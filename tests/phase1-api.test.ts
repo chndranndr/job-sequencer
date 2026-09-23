@@ -25,6 +25,41 @@ test("API saves configuration, runs scrape, filters discarded, and selection sta
   } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
 });
 
+test("criteria API accepts empty preferences for profile-led search", async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"pjs-criteria-")); const db=openDatabase(":memory:"); const app=await buildServer({dataDir:dir,db});
+  const criteria={roles:[],locations:[],remoteOnly:false,keywords:[],excludeKeywords:[],employmentTypes:[],maxJobsPerRun:10};
+  try {
+    const response=await app.inject({method:"PUT",url:"/api/criteria",payload:criteria});
+    assert.equal(response.statusCode,200);
+    assert.deepEqual(response.json(),criteria);
+  } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
+});
+
+
+test("scrape removes hard-excluded and non-remote results before persistence", async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"pjs-hard-filters-")); const db=openDatabase(":memory:");
+  const profile=createEmptyProfile();
+  const jobs=[
+    {sourceId:"php-1",source:"freehire",url:"https://example.test/php",company:"Model company",role:"PHP Developer",location:"Berlin",posting:"PHP role",score:95,reason:"fit",strengths:[],gaps:[]},
+    {sourceId:"berlin-1",source:"freehire",url:"https://example.test/berlin",company:"Model company",role:"PHP Developer",location:"Berlin",posting:"PHP role",score:95,reason:"fit",strengths:[],gaps:[]},
+    {sourceId:"remote-1",source:"freehire",url:"https://example.test/remote",company:"Model company",role:"PHP Developer",location:"Berlin",posting:"PHP role",score:95,reason:"fit",strengths:[],gaps:[]},
+  ];
+  const evidence=new Map([
+    ["freehire\u0000php-1",{source:"freehire",sourceId:"php-1",url:"https://example.test/php",title:"PHP Developer",company:"Legacy",location:"Remote",posting:"PHP role"}],
+    ["freehire\u0000berlin-1",{source:"freehire",sourceId:"berlin-1",url:"https://example.test/berlin",title:"Backend Engineer",company:"Berlin Labs",location:"Berlin",posting:"Backend role"}],
+    ["freehire\u0000remote-1",{source:"freehire",sourceId:"remote-1",url:"https://example.test/remote",title:"Backend Engineer",company:"Good",location:"Remote",posting:"Backend role"}],
+  ]);
+  const app=await buildServer({dataDir:dir,db,scrapeExecutor:async()=>({result:{jobs},provenance:new Map(jobs.map(job=>[job.sourceId,job.url])),evidence})});
+  try {
+    assert.equal((await app.inject({method:"PUT",url:"/api/profile",payload:{profile}})).statusCode,200);
+    assert.equal((await app.inject({method:"PUT",url:"/api/criteria",payload:{roles:[],locations:[],remoteOnly:true,keywords:[],excludeKeywords:[...Array.from({length:20},(_,index)=>`noise-${index}`),"PHP"],employmentTypes:[],maxJobsPerRun:10}})).statusCode,200);
+    const started=await app.inject({method:"POST",url:"/api/scrape"}); const done=await wait(app,started.json().runId);
+    assert.equal(done.status,"succeeded");
+    assert.deepEqual(done.summary,{jobsFound:1,recommended:1,discarded:0,duplicatesSkipped:0,errors:[],warnings:["2 job(s) removed by hard search preferences."]});
+    const stored=(await app.inject({url:"/api/jobs"})).json().jobs;
+    assert.equal(stored.length,1); assert.equal(stored[0].company,"Good"); assert.equal(stored[0].role,"Backend Engineer"); assert.equal(stored[0].location,"Remote"); assert.equal(stored[0].posting,"Backend role");
+  } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
+});
 test("available model endpoint returns provider-authenticated Pi model options", async()=>{
   const db=openDatabase(":memory:"); let requestedProvider="";
   const app=await buildServer({db,availableModels:async provider=>{requestedProvider=provider;return[{id:"gpt-5.6-luna",name:"GPT-5.6 Luna"}];}});

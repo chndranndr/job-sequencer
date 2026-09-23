@@ -73,7 +73,7 @@ import { deriveRunTrajectoryObservability, sanitizeTrajectoryEvent } from "../tr
 import { createRestrictedGenerationSession, getAvailablePiModels, runBoundedPi, type PiModelOption } from "./pi.js";
 import { InterviewSessionPool, type InterviewSessionFactory } from "./interview-sessions.js";
 import { MAX_PROFILE_UPLOAD_BYTES, ProfileImportRunManager, type ProfileImporter } from "./profile-import.js";
-import { importManualJob, ManualJobRunManager, MAX_MANUAL_INPUT_LENGTH, type ManualJobImporter } from "./manual-job.js";
+import { importManualJob, ManualJobRunManager, MAX_MANUAL_BATCH_SIZE, MAX_MANUAL_INPUT_LENGTH, type ManualJobImporter } from "./manual-job.js";
 import { RunCoordinator } from "./coordinator.js";
 
 export interface ServerOptions {
@@ -103,10 +103,7 @@ export interface ServerOptions {
   projectRoot?: string;
 }
 
-const criteriaInputSchema = CriteriaSchema.superRefine((value, context) => {
-  if (!value.roles.length) context.addIssue({ code: "custom", path: ["roles"], message: "Add at least one target role." });
-  if (!value.locations.length) context.addIssue({ code: "custom", path: ["locations"], message: "Add at least one target location." });
-});
+const criteriaInputSchema = CriteriaSchema;
 const isoDate = z.string().refine((value) => {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return !Number.isNaN(new Date(`${value}T00:00:00.000Z`).valueOf()) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) && !Number.isNaN(new Date(value).valueOf());
@@ -440,6 +437,10 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   app.post("/api/jobs/manual", async (req, reply) => {
     const body = z.object({ input: z.string().max(MAX_MANUAL_INPUT_LENGTH).refine((value) => Boolean(value.trim()), "Enter a posting URL or paste job text.") }).strict().parse(req.body);
     return reply.code(202).send({ runId: await manual.start(body.input, requestIdempotencyKey(req)) });
+  });
+  app.post("/api/jobs/manual/batch", async (req, reply) => {
+    const body = z.object({ urls: z.array(z.string().max(MAX_MANUAL_INPUT_LENGTH)).min(1).max(MAX_MANUAL_BATCH_SIZE) }).strict().parse(req.body);
+    return reply.code(202).send(await manual.startBatch(body.urls, requestIdempotencyKey(req)));
   });
   app.get("/api/jobs/:id", async (req) => {
     const row = getJobDetail(db, requestId(req));

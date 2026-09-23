@@ -23,7 +23,7 @@ test("Japan-board query prompts omit non-Japan locations while LinkedIn uses loc
 
   const linkedinRule = sourceQueryRule("linkedin");
   assert.match(linkedinRule, /requires a non-empty location/i);
-  assert.match(linkedinRule, /criteria\.locations/i);
+  assert.match(linkedinRule, /profile-derived or optional preference location/i);
 });
 
 class FauxSourceSession implements PiSessionLike {

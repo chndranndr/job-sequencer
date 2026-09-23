@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, type ImageContent } from "@earendil-works/pi-ai";
 import { createAgentSearchTools, type AgentSearchTools } from "./search/tools.js";
-import { createScrapeTools } from "./scrape.js";
+import { createScrapeTools, type ScrapeTools } from "./scrape.js";
 import { createSourceRegistry, type SourceRegistry } from "./source-plugins.js";
 import type { Settings } from "./config.js";
 import { jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
@@ -334,14 +334,14 @@ export async function runBoundedPi<T = void>(options: {
       model: textValue(state.message.model) || undefined,
       stopReason: textValue(state.message.stopReason) || undefined,
       error: state.message.errorMessage ? safeTelemetryError(state.message.errorMessage) : undefined,
-      usage: state.usage ?? null,
-    } : { usage: state.usage ?? null };
+    } : {};
+    const usage = state.usage ?? null;
     if (state.usage) reportUsage(key, state.usage);
     if (state.text) {
       try { options.onAssistantText?.(state.text); } catch { /* output capture is deliberately non-fatal */ }
     }
-    if (state.text) record({ kind: "assistant", type: "assistant_message", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.text), ...metadata }, redactTelemetryText) });
-    if (state.thinking) record({ kind: "thinking", type: "assistant_thinking", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.thinking), ...metadata }, redactTelemetryText) });
+    if (state.text) record({ kind: "assistant", type: "assistant_message", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.text), ...metadata, usage }, redactTelemetryText) });
+    if (state.thinking) record({ kind: "thinking", type: "assistant_thinking", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.thinking), ...metadata, usage: state.text ? null : usage }, redactTelemetryText) });
     assistantStates.delete(key);
     finalizedAssistants.add(key);
   };
@@ -566,7 +566,7 @@ export async function runNoToolExactSmoke(): Promise<string> {
 
 export async function createFauxRestrictedGenerationSession():Promise<AgentSession>{const cwd=process.cwd();const {faux,runtime,settings,loader}=await restrictedRuntime(cwd);const {session}=await createAgentSession({cwd,model:faux.getModel(),modelRuntime:runtime,resourceLoader:loader,settingsManager:settings,sessionManager:SessionManager.inMemory(cwd),noTools:"all",thinkingLevel:"off"});return session;}
 
-export type ScrapeToolSet = ReturnType<typeof createScrapeTools> | ReturnType<typeof createAgentSearchTools>;
+export type ScrapeToolSet = ScrapeTools | AgentSearchTools;
 
 function defaultAgentSearchTools(source: JobSource, customSource?: CustomJobSource, maxAgeDays?: number, registry?: SourceRegistry) {
   return createAgentSearchTools({ sources: [{ key: source, custom: customSource, maxAgeDays, registry }] });

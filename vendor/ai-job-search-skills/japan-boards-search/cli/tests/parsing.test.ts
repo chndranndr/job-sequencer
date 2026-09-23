@@ -190,6 +190,7 @@ describe("japan boards schema", () => {
     expect(filterJobs(jobs, { query: "backend", country: "Japan", jobage: 100, now }).map((job) => job.id)).toEqual(["japan-dev:100"])
   })
 
+
   test("fails clearly for missing or malformed Nuxt payloads", () => {
     expect(() => parseJapanDevPayload("<html></html>")).toThrow(/missing __NUXT_DATA__ payload/)
     expect(() => parseJapanDevPayload('<script id="__NUXT_DATA__" type="application/json">{</script>')).toThrow(/malformed JSON/)

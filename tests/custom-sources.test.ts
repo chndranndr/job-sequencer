@@ -86,6 +86,20 @@ test("custom JSON adapter bounds interpolation, normalizes relative URLs, and en
   detail = { ...detail, id: "42", url: "/jobs/other" };
   await assert.rejects(tools.fetchJobDetails.execute("bad-url", { resultId: "42" }, undefined, undefined, undefined as never), /provenance mismatch/);
 });
+test("custom source returns batches up to the shared twenty-five result limit", async () => {
+  const rows = Array.from({ length: 26 }, (_, index) => ({
+    id: `job-${index}`,
+    title: "Backend Engineer",
+    company: "Acme",
+    location: "Remote",
+    url: `/jobs/${index}`,
+  }));
+  const adapter = createCustomSourceAdapter(jsonSource, {
+    fetcher: async () => new Response(JSON.stringify({ data: { jobs: rows } })),
+  });
+  const result = await adapter.search("backend", "Remote", 25);
+  assert.equal(result.results.length, 25);
+});
 
 test("custom HTML adapter extracts bounded selectors and relative links", async () => {
   const source: CustomJobSource = {
@@ -134,6 +148,64 @@ test("multi-source executor calls every enabled source, skips disabled sources, 
   await assert.rejects(createMultiSourceScrapeExecutor(async () => ({ result: { jobs: [] }, provenance: new Map() }))({ profile: "profile", criteria: defaultCriteria, settings: { ...defaultSettings, enabledSources: ["freehire", "tokyodev"] }, signal: new AbortController().signal }), /no valid results/);
 });
 
+test("multi-source hard filtering frees the result cap for later sources", async () => {
+  const calls: string[] = [];
+  const executor = createMultiSourceScrapeExecutor(async (_context, source) => {
+    calls.push(source);
+    const id = source === "linkedin" ? "123456789" : `${source}-1`;
+    const url = source === "linkedin" ? "https://www.linkedin.com/jobs/view/123456789/" : `https://${source}.example.test/jobs/1`;
+    const job = { sourceId: id, source, url, company: "Model company", role: "Backend Engineer", location: "Remote", posting: "Backend role", score: 81, reason: "fit", strengths: [], gaps: [] };
+    const canonical = source === "freehire"
+      ? { source, sourceId: id, url, title: "PHP Developer", company: "Legacy", location: "Remote", posting: "PHP role" }
+      : { source, sourceId: id, url, title: "Backend Engineer", company: "Good", location: "Remote", posting: "Backend role" };
+    return { result: { jobs: [job] }, provenance: new Map([[id, url]]), evidence: new Map([[`${source}\u0000${id}`, canonical]]) };
+  });
+  const output = await executor({
+    profile: "profile",
+    criteria: { ...defaultCriteria, remoteOnly: true, excludeKeywords: ["PHP"], maxJobsPerRun: 1 },
+    settings: { ...defaultSettings, enabledSources: ["freehire", "linkedin"] },
+    signal: new AbortController().signal,
+  });
+  assert.deepEqual(calls, ["freehire", "linkedin"]);
+  const result = output.result;
+  if (!result || typeof result !== "object" || !("jobs" in result) || !Array.isArray(result.jobs)) throw new Error("multi-source result was not a job list");
+  const sources = result.jobs.flatMap(job => job && typeof job === "object" && "source" in job && typeof job.source === "string" ? [job.source] : []);
+  assert.deepEqual(sources, ["linkedin"]);
+});
+
+test("multi-source hard filtering rejects untrusted model fields without evidence", async () => {
+  const executor = createMultiSourceScrapeExecutor(async (_context, source) => {
+    const id = `${source}-untrusted`;
+    const url = `https://${source}.example.test/jobs/untrusted`;
+    return {
+      result: {
+        jobs: [{
+          sourceId: id,
+          source,
+          url,
+          company: "Example",
+          role: "Backend Engineer",
+          location: "Remote",
+          posting: "Backend role",
+          score: 81,
+          reason: "fit",
+          strengths: [],
+          gaps: [],
+        }],
+      },
+      provenance: new Map([[id, url]]),
+    };
+  });
+  await assert.rejects(
+    executor({
+      profile: "profile",
+      criteria: { ...defaultCriteria, remoteOnly: true, excludeKeywords: ["PHP"], maxJobsPerRun: 1 },
+      settings: { ...defaultSettings, enabledSources: ["freehire"] },
+      signal: new AbortController().signal,
+    }),
+    /no valid results/i,
+  );
+});
 test("scrape API persists partial multi-source success and returns per-source errors", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-multi-api-"));
   const db = openDatabase(":memory:");

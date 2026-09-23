@@ -38,7 +38,7 @@ export type ApplicationLane = (typeof applicationLanes)[number];
 
 export const defaultJobStages: JobStage[] = ["Recommended", "Selected", "Drafting", "Ready", "Applied", "Interview", "Offer"];
 
-export const jobSourceKeys = ["freehire", "linkedin", "tokyodev", "japan-dev"] as const;
+export const jobSourceKeys = ["freehire", "linkedin", "tokyodev", "japan-dev", "relocate-me", "ycombinator-remote", "indeed-id"] as const;
 export type BuiltInJobSource = (typeof jobSourceKeys)[number];
 export type JobSource = BuiltInJobSource | (string & {});
 export const jobSourceLabels: Record<BuiltInJobSource, string> = {
@@ -46,10 +46,21 @@ export const jobSourceLabels: Record<BuiltInJobSource, string> = {
   linkedin: "LinkedIn",
   tokyodev: "TokyoDev",
   "japan-dev": "Japan Dev",
+  "relocate-me": "Relocate.me",
+  "ycombinator-remote": "Y Combinator Remote",
+  "indeed-id": "Indeed Indonesia",
 };
 
 export type SourceMaxAgeDays = Record<BuiltInJobSource, number>;
-export const defaultSourceMaxAgeDays: SourceMaxAgeDays = { freehire: 9999, linkedin: 9999, tokyodev: 45, "japan-dev": 45 };
+export const defaultSourceMaxAgeDays: SourceMaxAgeDays = {
+  freehire: 9999,
+  linkedin: 9999,
+  tokyodev: 45,
+  "japan-dev": 45,
+  "relocate-me": 9999,
+  "ycombinator-remote": 9999,
+  "indeed-id": 9999,
+};
 
 export function isJobSource(value: unknown): value is BuiltInJobSource {
   return typeof value === "string" && (jobSourceKeys as readonly string[]).includes(value);
@@ -114,11 +125,25 @@ export type SearchGoal = {
   enabledSources: JobSource[];
 };
 
+export type SearchPageInfo = Readonly<{
+  hasMore: boolean;
+  nextPage?: number;
+  nextCursor?: string;
+  total?: number;
+  page?: number;
+  limit?: number;
+}>;
+
 export type SearchBudget = Readonly<{
   maxSearchCalls: number;
   maxDetailCalls: number;
   maxTotalResults: number;
   maxRunDurationMs: number;
+  targetUniqueJobs?: number;
+  minSearchesPerSource?: number;
+  maxSearchesPerSource?: number;
+  maxPagesPerQuery?: number;
+  maxQueryVariantsPerSource?: number;
 }>;
 
 export type Settings = {
@@ -517,6 +542,12 @@ export type RunTrajectoryAttempt = {
   error: string | null;
   errorCategory: string | null;
   timestamp: string | null;
+  page?: number;
+  cursor?: string;
+  hasMore?: boolean;
+  nextPage?: number;
+  nextCursor?: string;
+  total?: number;
 };
 
 export type RunTrajectoryCounts = {
@@ -530,6 +561,43 @@ export type RunTrajectoryBudget = {
   maxDetailCalls: number | null;
   maxTotalResults: number | null;
   maxRunDurationMs: number | null;
+  targetUniqueJobs?: number;
+  minSearchesPerSource?: number;
+  maxSearchesPerSource?: number;
+  maxPagesPerQuery?: number;
+  maxQueryVariantsPerSource?: number;
+};
+
+export type RunTrajectoryQueryRecord = {
+  source?: string | null;
+  query?: string | null;
+  location?: string | null;
+  page?: number;
+  cursor?: string;
+  returnedHits?: number;
+  uniqueHits?: number;
+  duplicateRate?: number;
+  hasMore?: boolean;
+  nextPage?: number;
+  nextCursor?: string;
+  total?: number;
+};
+
+export type RunTrajectoryPath = RunTrajectoryQueryRecord & {
+  path?: string;
+  searches?: number;
+  completed?: boolean;
+  pagesVisited?: number[];
+  raw?: number;
+  unique?: number;
+  duplicate?: number;
+  averageYield?: number;
+  lastYield?: number;
+};
+
+export type RunTrajectoryNextSearch = RunTrajectoryQueryRecord & {
+  limit?: number;
+  reason?: string | null;
 };
 
 export type RunTrajectorySourceStats = {
@@ -543,6 +611,13 @@ export type RunTrajectorySourceStats = {
   enrichedCount: number | null;
   failures: number | null;
   latencyMs: number | null;
+  searches?: number;
+  uniqueHits?: number;
+  promisingHits?: number;
+  averageYield?: number;
+  lastYield?: number;
+  pagesVisited?: number[];
+  queryHistory?: RunTrajectoryQueryRecord[];
 };
 
 export type RunTrajectoryMarginalUtility = {
@@ -555,17 +630,30 @@ export type RunTrajectoryMarginalUtility = {
   recommendation: string | null;
 };
 
+export type RunTrajectorySourceCoverage = {
+  required: string[];
+  searched: string[];
+  unavailable: string[];
+  unsearched: string[];
+};
+
 export type RunTrajectoryStateSnapshot = {
   sequence: number;
   timestamp: string | null;
   counts: RunTrajectoryCounts;
   coverage: Record<string, string> | null;
   coverageSufficient: boolean | null;
+  sourceCoverage: RunTrajectorySourceCoverage | null;
   marginalUtility: RunTrajectoryMarginalUtility | null;
   remaining: RunTrajectoryBudget | null;
   unresolvedGoalCount: number | null;
   termination: RunTrajectoryTermination | null;
+  nextSearch?: RunTrajectoryNextSearch;
+  plannerStop?: string;
+  queryHistory?: string[];
+  paths?: RunTrajectoryPath[];
 };
+
 
 export type RunTrajectoryAdaptation = {
   sequence: number;
@@ -608,6 +696,21 @@ export type RunTrajectoryResources = {
   estimatedCost: number | null;
 };
 
+export type RunTrajectoryFunnel = {
+  enabledSources?: string[];
+  sourceAttempts?: number | Record<string, number>;
+  queriesBySource?: Record<string, string[]>;
+  pagesBySource?: Record<string, number[]>;
+  rawHits?: number;
+  uniqueHits?: number;
+  candidatesAfterCheapFiltering?: number;
+  promisingHits?: number;
+  duplicatesRemoved?: number;
+  detailFetches?: number;
+  selectedJobs?: number;
+  stopReason?: string | null;
+  sources?: Record<string, RunTrajectorySourceStats>;
+};
 export type RunTrajectoryObservability = {
   counts: RunTrajectoryCounts;
   resources: RunTrajectoryResources;
@@ -618,6 +721,7 @@ export type RunTrajectoryObservability = {
   adaptations: RunTrajectoryAdaptation[];
   termination: RunTrajectoryTermination | null;
   policyEvents: RunTrajectoryPolicyEvent[];
+  funnel?: RunTrajectoryFunnel;
 };
 
 export type RunTrajectoryEnvelope = {

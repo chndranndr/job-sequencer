@@ -1,13 +1,13 @@
 import { z } from "zod";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createScrapeTools } from "../scrape.js";
+import { createScrapeTools, type ScrapeTools, type ScrapeToolsOptions } from "../scrape.js";
 import { defaultCriteria } from "../config.js";
-import type { CustomJobSource, JobSource, SearchBudget, SearchGoal, SearchHit, TrajectoryRecorder } from "../../shared.js";
+import type { CustomJobSource, JobSource, SearchBudget, SearchGoal, SearchHit, SearchPageInfo, TrajectoryRecorder } from "../../shared.js";
 import type { SourceRegistry } from "../source-plugins.js";
 import { AgentSearchState, resolveSearchBudget, type DetailReservation, type SearchAttempt } from "./state.js";
 
-type SourceTools = ReturnType<typeof createScrapeTools>;
+type SourceTools = ScrapeTools;
 export type AgentSearchSourceTools = ReadonlyMap<JobSource, SourceTools> | Readonly<Record<string, SourceTools>>;
 
 export type AgentSearchSource = {
@@ -16,6 +16,7 @@ export type AgentSearchSource = {
   registry?: SourceRegistry;
   maxAgeDays?: number;
   fallbackQueries?: string[];
+  querySeeds?: readonly string[];
 };
 
 export type AgentSearchToolsOptions = {
@@ -25,8 +26,9 @@ export type AgentSearchToolsOptions = {
   maxJobs?: number;
   runId?: string;
   trajectory?: TrajectoryRecorder;
-  createSourceTools?: (options: Parameters<typeof createScrapeTools>[0]) => SourceTools;
+  createSourceTools?: (options: ScrapeToolsOptions) => SourceTools;
   onSearchAttempt?: (attempt: SearchAttempt) => void;
+  adaptive?: boolean;
 };
 
 export type AgentSearchToolOptions = {
@@ -48,11 +50,14 @@ export type AgentSearchTools = {
 };
 
 const sourceParameter = Type.Optional(Type.String({ minLength: 2, maxLength: 40 }));
+
 const SearchParameters = Type.Object({
   source: sourceParameter,
   query: Type.String({ minLength: 1, maxLength: 200 }),
   location: Type.Optional(Type.String({ maxLength: 120 })),
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 5 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 25 })),
+  page: Type.Optional(Type.Integer({ minimum: 1 })),
+  cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
   intent: Type.Optional(Type.String({ maxLength: 200 })),
 });
 const DetailParameters = Type.Object({ source: sourceParameter, resultId: Type.String({ minLength: 1, maxLength: 200 }) });
@@ -74,7 +79,9 @@ const SearchInputSchema = z.object({
   source: z.string().trim().min(2).max(40).optional(),
   query: z.string().trim().min(1).max(200),
   location: z.string().trim().max(120).default(""),
-  limit: z.number().int().min(1).max(5).default(5),
+  limit: z.number().int().min(1).max(25).default(25),
+  page: z.number().int().min(1).optional(),
+  cursor: z.string().trim().min(1).max(500).optional(),
   intent: z.string().trim().max(200).optional(),
 }).strict();
 const DetailInputSchema = z.object({
@@ -94,6 +101,14 @@ const SearchEnvelopeSchema = z.object({
     company: z.string().trim().nullable().optional(),
     location: z.string().trim().nullable().optional(),
   }).passthrough()),
+  pageInfo: z.object({
+    hasMore: z.boolean(),
+    nextPage: z.number().int().min(1).optional(),
+    nextCursor: z.string().trim().max(500).nullable().optional(),
+    total: z.number().int().nonnegative().optional(),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).optional(),
+  }).optional(),
 }).passthrough();
 const DetailEnvelopeSchema = z.object({
   id: z.string().trim().min(1).max(200).nullable().optional(),
@@ -135,17 +150,32 @@ function postedAt(value: Record<string, unknown>) {
   return undefined;
 }
 
-function toSearchHits(source: JobSource, value: unknown): SearchHit[] {
+function normalizedPageInfo(value: { hasMore: boolean; nextPage?: number; nextCursor?: string | null; total?: number; page?: number; limit?: number } | undefined): SearchPageInfo | undefined {
+  if (!value) return undefined;
+  const nextCursor = typeof value.nextCursor === "string" && value.nextCursor.trim() ? value.nextCursor.trim() : undefined;
+  return {
+    hasMore: value.hasMore,
+    ...(value.nextPage === undefined ? {} : { nextPage: value.nextPage }),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+    ...(value.total === undefined ? {} : { total: value.total }),
+    ...(value.page === undefined ? {} : { page: value.page }),
+    ...(value.limit === undefined ? {} : { limit: value.limit }),
+  };
+}
+function toSearchHits(source: JobSource, value: unknown): { hits: SearchHit[]; pageInfo?: SearchPageInfo } {
   const parsed = SearchEnvelopeSchema.parse(value);
-  return parsed.results.map((result) => ({
-    source,
-    sourceId: result.id,
-    url: result.url,
-    title: result.title,
-    ...(optionalText(result.company) ? { company: optionalText(result.company) } : {}),
-    ...(optionalText(result.location) ? { location: optionalText(result.location) } : {}),
-    ...(postedAt(result) ? { postedAt: postedAt(result) } : {}),
-  }));
+  return {
+    hits: parsed.results.map((result) => ({
+      source,
+      sourceId: result.id,
+      url: result.url,
+      title: result.title,
+      ...(optionalText(result.company) ? { company: optionalText(result.company) } : {}),
+      ...(optionalText(result.location) ? { location: optionalText(result.location) } : {}),
+      ...(postedAt(result) ? { postedAt: postedAt(result) } : {}),
+    })),
+    pageInfo: normalizedPageInfo(parsed.pageInfo),
+  };
 }
 
 function reservationDetail(state: AgentSearchState, reservation: DetailReservation, posting: string, title?: string | null, company?: string | null, location?: string | null, url?: string | null) {
@@ -170,22 +200,33 @@ function toolsFromOptions(options: AgentSearchToolsOptions) {
   const enabled = new Set(goal.enabledSources);
   for (const key of keys) if (!enabled.has(key)) throw new Error(`Search source ${key} is not enabled by the search goal.`);
   for (const key of goal.enabledSources) if (!keys.includes(key)) throw new Error(`No source adapter is configured for ${key}.`);
+  const makeSourceTools = options.createSourceTools ?? createScrapeTools;
+  const budget = resolveSearchBudget(options.budget ?? {}, options.maxJobs ?? goal.criteria.maxJobsPerRun, goal.enabledSources.length);
+  const sourceTools = new Map<JobSource, SourceTools>();
+  const querySeeds = new Map<JobSource, readonly string[]>();
+  const sourceCapabilities = new Map<JobSource, boolean>();
+  for (const source of options.sources) {
+    sourceTools.set(source.key, makeSourceTools({
+      source: source.key,
+      customSource: source.custom,
+      registry: source.registry,
+      maxAgeDays: source.maxAgeDays,
+      maxSearchCalls: budget.maxSearchesPerSource,
+      fallbackQueries: undefined,
+    }));
+    querySeeds.set(source.key, source.querySeeds ?? source.fallbackQueries ?? []);
+    sourceCapabilities.set(source.key, sourceTools.get(source.key)?.manifest?.capabilities?.pagination === true);
+  }
   const state = new AgentSearchState({
     goal,
-    budget: resolveSearchBudget(options.budget ?? {}, options.maxJobs ?? goal.criteria.maxJobsPerRun),
+    budget,
     runId: options.runId,
     trajectory: options.trajectory,
     onSearchAttempt: options.onSearchAttempt,
+    adaptive: options.adaptive !== false,
+    querySeeds,
+    sourceCapabilities,
   });
-  const makeSourceTools = options.createSourceTools ?? createScrapeTools;
-  const sourceTools = new Map<JobSource, SourceTools>();
-  for (const source of options.sources) sourceTools.set(source.key, makeSourceTools({
-    source: source.key,
-    customSource: source.custom,
-    registry: source.registry,
-    maxAgeDays: source.maxAgeDays,
-    fallbackQueries: source.fallbackQueries,
-  }));
   return { state, sourceTools };
 }
 
@@ -215,12 +256,18 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
       const reservation = state.reserveSearch({ ...input, source });
       let completed = false;
       try {
-        const raw = await sourceTools.searchJobs.execute(toolCallId, { query: reservation.query, location: reservation.location, limit: reservation.limit }, signal, undefined, undefined as never);
-        const hits = toSearchHits(source, textResult(raw, "searchJobs")).slice(0, reservation.limit);
-        const uniqueHits = state.completeSearch(reservation, hits);
+        const raw = await sourceTools.searchJobs.execute(toolCallId, {
+          query: reservation.query,
+          location: reservation.location,
+          limit: reservation.limit,
+          ...(reservation.page === undefined ? {} : { page: reservation.page }),
+          ...(reservation.cursor === undefined ? {} : { cursor: reservation.cursor }),
+        }, signal, undefined, undefined as never);
+        const parsed = toSearchHits(source, textResult(raw, "searchJobs"));
+        const uniqueHits = state.completeSearch(reservation, parsed.hits.slice(0, reservation.limit), parsed.pageInfo);
         state.addWarnings(sourceTools.warnings ?? []);
         completed = true;
-        return { content: [{ type: "text", text: JSON.stringify({ hits: uniqueHits }) }], details: { source, count: uniqueHits.length } };
+        return { content: [{ type: "text", text: JSON.stringify({ hits: uniqueHits, pageInfo: parsed.pageInfo ?? { hasMore: false } }) }], details: { source, count: uniqueHits.length } };
       } catch (error) {
         state.addWarnings(sourceTools.warnings ?? []);
         if (!completed) state.failSearch(reservation, error);

@@ -3,9 +3,9 @@ import { lookup as lookupDns } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { createTaskReporter, normalizeUrl, persistManualJob } from "./db.js";
+import { createTaskReporter, normalizeUrl, persistManualJob, type TaskReporter } from "./db.js";
 import type { Settings } from "./config.js";
-import { PiRunCancelledError, PiRunTimeoutError, createRestrictedGenerationSession, runBoundedPi, type PiRunUsage, type PiSessionLike } from "./pi.js";
+import { PiRunCancelledError, PiRunTimeoutError, classifyPiError, createRestrictedGenerationSession, runBoundedPi, type PiRunUsage, type PiSessionLike } from "./pi.js";
 import { runBunCli } from "./scrape.js";
 import type { Criteria, TrajectoryRecorder } from "../shared.js";
 import { RunCoordinator } from "./coordinator.js";
@@ -13,6 +13,8 @@ import { runStructured, StructuredOutputError } from "./structured.js";
 
 export const MAX_MANUAL_INPUT_LENGTH = 120_000;
 export const MAX_MANUAL_FETCH_BYTES = 1_000_000;
+export const MAX_MANUAL_BATCH_SIZE = 10;
+const MAX_MANUAL_URL_LENGTH = 2_000;
 const MAX_MANUAL_REDIRECTS = 5;
 const MANUAL_FETCH_TIMEOUT_MS = 10_000;
 const LINKEDIN_DETAIL_ERROR = "LinkedIn job details could not be fetched; paste the job description text or use a direct LinkedIn job URL.";
@@ -76,6 +78,44 @@ export type ManualJobImportResult = {
   url: string;
   job: ManualJob;
 };
+export type ManualBatchAccepted = {
+  index: number;
+  input: string;
+  url: string;
+};
+export type ManualBatchRejected = {
+  index: number;
+  input: string;
+  url?: string;
+  error: string;
+};
+export type ManualBatchStartResult = {
+  runId: string | null;
+  accepted: ManualBatchAccepted[];
+  rejected: ManualBatchRejected[];
+  reused: boolean;
+};
+export type ManualBatchAdmission = Pick<ManualBatchStartResult, "accepted" | "rejected">;
+const ManualBatchAcceptedSchema = z.object({
+  index: z.number().int().min(0).max(MAX_MANUAL_BATCH_SIZE - 1),
+  input: z.string().min(1).max(MAX_MANUAL_URL_LENGTH),
+  url: z.string().min(1).max(MAX_MANUAL_URL_LENGTH),
+}).strict();
+const ManualBatchRejectedSchema = z.object({
+  index: z.number().int().min(0).max(MAX_MANUAL_BATCH_SIZE - 1),
+  input: z.string().min(1).max(MAX_MANUAL_URL_LENGTH),
+  url: z.string().min(1).max(MAX_MANUAL_URL_LENGTH).optional(),
+  error: z.string().min(1).max(2_000),
+}).strict();
+const ManualBatchAdmissionSchema = z.object({
+  accepted: z.array(ManualBatchAcceptedSchema).max(MAX_MANUAL_BATCH_SIZE),
+  rejected: z.array(ManualBatchRejectedSchema).max(MAX_MANUAL_BATCH_SIZE),
+}).strict();
+
+function manualBatchAdmission(summary: unknown): ManualBatchAdmission | undefined {
+  const parsed = z.object({ kind: z.literal("manual_batch"), admission: ManualBatchAdmissionSchema }).passthrough().safeParse(summary);
+  return parsed.success ? parsed.data.admission : undefined;
+}
 
 type ManualLookup = (hostname: string) => Promise<readonly { address: string; family: number }[]>;
 type ManualFetcher = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -615,11 +655,111 @@ function manualInputUrl(value: string) {
   return linkedInJobReference(inputUrl)?.url ?? normalizeUrl(inputUrl.toString());
 }
 
+function manualBatchUrl(value: string) {
+  const input = cleanInput(value);
+  if (input.length > MAX_MANUAL_URL_LENGTH || !/^https?:\/\/\S+$/i.test(input)) {
+    throw new ManualJobImportError("Enter one HTTP or HTTPS posting URL.");
+  }
+  const url = manualInputUrl(input);
+  if (!url || url.length > MAX_MANUAL_URL_LENGTH) throw new ManualJobImportError("Enter one HTTP or HTTPS posting URL.");
+  return { input, url };
+}
+
 function manualError(error: unknown) {
   if (error instanceof PiRunCancelledError) return "Manual import cancelled.";
   if (error instanceof PiRunTimeoutError) return "Manual import timed out.";
   if (error instanceof ManualJobImportError || (error && typeof error === "object" && (error as { statusCode?: unknown }).statusCode === 409)) return error instanceof Error ? error.message : String(error);
   return "Manual job import failed. Check provider settings and try again.";
+}
+type ManualBatchItemStatus = "queued" | "rejected" | "succeeded" | "failed" | "cancelled";
+type ManualBatchItemResult = {
+  index: number;
+  status: ManualBatchItemStatus;
+  jobId?: string;
+  error?: string;
+};
+type ManualBatchRunSummary = {
+  kind: "manual_batch";
+  status: "running" | "succeeded" | "partial" | "failed" | "cancelled";
+  admission: ManualBatchAdmission;
+  total: number;
+  accepted: number;
+  rejected: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  items: ManualBatchItemResult[];
+};
+type ManualBatchExecutionState = {
+  items: ManualBatchItemResult[];
+  summary: ManualBatchRunSummary;
+};
+
+function summarizeManualBatch(items: readonly ManualBatchItemResult[], admission: ManualBatchAdmission): ManualBatchRunSummary {
+  const counts = {
+    accepted: items.filter((item) => item.status !== "rejected").length,
+    rejected: items.filter((item) => item.status === "rejected").length,
+    succeeded: items.filter((item) => item.status === "succeeded").length,
+    failed: items.filter((item) => item.status === "failed").length,
+    cancelled: items.filter((item) => item.status === "cancelled").length,
+  };
+  const finished = counts.succeeded + counts.failed + counts.cancelled;
+  const status = counts.cancelled > 0
+    ? "cancelled"
+    : finished < counts.accepted
+      ? "running"
+      : counts.failed > 0 && counts.succeeded > 0
+        ? "partial"
+        : counts.failed > 0
+          ? "failed"
+          : "succeeded";
+  return { kind: "manual_batch", status, admission, total: items.length, ...counts, items: [...items] };
+}
+
+function createManualBatchState(accepted: readonly ManualBatchAccepted[], rejected: readonly ManualBatchRejected[]): ManualBatchExecutionState {
+  const items = [
+    ...accepted.map(({ index }) => ({ index, status: "queued" as const })),
+    ...rejected.map(({ index, error }) => ({ index, status: "rejected" as const, error })),
+  ].sort((left, right) => left.index - right.index);
+  const admission = { accepted: [...accepted], rejected: [...rejected] };
+  return { items, summary: summarizeManualBatch(items, admission) };
+}
+
+
+function updateManualBatchItem(state: ManualBatchExecutionState, index: number, status: Exclude<ManualBatchItemStatus, "queued" | "rejected">, jobId?: string, error?: string) {
+  const item = state.items.find((value) => value.index === index);
+  if (!item) return;
+  item.status = status;
+  if (jobId) item.jobId = jobId;
+  else delete item.jobId;
+  if (error) item.error = error;
+  else delete item.error;
+  state.summary = summarizeManualBatch(state.items, state.summary.admission);
+}
+
+function cancelQueuedManualBatchItems(state: ManualBatchExecutionState) {
+  for (const item of state.items) {
+    if (item.status !== "queued") continue;
+    item.status = "cancelled";
+    item.error = "Manual batch import cancelled.";
+  }
+  state.summary = summarizeManualBatch(state.items, state.summary.admission);
+}
+
+function failQueuedManualBatchItems(state: ManualBatchExecutionState) {
+  for (const item of state.items) {
+    if (item.status !== "queued") continue;
+    item.status = "failed";
+    item.error = "Manual batch import failed.";
+  }
+  state.summary = summarizeManualBatch(state.items, state.summary.admission);
+}
+
+class ManualBatchRunFailedError extends Error {
+  constructor(readonly summary: ManualBatchRunSummary, readonly errorCode: string | null) {
+    super("Manual batch import failed.");
+    this.name = "ManualBatchRunFailedError";
+  }
 }
 
 export class ManualJobRunManager {
@@ -641,35 +781,137 @@ export class ManualJobRunManager {
     const existing = this.coordinator.findByIdempotencyKey(idempotencyKey);
     if (existing) return existing;
     const normalizedInput = cleanInput(input);
+    const context = await this.loadContext();
+    const inputUrl = manualInputUrl(normalizedInput);
+    if (inputUrl && this.options.db.prepare("SELECT id FROM jobs WHERE url=?").get(inputUrl)) throw Object.assign(new Error("A job with this URL already exists."), { statusCode: 409 });
+    return this.enqueue(normalizedInput, context, idempotencyKey);
+  }
+
+  async startBatch(inputs: readonly string[], idempotencyKey?: string): Promise<ManualBatchStartResult> {
+    const existing = this.coordinator.findByIdempotencyKey(idempotencyKey);
+    if (existing) {
+      const admission = manualBatchAdmission(this.coordinator.get(existing)?.summary);
+      return { runId: existing, accepted: admission?.accepted ?? [], rejected: admission?.rejected ?? [], reused: true };
+    }
+    if (inputs.length < 1 || inputs.length > MAX_MANUAL_BATCH_SIZE) throw Object.assign(new Error(`Import between 1 and ${MAX_MANUAL_BATCH_SIZE} job links at a time.`), { statusCode: 400 });
+    const context = await this.loadContext();
+    const seen = new Set<string>();
+    const accepted: ManualBatchAccepted[] = [];
+    const rejected: ManualBatchRejected[] = [];
+    for (const [index, value] of inputs.entries()) {
+      let input = value.trim().slice(0, MAX_MANUAL_URL_LENGTH);
+      let url: string | undefined;
+      try {
+        const candidate = manualBatchUrl(value);
+        input = candidate.input;
+        url = candidate.url;
+        if (seen.has(url)) throw new ManualJobImportError("Duplicate link in this batch.");
+        seen.add(url);
+        if (this.options.db.prepare("SELECT id FROM jobs WHERE url=?").get(url)) throw Object.assign(new Error("A job with this URL already exists."), { statusCode: 409 });
+        accepted.push({ index, input, url });
+      } catch (error) {
+        rejected.push({ index, input, url, error: manualError(error) });
+      }
+    }
+    if (!accepted.length) return { runId: null, accepted, rejected, reused: false };
+    const runId = await this.enqueueBatch(accepted, rejected, context, idempotencyKey);
+    return { runId, accepted, rejected, reused: false };
+  }
+
+  private async loadContext() {
     const context = await this.options.load();
     if (!context.settings.provider || !context.settings.model) throw Object.assign(new Error("Select a provider model in Settings before adding a job."), { statusCode: 409 });
     if (!context.profile.trim()) throw Object.assign(new Error("Review and save a structured profile before adding a job."), { statusCode: 409 });
-    const inputUrl = manualInputUrl(input);
-    if (inputUrl && this.options.db.prepare("SELECT id FROM jobs WHERE url=?").get(inputUrl)) throw Object.assign(new Error("A job with this URL already exists."), { statusCode: 409 });
+    return context;
+  }
+
+  private enqueue(input: string, context: { profile: string; criteria: Criteria; settings: Settings }, idempotencyKey?: string) {
     return this.coordinator.enqueue({
       workflow: "manual_import",
       provider: context.settings.provider,
       model: context.settings.model,
       idempotencyKey,
-      execute: ({ runId, signal, onUsage }) => this.work(runId, signal, normalizedInput, context, onUsage),
+      execute: ({ runId, signal, onUsage }) => this.work(runId, signal, input, context, onUsage),
       onError: (error, { signal }) => ({ error: signal.aborted ? "Manual import cancelled." : manualError(error) }),
+    });
+  }
+  private enqueueBatch(accepted: readonly ManualBatchAccepted[], rejected: readonly ManualBatchRejected[], context: { profile: string; criteria: Criteria; settings: Settings }, idempotencyKey?: string) {
+    const state = createManualBatchState(accepted, rejected);
+    return this.coordinator.enqueue({
+      workflow: "manual_import",
+      provider: context.settings.provider,
+      model: context.settings.model,
+      idempotencyKey,
+      summary: state.summary,
+      execute: ({ runId, signal, onUsage }) => this.workBatch(runId, signal, accepted, context, onUsage, state),
+      onError: (error, { signal }) => ({
+        summary: state.summary,
+        error: signal.aborted || error instanceof PiRunCancelledError
+          ? "Manual batch import cancelled."
+          : error instanceof ManualBatchRunFailedError
+            ? error.message
+            : manualError(error),
+        errorCode: signal.aborted || error instanceof PiRunCancelledError
+          ? "cancelled"
+          : error instanceof ManualBatchRunFailedError
+            ? error.errorCode
+            : classifyPiError(error),
+      }),
     });
   }
 
   cancel(id: string) { return this.coordinator.cancel(id); }
 
+  private async workBatch(id: string, signal: AbortSignal, accepted: readonly ManualBatchAccepted[], context: { profile: string; criteria: Criteria; settings: Settings }, onUsage: (usage: PiRunUsage) => void, state: ManualBatchExecutionState) {
+    const tasks = createTaskReporter(this.options.trajectory, id);
+    let failureCode: string | null = null;
+    try {
+      for (const item of accepted) {
+        if (signal.aborted) {
+          cancelQueuedManualBatchItems(state);
+          throw new PiRunCancelledError();
+        }
+        try {
+          const row = await this.workOne(id, signal, item.input, context, onUsage, tasks, `manual_import:link-${item.index}`, `Link ${item.index + 1} · `);
+          updateManualBatchItem(state, item.index, "succeeded", row.jobId);
+        } catch (error) {
+          if (signal.aborted || error instanceof PiRunCancelledError) {
+            cancelQueuedManualBatchItems(state);
+            throw error;
+          }
+          failureCode ??= classifyPiError(error);
+          updateManualBatchItem(state, item.index, "failed", undefined, manualError(error));
+        }
+      }
+      if (state.summary.succeeded === 0) throw new ManualBatchRunFailedError(state.summary, failureCode);
+      return state.summary;
+    } catch (error) {
+      if (error instanceof ManualBatchRunFailedError) throw error;
+      if (signal.aborted || error instanceof PiRunCancelledError) {
+        cancelQueuedManualBatchItems(state);
+        throw error;
+      }
+      failQueuedManualBatchItems(state);
+      throw new ManualBatchRunFailedError(state.summary, failureCode ?? classifyPiError(error));
+    }
+  }
+
   private async work(id: string, signal: AbortSignal, input: string, context: { profile: string; criteria: Criteria; settings: Settings }, onUsage: (usage: PiRunUsage) => void) {
     const tasks = createTaskReporter(this.options.trajectory, id);
-    tasks.start({ taskId: "manual_import:prepare", label: "Prepare manual import", detail: "Structured profile and provider ready" });
+    return this.workOne(id, signal, input, context, onUsage, tasks, "manual_import");
+  }
+
+  private async workOne(id: string, signal: AbortSignal, input: string, context: { profile: string; criteria: Criteria; settings: Settings }, onUsage: (usage: PiRunUsage) => void, tasks: TaskReporter, taskPrefix: string, labelPrefix = "") {
+    tasks.start({ taskId: `${taskPrefix}:prepare`, label: `${labelPrefix}Prepare manual import`, detail: "Structured profile and provider ready" });
     try {
-      tasks.complete("manual_import:prepare");
-      tasks.start({ taskId: "manual_import:parse-score", label: "Fetch or parse and score job", detail: "Grounding the score in the supplied profile and posting" });
+      tasks.complete(`${taskPrefix}:prepare`);
+      tasks.start({ taskId: `${taskPrefix}:parse-score`, label: `${labelPrefix}Fetch or parse and score job`, detail: "Grounding the score in the supplied profile and posting" });
       const imported = await (this.options.importer ?? importManualJob)(input, context.settings, { profile: context.profile, criteria: context.criteria, signal, runId: id, trajectory: this.options.trajectory, onUsage });
       if (signal.aborted) throw new PiRunCancelledError();
-      tasks.complete("manual_import:parse-score", `${imported.job.company} · ${imported.job.role} · score ${imported.job.score}`);
-      tasks.start({ taskId: "manual_import:persist", label: "Persist scored job" });
+      tasks.complete(`${taskPrefix}:parse-score`, `${imported.job.company} · ${imported.job.role} · score ${imported.job.score}`);
+      tasks.start({ taskId: `${taskPrefix}:persist`, label: `${labelPrefix}Persist scored job` });
       const row = persistManualJob(this.options.db, imported, context.settings.scoreThreshold);
-      tasks.complete("manual_import:persist", `${row.company} · ${row.stage}`);
+      tasks.complete(`${taskPrefix}:persist`, `${row.company} · ${row.stage}`);
       if (signal.aborted) throw new PiRunCancelledError();
       return { jobId: row.id, score: row.score, stage: row.stage, source: row.source };
     } catch (error) {

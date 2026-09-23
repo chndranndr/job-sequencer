@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { Type, type TSchema } from "typebox";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { normalizeUrl } from "./db.js";
 import {
   createSourceRegistry,
@@ -14,13 +14,13 @@ import {
   sourceUrlSchema,
   validateSourcePlugin,
   type CliRunner,
-  type CustomSourceFetch,
   type SourcePolicySnapshot,
   type SourceSearchHit,
   type JobSourcePlugin,
   type SourceRegistry,
 } from "./source-plugins.js";
-import type { CustomJobSource, JobSource } from "../shared.js";
+import type { CustomJobSource, JobSource, SearchHit, SearchPageInfo } from "../shared.js";
+import type { CustomSourceFetch } from "./custom-source.js";
 
 export type { CliRunner, CliRunnerOptions } from "./source-plugins.js";
 export { runBunCli, sanitizeFallbackQueries } from "./source-plugins.js";
@@ -33,7 +33,9 @@ function sourceFrom(value: unknown): JobSource {
 const SearchArgs = Type.Object({
   query: Type.String({ minLength: 1, maxLength: 200 }),
   location: Type.String({ maxLength: 120 }),
-  limit: Type.Integer({ minimum: 1, maximum: 5 }),
+  limit: Type.Integer({ minimum: 1, maximum: 25 }),
+  page: Type.Optional(Type.Integer({ minimum: 1 })),
+  cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
 });
 const DetailArgs = Type.Object({ resultId: Type.String({ minLength: 1, maxLength: 200 }) });
 
@@ -47,6 +49,14 @@ const SearchResponseSchema = z.object({
     location: z.string().nullable(),
     postedAt: z.string().optional(),
   }).passthrough()),
+  pageInfo: z.object({
+    hasMore: z.boolean(),
+    nextPage: z.number().int().min(1).optional(),
+    nextCursor: z.string().trim().max(500).nullable().optional(),
+    total: z.number().int().nonnegative().optional(),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).optional(),
+  }).optional(),
 }).passthrough();
 
 export const ScrapeResultSchema = z.object({
@@ -60,7 +70,7 @@ export const ScrapeResultSchema = z.object({
 export type ScrapeResult = z.infer<typeof ScrapeResultSchema>;
 
 function safeArgument(value: string, label: string, allowEmpty = false) {
-  const parsedResult = z.string().trim().max(label === "query" ? 200 : label === "location" ? 120 : 200).safeParse(value);
+  const parsedResult = z.string().trim().max(label === "query" ? 200 : label === "location" ? 120 : label === "cursor" ? 500 : 200).safeParse(value);
   if (!parsedResult.success) throw new Error(`${label} is too long or invalid`);
   const parsed = parsedResult.data;
   if (!allowEmpty && !parsed) throw new Error(`${label} must not be empty`);
@@ -70,6 +80,18 @@ function safeArgument(value: string, label: string, allowEmpty = false) {
 
 function recordDetailDescription(target: Map<string, string>, sourceId: string, description: unknown) {
   if (typeof description === "string" && description.trim()) target.set(sourceId, description);
+}
+function normalizedPageInfo(value: { hasMore: boolean; nextPage?: number; nextCursor?: string | null; total?: number; page?: number; limit?: number } | undefined): SearchPageInfo | undefined {
+  if (!value) return undefined;
+  const nextCursor = typeof value.nextCursor === "string" && value.nextCursor.trim() ? value.nextCursor.trim() : undefined;
+  return {
+    hasMore: value.hasMore,
+    ...(value.nextPage === undefined ? {} : { nextPage: value.nextPage }),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+    ...(value.total === undefined ? {} : { total: value.total }),
+    ...(value.page === undefined ? {} : { page: value.page }),
+    ...(value.limit === undefined ? {} : { limit: value.limit }),
+  };
 }
 
 export type ScrapeToolsOptions = {
@@ -83,6 +105,17 @@ export type ScrapeToolsOptions = {
   maxAgeDays?: number;
   now?: () => number;
   fallbackQueries?: string[];
+  maxSearchCalls?: number;
+};
+export type ScrapeTools = {
+  searchJobs: ToolDefinition<TSchema, { count: number }>;
+  fetchJobDetails: ToolDefinition<TSchema, { resultId: string }>;
+  provenance: Map<string, string>;
+  hits: Map<string, SearchHit>;
+  detailDescriptions: Map<string, string>;
+  warnings: string[];
+  manifest: JobSourcePlugin["manifest"];
+  policy: SourcePolicySnapshot;
 };
 
 export function createScrapeTools(options: ScrapeToolsOptions = {}) {
@@ -92,15 +125,18 @@ export function createScrapeTools(options: ScrapeToolsOptions = {}) {
   const runCli = options.runCli ?? runBunCli;
   if (plugin.manifest.id !== source) throw new Error(`Source plugin ${plugin.manifest.id} does not match ${source}.`);
   const maxAgeDays = options.maxAgeDays === undefined ? undefined : z.number().int().min(1).max(9_999).parse(options.maxAgeDays);
+  const maxSearchCalls = options.maxSearchCalls === undefined
+    ? MAX_SOURCE_SEARCH_CALLS
+    : z.number().int().min(1).max(100).parse(options.maxSearchCalls);
   const now = options.now ?? Date.now;
   const returned = new Map<string, string>();
+  const returnedHits = new Map<string, SearchHit>();
   const detailDescriptions = new Map<string, string>();
   const warnings: string[] = [];
   const policy = new SourcePolicyLedger(plugin.manifest.label, plugin.manifest.policy);
   let searchCalls = 0;
-
   function recordSearchAttempt() {
-    if (searchCalls >= MAX_SOURCE_SEARCH_CALLS) return false;
+    if (searchCalls >= maxSearchCalls) return false;
     searchCalls++;
     return true;
   }
@@ -132,19 +168,37 @@ export function createScrapeTools(options: ScrapeToolsOptions = {}) {
   const searchJobs = defineTool({
     name: "searchJobs",
     label: `Search ${plugin.manifest.label} jobs`,
-    description: `Search the configured ${plugin.manifest.label} source. Returns no more than five jobs.`,
+    description: `Search the configured ${plugin.manifest.label} source. Returns no more than twenty-five jobs.`,
     parameters: SearchArgs,
     execute: async (_id, params, signal) => {
-      if (!recordSearchAttempt()) throw new Error("searchJobs may be called at most five times per run");
+      const cap = maxSearchCalls === 5 ? "five" : String(maxSearchCalls);
+      if (!recordSearchAttempt()) throw new Error(`searchJobs may be called at most ${cap} times per run`);
       const query = safeArgument(params.query, "query");
       const location = safeArgument(params.location, "location", true);
-      const limit = z.number().int().min(1).max(5).parse(params.limit);
-      const response = await plugin.search({ query, location, limit, maxAgeDays, fallbackQueries: options.fallbackQueries }, context(signal));
+      const limit = z.number().int().min(1).max(25).parse(params.limit);
+      const page = params.page === undefined ? undefined : z.number().int().min(1).parse(params.page);
+      const cursor = params.cursor === undefined ? undefined : safeArgument(params.cursor, "cursor");
+      if (!plugin.manifest.capabilities.pagination && ((page !== undefined && page > 1) || cursor !== undefined)) {
+        throw new Error(`${plugin.manifest.label} does not support pagination`);
+      }
+      const response = await plugin.search({ query, location, limit, ...(page === undefined ? {} : { page }), ...(cursor === undefined ? {} : { cursor }), maxAgeDays, fallbackQueries: options.fallbackQueries }, context(signal));
       const parsed = SearchResponseSchema.parse(response);
       const results = dedupeSearchResults(parsed.results as SourceSearchHit[]).slice(0, limit);
       noteStaleResults(results);
-      for (const job of results) returned.set(job.id, job.url);
-      const normalized = { meta: { count: results.length }, results };
+      for (const job of results) {
+        returned.set(job.id, job.url);
+        returnedHits.set(job.id, {
+          source,
+          sourceId: job.id,
+          url: job.url,
+          title: job.title,
+          ...(job.company ? { company: job.company } : {}),
+          ...(job.location ? { location: job.location } : {}),
+          ...(job.postedAt ? { postedAt: job.postedAt } : {}),
+        });
+      }
+      const pageInfo = normalizedPageInfo(parsed.pageInfo);
+      const normalized = { meta: { count: results.length }, results, ...(pageInfo ? { pageInfo } : {}) };
       return { content: [{ type: "text", text: JSON.stringify(normalized) }], details: { count: results.length } };
     },
   });
@@ -173,17 +227,12 @@ export function createScrapeTools(options: ScrapeToolsOptions = {}) {
 
   const tools = { searchJobs, fetchJobDetails };
   Object.defineProperty(tools, "provenance", { value: returned, enumerable: false });
+  Object.defineProperty(tools, "hits", { value: returnedHits, enumerable: false });
   Object.defineProperty(tools, "detailDescriptions", { value: detailDescriptions, enumerable: false });
   Object.defineProperty(tools, "warnings", { value: warnings, enumerable: false });
   Object.defineProperty(tools, "manifest", { value: plugin.manifest, enumerable: false });
   Object.defineProperty(tools, "policy", { get: () => policy.snapshot, enumerable: false });
-  return tools as typeof tools & {
-    provenance: Map<string, string>;
-    detailDescriptions: Map<string, string>;
-    warnings: string[];
-    manifest: typeof plugin.manifest;
-    policy: SourcePolicySnapshot;
-  };
+  return tools as unknown as ScrapeTools;
 }
 
 export function hydrateScrapeResult(result: ScrapeResult, detailDescriptions: ReadonlyMap<string, string>): ScrapeResult {

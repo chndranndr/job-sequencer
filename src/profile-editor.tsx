@@ -455,23 +455,24 @@ export function CriteriaFields({ criteria, setCriteria, error, variant = "desk" 
   const commitList = (key: CriteriaListKey, value: string) => setCriteria({ ...criteria, [key]: splitCommaList(value) } as Criteria);
   return (
     <div className={`pe-criteria ${variantRoot(variant)}`}>
+      {error && <p className="pe-field-error" role="alert">{error}</p>}
       <div className="pe-two">
-        <EditorField label="Target roles" error={error && !criteria.roles.length ? "Add at least one target role." : undefined}>
+        <EditorField label="Preferred roles (optional)">
           <input value={criteria.roles.join(", ")} onChange={(event) => updateList("roles", event.target.value)} onBlur={(event) => commitList("roles", event.target.value)} placeholder="Backend Engineer, Platform Engineer" />
         </EditorField>
-        <EditorField label="Target locations" error={error && !criteria.locations.length ? "Add at least one target location." : undefined}>
+        <EditorField label="Preferred locations (optional)">
           <input value={criteria.locations.join(", ")} onChange={(event) => updateList("locations", event.target.value)} onBlur={(event) => commitList("locations", event.target.value)} placeholder="Remote, Indonesia, APAC" />
         </EditorField>
       </div>
       <div className="pe-two">
-        <EditorField label="Required / preferred keywords"><input value={criteria.keywords.join(", ")} onChange={(event) => updateList("keywords", event.target.value)} onBlur={(event) => commitList("keywords", event.target.value)} /></EditorField>
-        <EditorField label="Excluded keywords"><input value={criteria.excludeKeywords.join(", ")} onChange={(event) => updateList("excludeKeywords", event.target.value)} onBlur={(event) => commitList("excludeKeywords", event.target.value)} /></EditorField>
+        <EditorField label="Preferred keywords (optional)"><input value={criteria.keywords.join(", ")} onChange={(event) => updateList("keywords", event.target.value)} onBlur={(event) => commitList("keywords", event.target.value)} /></EditorField>
+        <EditorField label="Excluded keywords (hard stop)"><input value={criteria.excludeKeywords.join(", ")} onChange={(event) => updateList("excludeKeywords", event.target.value)} onBlur={(event) => commitList("excludeKeywords", event.target.value)} /></EditorField>
       </div>
       <div className="pe-two">
-        <EditorField label="Employment types"><input value={criteria.employmentTypes.join(", ")} onChange={(event) => updateList("employmentTypes", event.target.value)} onBlur={(event) => commitList("employmentTypes", event.target.value)} /></EditorField>
+        <EditorField label="Preferred employment types (optional)"><input value={criteria.employmentTypes.join(", ")} onChange={(event) => updateList("employmentTypes", event.target.value)} onBlur={(event) => commitList("employmentTypes", event.target.value)} /></EditorField>
         <EditorField label="Maximum jobs per scrape"><input type="number" min="1" max="50" value={criteria.maxJobsPerRun} onChange={(event) => update("maxJobsPerRun", Number(event.target.value))} /></EditorField>
       </div>
-      <label className="pe-check"><input type="checkbox" checked={criteria.remoteOnly} onChange={(event) => update("remoteOnly", event.target.checked)} /> Remote-only preference</label>
+      <label className="pe-check"><input type="checkbox" checked={criteria.remoteOnly} onChange={(event) => update("remoteOnly", event.target.checked)} /> Remote-only hard constraint</label>
     </div>
   );
 }

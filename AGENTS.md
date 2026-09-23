@@ -22,6 +22,11 @@ Run `npm ci` for setup, `npm run dev` for the frontend, and `npm start` for a bu
 
 Do not run live provider or network checks unless the user explicitly requests them. Do not read `.env`, auth, credential, token, generated application, or personal runtime-data files.
 
+When starting both frontend and backend:
+
+- If `HERDR_ENV=1` and `herdr --help` succeeds, inspect the current Herdr tab for two available shell panes and reuse only panes whose tab ID matches `$HERDR_TAB_ID` for `npm run dev` and `npm start`. Preserve the repository working directory and caller focus; use `herdr pane current --current`, `herdr pane list --workspace "$HERDR_WORKSPACE_ID"`, filter the JSON to the current tab, and `herdr pane run <pane-id> "..."`, with `--no-focus` when creating a background pane.
+- If no suitable Herdr pane exists, or `HERDR_ENV` is not `1`, use the normal process runner. Do not stop or close panes that you did not create.
+
 ## Principles
 
 ### Challenge the premise

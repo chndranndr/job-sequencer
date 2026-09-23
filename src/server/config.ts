@@ -17,6 +17,9 @@ const SourceMaxAgeDaysSchema = z.object({
   linkedin: sourceMaxAgeValue,
   tokyodev: sourceMaxAgeValue,
   "japan-dev": sourceMaxAgeValue,
+  "relocate-me": sourceMaxAgeValue,
+  "ycombinator-remote": sourceMaxAgeValue,
+  "indeed-id": sourceMaxAgeValue,
 }).partial().strict().default({}).transform((value) => ({ ...defaultSourceMaxAgeDays, ...value }) as SourceMaxAgeDays);
 const jsonPath = z.string().trim().min(1).max(160).regex(/^(?:\$\.)?[A-Za-z_][A-Za-z0-9_-]*(?:(?:\.[A-Za-z_][A-Za-z0-9_-]*)|(?:\[\d+\]))*$/, "Use a bounded dot path with numeric array indexes.");
 const htmlSelector = z.string().trim().min(1).max(240).regex(/^[A-Za-z0-9_.#\-\s\[\]=\"':>]+$/, "Use a simple CSS selector without scripts or pseudo-classes.").refine((value) => !value.includes(",") && !value.includes(".."), "Use one simple CSS selector at a time.");
@@ -231,7 +234,7 @@ function normalizeStoredProfile(value: unknown) {
   };
 }
 
-export const defaultCriteria: Criteria = { roles: [], locations: [], remoteOnly: false, keywords: [], excludeKeywords: [], employmentTypes: ["full-time"], maxJobsPerRun: 20 };
+export const defaultCriteria: Criteria = { roles: [], locations: [], remoteOnly: false, keywords: [], excludeKeywords: [], employmentTypes: [], maxJobsPerRun: 20 };
 export const defaultSettings: Settings = { provider: "google", model: "", source: "freehire", enabledSources: ["freehire"], customSources: [], sourceMaxAgeDays: { ...defaultSourceMaxAgeDays }, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
 
 export function configPaths(dataDir: string) {
