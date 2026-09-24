@@ -61,6 +61,7 @@ The rest of this README is the operator guide. It keeps the complete install, au
 - Windows 10+
 - Node.js 24.x and npm
 - Bun (for the vendored job-source CLIs and their tests)
+- Qoder CLI (`qodercli`), installed and logged in; see [Configure Qoder authentication](#configure-qoder-authentication)
 - Optional for PDF generation: `lualatex`, `xelatex`, `pdfinfo`, and `pdftotext`
 
 Check the runtime:
@@ -69,6 +70,7 @@ Check the runtime:
 node --version
 npm --version
 bun --version
+qodercli --version
 ```
 
 ## Install
