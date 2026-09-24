@@ -4,7 +4,7 @@ Status: rencana, belum ada perubahan runtime. Fakta kapabilitas Qoder di sini be
 
 ## Keputusan yang direkomendasikan
 
-Jika syarat bootcamp menyebut **Qoder Agent SDK**, buat branch `feat/qoder-agent-sdk` dari kondisi kerja yang memang ingin dijadikan dasar. Migrasikan runtime agent di branch itu; jangan menyebut integrasi provider Pi sebagai migrasi SDK. Pertahankan gerbang persetujuan, batas tool, dan evaluasi deterministik sebelum mencoba fitur agent baru. Kode aplikasi tidak mengirim lamaran atau pesan secara otomatis.
+Buat branch `feat/qoder-agent-sdk` dari kondisi kerja yang memang ingin dijadikan dasar. Migrasikan runtime agent di branch itu; jangan menyebut integrasi provider Pi sebagai migrasi SDK. Pertahankan gerbang persetujuan, batas tool, dan evaluasi deterministik sebelum mencoba fitur agent baru. Kode aplikasi tidak mengirim lamaran atau pesan secara otomatis.
 
 | Jalur | Yang berubah | Kegunaan | Batas dan keputusan |
 | --- | --- | --- | --- |
