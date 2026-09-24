@@ -87,7 +87,7 @@ function testExecutor(options: { source?: JapanBoardSource; roles?: string[]; ou
     createTools: (toolsOptions) => createScrapeTools({ ...toolsOptions, runCli: options.runCli }),
     createSession: async (_settings, tools) => new FauxSourceSession(options.outputs.shift() ?? JSON.stringify({ jobs: [] }), async (prompt) => {
       options.prompts.push(prompt);
-      if (options.fetchDetails) await tools.fetchJobDetails.execute("fixture-detail", { resultId: japanJob.id }, undefined, undefined, undefined as never);
+      if (options.fetchDetails) await tools.fetchJobDetails.execute("fixture-detail", { resultId: japanJob.id }, undefined);
     }),
   })(sourceContext(source, options.roles), source);
 }
@@ -123,7 +123,7 @@ test("non-preflight structured retries share the source search budget", async ()
     createSession: async (_settings, tools, _source, receivedRegistry) => new FauxSourceSession(outputs.shift() ?? JSON.stringify({ jobs: [] }), async () => {
       assert.equal(receivedRegistry, sourceRegistry);
       for (let index = 0; index < 5; index++) {
-        await tools.searchJobs.execute(`search-${index}`, { query: `backend-${index}`, location: "Remote", limit: 1 }, undefined, undefined, undefined as never);
+        await tools.searchJobs.execute(`search-${index}`, { query: `backend-${index}`, location: "Remote", limit: 1 }, undefined);
       }
     }),
   });
@@ -243,7 +243,7 @@ test("RunManager preserves custom source registries through final validation", a
     sourceRegistry: registry,
     loadGuidance: async () => "test guidance",
     createSession: async (_settings, tools) => new FauxSourceSession(scoredOutput("fixture", fixtureJob), async () => {
-      await tools.searchJobs.execute("fixture-search", { query: "Backend Developer", location: "Remote", limit: 1 }, undefined, undefined, undefined as never);
+      await tools.searchJobs.execute("fixture-search", { query: "Backend Developer", location: "Remote", limit: 1 }, undefined);
     }),
   });
   const db = openDatabase(":memory:");

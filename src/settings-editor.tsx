@@ -67,7 +67,10 @@ export function removeCustomSourceSettings(settings: Settings, key: string): Set
 }
 
 export function hasValidProviderModel(settings: Settings, models: readonly SettingsModelOption[]): boolean {
-  return Boolean(settings.provider.trim() && settings.model.trim() && models.some((model) => model.id === settings.model));
+  // Qoder is single-provider; an empty model selects the account default, which
+  // is valid. A non-empty model must appear in the fetched catalog.
+  if (!settings.model.trim()) return true;
+  return models.some((model) => model.id === settings.model);
 }
 
 export function useUnsavedNavigationGuard(dirty: boolean, message = "You have unsaved settings. Revert them and leave DISK?") {

@@ -5,11 +5,13 @@ import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createSourceRegistry, type JobSourcePlugin } from "../src/server/source-plugins.js";
 import { createAgentSearchTools } from "../src/server/search/tools.js";
 
-test("restricted scrape Pi session has exactly the four bounded search tools", async () => {
+test("restricted scrape session exposes exactly the four bounded search tools", async () => {
   const session = await createRestrictedScrapeSession();
   try {
-    assert.deepEqual(session.getActiveToolNames().sort(), ["fetchJobDetails", "finishSearch", "inspectSearchState", "searchJobs"]);
-    assert.equal(session.getActiveToolNames().some((name) => ["read", "bash", "edit", "write", "grep", "find", "ls"].includes(name)), false);
+    const names = session.getActiveToolNames?.() ?? [];
+    const bare = names.map((name) => (name.startsWith("mcp__") ? name.slice(name.lastIndexOf("__") + 2) : name)).sort();
+    assert.deepEqual(bare, ["fetchJobDetails", "finishSearch", "inspectSearchState", "searchJobs"]);
+    assert.equal(names.some((name) => ["read", "bash", "edit", "write", "grep", "find", "ls"].includes(name.toLowerCase())), false);
   } finally {
     session.dispose();
   }

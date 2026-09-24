@@ -16,7 +16,7 @@ import {
   waitFor,
   type FauxRecorder,
   type WireFrame,
-} from "./helpers/qoder-faux.js";
+} from "../src/server/testing/qoder-faux.js";
 
 type Captured = { type?: string; [key: string]: unknown };
 

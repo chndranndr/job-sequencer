@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { Type, type TSchema } from "typebox";
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineAgentTool, type AgentToolDefinition } from "./tools.js";
 import { normalizeUrl } from "./db.js";
 import {
   createSourceRegistry,
@@ -30,14 +29,16 @@ function sourceFrom(value: unknown): JobSource {
   return value;
 }
 
-const SearchArgs = Type.Object({
-  query: Type.String({ minLength: 1, maxLength: 200 }),
-  location: Type.String({ maxLength: 120 }),
-  limit: Type.Integer({ minimum: 1, maximum: 25 }),
-  page: Type.Optional(Type.Integer({ minimum: 1 })),
-  cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
-});
-const DetailArgs = Type.Object({ resultId: Type.String({ minLength: 1, maxLength: 200 }) });
+const SearchArgs = {
+  query: z.string().trim().min(1).max(200),
+  location: z.string().trim().max(120),
+  limit: z.number().int().min(1).max(25),
+  page: z.number().int().min(1).optional(),
+  cursor: z.string().trim().min(1).max(500).optional(),
+};
+const DetailArgs = { resultId: z.string().trim().min(1).max(200) };
+const SearchArgsSchema = z.object(SearchArgs);
+const DetailArgsSchema = z.object(DetailArgs);
 
 const SearchResponseSchema = z.object({
   meta: z.object({ count: z.number().int().nonnegative() }).passthrough(),
@@ -108,8 +109,8 @@ export type ScrapeToolsOptions = {
   maxSearchCalls?: number;
 };
 export type ScrapeTools = {
-  searchJobs: ToolDefinition<TSchema, { count: number }>;
-  fetchJobDetails: ToolDefinition<TSchema, { resultId: string }>;
+  searchJobs: AgentToolDefinition<{ count: number }>;
+  fetchJobDetails: AgentToolDefinition<{ resultId: string }>;
   provenance: Map<string, string>;
   hits: Map<string, SearchHit>;
   detailDescriptions: Map<string, string>;
@@ -165,18 +166,19 @@ export function createScrapeTools(options: ScrapeToolsOptions = {}) {
     if (!warnings.includes(warning)) warnings.push(warning);
   }
 
-  const searchJobs = defineTool({
+  const searchJobs = defineAgentTool<{ count: number }>({
     name: "searchJobs",
     label: `Search ${plugin.manifest.label} jobs`,
     description: `Search the configured ${plugin.manifest.label} source. Returns no more than twenty-five jobs.`,
-    parameters: SearchArgs,
-    execute: async (_id, params, signal) => {
+    schema: SearchArgs,
+    execute: async (_id, rawParams, signal) => {
+      const params = SearchArgsSchema.parse(rawParams);
       const cap = maxSearchCalls === 5 ? "five" : String(maxSearchCalls);
       if (!recordSearchAttempt()) throw new Error(`searchJobs may be called at most ${cap} times per run`);
       const query = safeArgument(params.query, "query");
       const location = safeArgument(params.location, "location", true);
-      const limit = z.number().int().min(1).max(25).parse(params.limit);
-      const page = params.page === undefined ? undefined : z.number().int().min(1).parse(params.page);
+      const limit = params.limit;
+      const page = params.page;
       const cursor = params.cursor === undefined ? undefined : safeArgument(params.cursor, "cursor");
       if (!plugin.manifest.capabilities.pagination && ((page !== undefined && page > 1) || cursor !== undefined)) {
         throw new Error(`${plugin.manifest.label} does not support pagination`);
@@ -203,12 +205,13 @@ export function createScrapeTools(options: ScrapeToolsOptions = {}) {
     },
   });
 
-  const fetchJobDetails = defineTool({
+  const fetchJobDetails = defineAgentTool<{ resultId: string }>({
     name: "fetchJobDetails",
     label: `Fetch ${plugin.manifest.label} job details`,
     description: `Fetch details only for a result ID or URL returned by searchJobs for ${plugin.manifest.label} in this run.`,
-    parameters: DetailArgs,
-    execute: async (_id, params, signal) => {
+    schema: DetailArgs,
+    execute: async (_id, rawParams, signal) => {
+      const params = DetailArgsSchema.parse(rawParams);
       const resultId = safeArgument(params.resultId, "resultId").replace(/\\/g, "/");
       const directUrl = returned.get(resultId);
       let normalizedResultId = resultId;

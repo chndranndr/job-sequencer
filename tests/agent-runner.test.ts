@@ -6,7 +6,6 @@ import {
   AgentRunCancelledError,
   AgentRunTimeoutError,
   runBoundedAgent,
-  selectConfiguredModel,
   type AgentSessionLike,
   type AgentPromptOptions,
 } from "../src/server/agent.js";
@@ -18,15 +17,6 @@ test.after(() => {
   else process.env.TELEMETRY_MODE = priorTelemetryMode;
 });
 
-test("configured OpenAI Codex provider is passed to the Pi model registry", () => {
-  const calls: string[][] = [];
-  const model = selectConfiguredModel({
-    getModel: (provider, id) => { calls.push([provider, id]); return { provider, id }; },
-    getModels: (provider) => { calls.push([provider, "default"]); return []; },
-  }, { provider: "openai-codex", model: "gpt-5.6-luna" });
-  assert.deepEqual(model, { provider: "openai-codex", id: "gpt-5.6-luna" });
-  assert.deepEqual(calls, [["openai-codex", "gpt-5.6-luna"]]);
-});
 
 class FakeSession implements AgentSessionLike {
   disposed = false;

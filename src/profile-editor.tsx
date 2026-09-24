@@ -159,9 +159,9 @@ export function ResumeImportPanel({
   const taskRows = importRun ? deriveRunTaskRows(events, "profile_import", run.status as RunStatus) : [];
   return (
     <section className={`pe-section pe-import ${variantRoot(variant)}`} aria-busy={busy}>
-      <div className="pe-section-head"><h2>{tracker ? "SAMPLE IMPORT" : "Import resume / CV"}</h2><span className="pe-eyebrow">{tracker ? "LOAD WAV · PI PARSE" : "PI-ASSISTED"}</span></div>
+      <div className="pe-section-head"><h2>{tracker ? "SAMPLE IMPORT" : "Import resume / CV"}</h2><span className="pe-eyebrow">{tracker ? "LOAD WAV · QODER PARSE" : "QODER-ASSISTED"}</span></div>
       <div className="pe-section-body">
-      <p className="pe-muted">{tracker ? "Drop a resume sample. Pi maps fields into the bank. Nothing commits until Write to disk." : "Upload PDF, DOC, or DOCX. Pi maps factual fields into an editable draft. Nothing is saved until you click Save profile."}</p>
+      <p className="pe-muted">{tracker ? "Drop a resume sample. Qoder maps fields into the bank. Nothing commits until Write to disk." : "Upload PDF, DOC, or DOCX. Qoder maps factual fields into an editable draft. Nothing is saved until you click Save profile."}</p>
       <EditorField label="Resume or CV file" hint="PDF, DOC, or DOCX · maximum 12 MB">
         <input type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={busy} onChange={(event) => { const file = event.currentTarget.files?.[0] ?? null; event.currentTarget.value = ""; onFile(file); }} />
       </EditorField>

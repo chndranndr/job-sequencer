@@ -259,7 +259,6 @@ export function TrackerApp() {
   const scrapeIssues = useMemo(() => {
     const issues = [];
     if (!profileReady) issues.push("Save a structured profile first.");
-    if (!settings?.model) issues.push("Select a provider model on DISK.");
     return issues;
   }, [profileReady, settings]);
   const enabledLabels = settings ? (settings.enabledSources?.length ? settings.enabledSources : [settings.source]).map((source) => jobSourceLabel(source, settings.customSources ?? [])).join(", ") : "…";
@@ -310,7 +309,7 @@ export function TrackerApp() {
       catch (caught) { setToast(caught instanceof Error ? caught.message : "Import failed."); }
       return;
     }
-    setToast("Use a /command. Pi does not take freeform workspace chat.");
+    setToast("Use a /command. Qoder does not take freeform workspace chat.");
   }
   const prefsReady = prefsLoad === "ok" && Boolean(criteria && savedCriteria && settings && savedSettings);
   const prefsDirty = Boolean(criteria && savedCriteria && JSON.stringify(criteria) !== JSON.stringify(savedCriteria)) || settingsAreDirty(settings, savedSettings);

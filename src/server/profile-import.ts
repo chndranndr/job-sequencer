@@ -445,7 +445,7 @@ export function detectIdentityConflict(current: StructuredProfile | null | undef
 
 type ParseResumeOptions = Pick<ProfileImportOptions, "signal" | "runId" | "trajectory" | "onUsage" | "createSession">;
 
-async function runProfilePi(prompt: string, settings: Settings, systemPrompt: string, options: ParseResumeOptions = {}): Promise<StructuredProfile> {
+async function runProfileAgent(prompt: string, settings: Settings, systemPrompt: string, options: ParseResumeOptions = {}): Promise<StructuredProfile> {
   try {
     return await runStructured({
       prompt,
@@ -476,9 +476,9 @@ async function runProfilePi(prompt: string, settings: Settings, systemPrompt: st
     if (error instanceof AgentRunCancelledError || error instanceof AgentRunTimeoutError) throw error;
     if (error instanceof ProfileImportError) throw error;
     if (error instanceof StructuredOutputError) {
-      throw new ProfileImportError("Pi returned profile data that could not be validated. Try parsing the document again.", 502);
+      throw new ProfileImportError("Qoder returned profile data that could not be validated. Try parsing the document again.", 502);
     }
-    throw new ProfileImportError("Pi could not parse the resume. Check provider settings and try again.", 502);
+    throw new ProfileImportError("Qoder could not parse the resume. Check provider settings and try again.", 502);
   }
 }
 
@@ -490,7 +490,7 @@ export async function parseResumeText(
   const options: ParseResumeOptions = typeof createSessionOrOptions === "function"
     ? { createSession: createSessionOrOptions }
     : createSessionOrOptions;
-  return runProfilePi(profilePrompt(textValue), settings, EXTRACT_SYSTEM_PROMPT, options);
+  return runProfileAgent(profilePrompt(textValue), settings, EXTRACT_SYSTEM_PROMPT, options);
 }
 
 export async function mergeResumeIntoProfile(
@@ -503,7 +503,7 @@ export async function mergeResumeIntoProfile(
   const options: ParseResumeOptions = typeof createSessionOrOptions === "function"
     ? { createSession: createSessionOrOptions }
     : createSessionOrOptions;
-  const merged = await runProfilePi(mergePrompt(textValue, currentProfile, resumeProfile), settings, MERGE_SYSTEM_PROMPT, options);
+  const merged = await runProfileAgent(mergePrompt(textValue, currentProfile, resumeProfile), settings, MERGE_SYSTEM_PROMPT, options);
   return resumeProfile ? completeMergedFromMapped(merged, resumeProfile) : merged;
 }
 
@@ -551,9 +551,6 @@ export class ProfileImportRunManager {
     const existing = this.coordinator.findByIdempotencyKey(idempotencyKey);
     if (existing) return existing;
     const context = await this.options.load();
-    if (!context.settings.provider || !context.settings.model) {
-      throw Object.assign(new Error("Select a provider model in Settings before importing a resume."), { statusCode: 409 });
-    }
     const busy = this.options.db.prepare("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").get();
     if (busy) throw Object.assign(new Error("Another AI run is already active."), { statusCode: 409 });
     const buffer = Buffer.from(file.buffer);
@@ -580,21 +577,21 @@ export class ProfileImportRunManager {
     onUsage: (usage: AgentRunUsage) => void,
   ) {
     const tasks = createTaskReporter(this.options.trajectory, id);
-    const piOptions: ProfileImportOptions = {
+    const agentOptions: ProfileImportOptions = {
       currentProfile,
       signal,
       runId: id,
       trajectory: this.options.trajectory,
       onUsage,
     };
-    const modelDetail = `${settings.provider}/${settings.model}`;
+    const modelDetail = settings.model || "account default";
     try {
       if (this.options.importer) {
         tasks.start({ taskId: "profile_import:extract", label: "Read resume document", detail: safeFileName(file.filename) });
-        const imported = await this.options.importer(file, settings, piOptions);
+        const imported = await this.options.importer(file, settings, agentOptions);
         if (signal.aborted) throw new AgentRunCancelledError();
         tasks.complete("profile_import:extract", `${imported.source.fileName} · ${imported.source.textLength} chars`);
-        tasks.start({ taskId: "profile_import:map", label: "Map fields with Pi", detail: modelDetail });
+        tasks.start({ taskId: "profile_import:map", label: "Map fields with Qoder", detail: modelDetail });
         tasks.complete("profile_import:map", profileDisplayName(imported.extracted) || "Mapped profile");
         tasks.start({ taskId: "profile_import:merge", label: "Merge into profile bank" });
         const mergeDetail = imported.identity.conflict
@@ -611,8 +608,8 @@ export class ProfileImportRunManager {
       if (signal.aborted) throw new AgentRunCancelledError();
       tasks.complete("profile_import:extract", `${safeFileName(file.filename)} · ${extracted.text.length} chars`);
 
-      tasks.start({ taskId: "profile_import:map", label: "Map fields with Pi", detail: modelDetail });
-      const mapped = await parseResumeText(extracted.text, settings, piOptions);
+      tasks.start({ taskId: "profile_import:map", label: "Map fields with Qoder", detail: modelDetail });
+      const mapped = await parseResumeText(extracted.text, settings, agentOptions);
       if (signal.aborted) throw new AgentRunCancelledError();
       tasks.complete("profile_import:map", profileDisplayName(mapped) || "Mapped profile");
 
@@ -627,7 +624,7 @@ export class ProfileImportRunManager {
         tasks.complete("profile_import:merge", "Extract-only · empty bank");
         return { profile: mapped, extracted: mapped, source, identity };
       }
-      const merged = await mergeResumeIntoProfile(extracted.text, currentProfile!, settings, piOptions, mapped);
+      const merged = await mergeResumeIntoProfile(extracted.text, currentProfile!, settings, agentOptions, mapped);
       if (signal.aborted) throw new AgentRunCancelledError();
       tasks.complete("profile_import:merge", profileDisplayName(merged) || "Merged profile");
       return { profile: merged, extracted: mapped, source, identity };

@@ -60,10 +60,10 @@ test("scrape removes hard-excluded and non-remote results before persistence", a
     assert.equal(stored.length,1); assert.equal(stored[0].company,"Good"); assert.equal(stored[0].role,"Backend Engineer"); assert.equal(stored[0].location,"Remote"); assert.equal(stored[0].posting,"Backend role");
   } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
 });
-test("available model endpoint returns provider-authenticated Pi model options", async()=>{
-  const db=openDatabase(":memory:"); let requestedProvider="";
-  const app=await buildServer({db,availableModels:async provider=>{requestedProvider=provider;return[{id:"gpt-5.6-luna",name:"GPT-5.6 Luna"}];}});
-  try { const response=await app.inject({url:"/api/ai/models?provider=openai-codex"}); assert.equal(response.statusCode,200); assert.deepEqual(response.json(),{provider:"openai-codex",models:[{id:"gpt-5.6-luna",name:"GPT-5.6 Luna"}]}); assert.equal(requestedProvider,"openai-codex"); }
+test("available model endpoint returns the Qoder catalog", async()=>{
+  const db=openDatabase(":memory:");
+  const app=await buildServer({db,availableModels:async()=>[{id:"bailian-intl/qwen3.8-max-pg",name:"Qwen-3.8-Max"}]});
+  try { const response=await app.inject({url:"/api/ai/models"}); assert.equal(response.statusCode,200); assert.deepEqual(response.json(),{provider:"qoder",models:[{id:"bailian-intl/qwen3.8-max-pg",name:"Qwen-3.8-Max"}]}); }
   finally { await app.close(); db.close(); }
 });
 

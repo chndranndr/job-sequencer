@@ -194,7 +194,7 @@ export function AgentPane({
     <div id="agent-panel" className="agent__content" hidden={agentCollapsed}>
     {pendingScrape && <div className="ask">
       <h2>Start scrape?</h2>
-      {scrapeIssues.length ? <p>{scrapeIssues.join(" ")}</p> : <p>Pi will search enabled sources and rank jobs. Nothing is selected for you.</p>}
+      {scrapeIssues.length ? <p>{scrapeIssues.join(" ")}</p> : <p>Qoder will search enabled sources and rank jobs. Nothing is selected for you.</p>}
       <SearchPreferences {...preferences} />
       <div className="choices">
         {scrapeIssues.length ? <button onClick={() => navigate("#/disk")}>Open DISK and fix this</button> : <button disabled={!preferences.ready} onClick={onConfirmScrape}>Yes · scrape</button>}

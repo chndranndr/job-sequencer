@@ -70,7 +70,7 @@ import {
 } from "./interview.js";
 import { type FollowUpContext, type InterviewMessage, type StructuredProfile } from "../shared.js";
 import { deriveRunTrajectoryObservability, sanitizeTrajectoryEvent } from "../trajectory.js";
-import { createRestrictedGenerationSession, getAvailablePiModels, runBoundedAgent, type AgentModelOption } from "./agent.js";
+import { createRestrictedGenerationSession, getAvailableAgentModels, runBoundedAgent, type AgentModelOption } from "./agent.js";
 import { InterviewSessionPool, type InterviewSessionFactory } from "./interview-sessions.js";
 import { MAX_PROFILE_UPLOAD_BYTES, ProfileImportRunManager, type ProfileImporter } from "./profile-import.js";
 import { importManualJob, ManualJobRunManager, MAX_MANUAL_BATCH_SIZE, MAX_MANUAL_INPUT_LENGTH, type ManualJobImporter } from "./manual-job.js";
@@ -97,7 +97,7 @@ export interface ServerOptions {
   followUpExecutor?: FollowUpExecutor;
   commandRunner?: CommandRunner;
   documentStatusRunner?: CommandRunner;
-  availableModels?: (provider: string) => Promise<readonly AgentModelOption[]>;
+  availableModels?: () => Promise<readonly AgentModelOption[]>;
   profileImporter?: ProfileImporter;
   manualImporter?: ManualJobImporter;
   projectRoot?: string;
@@ -147,7 +147,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       try { return await readProviderContext(dataDir, purpose); }
       catch (error) {
         // Injected deterministic test executors predate structured-profile persistence;
-        // live Pi workflows never take this compatibility path.
+        // live Qoder workflows never take this compatibility path.
         const injected = purpose === "scrape" ? options.scrapeExecutor : purpose === "generation" ? options.generationExecutor : purpose === "interview" ? (options.interviewExecutor ?? options.interviewSessionFactory) : options.followUpExecutor;
         if (injected) return readProfile(dataDir);
         throw error;
@@ -358,10 +358,9 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   app.put("/api/criteria", (req) => writeCriteria(dataDir, criteriaInputSchema.parse(req.body)));
   app.get("/api/settings", () => readSettings(dataDir));
   app.put("/api/settings", (req) => writeSettings(dataDir, req.body));
-  app.get("/api/ai/models", async (req) => {
-    const provider = z.object({ provider: z.string().trim().min(1).max(80) }).parse(req.query).provider;
-    const models = await (options.availableModels ?? getAvailablePiModels)(provider);
-    return { provider, models };
+  app.get("/api/ai/models", async () => {
+    const models = await (options.availableModels ?? getAvailableAgentModels)();
+    return { provider: "qoder", models };
   });
   app.get("/api/document-status", async () => {
     const runner = options.documentStatusRunner ?? runCommand;

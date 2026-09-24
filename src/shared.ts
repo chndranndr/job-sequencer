@@ -466,7 +466,7 @@ const fallbackTaskPlan: Record<RunWorkflow, Array<[string, string]>> = {
   ],
   profile_import: [
     ["profile_import:fallback:extract", "Read resume document"],
-    ["profile_import:fallback:map", "Map fields with Pi"],
+    ["profile_import:fallback:map", "Map fields with Qoder"],
     ["profile_import:fallback:merge", "Merge into profile bank"],
   ],
   test: [["test:fallback:provider", "Test provider connection"]],

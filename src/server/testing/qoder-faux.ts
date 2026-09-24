@@ -53,7 +53,17 @@ const DEFAULT_INIT_RESPONSE = {
   capabilities: [],
 };
 
-export type RecordingTransportOptions = { initResponse?: Record<string, unknown> };
+export type RecordingTransportOptions = {
+  initResponse?: Record<string, unknown>;
+  /**
+   * Called when the SDK writes a `user` line, returning frames the CLI would
+   * emit in response (assistant/result). Lets the offline smoke and generation
+   * factories drive scripted turns without Pi's fauxProvider.
+   */
+  onUserMessage?: (message: WireFrame) => WireFrame[];
+  /** When set, emitted as a system/init stream frame right after the handshake. */
+  initFrame?: WireFrame;
+};
 
 export class RecordingTransport implements Transport {
   readonly written: WireFrame[] = [];
@@ -63,9 +73,13 @@ export class RecordingTransport implements Transport {
   private readonly queue = new AsyncQueue<WireFrame>();
   private pending: string[] = [];
   private readonly initResponse: Record<string, unknown>;
+  private readonly onUserMessage: ((message: WireFrame) => WireFrame[]) | undefined;
+  private readonly initFrame: WireFrame | undefined;
 
   constructor(options: RecordingTransportOptions = {}) {
     this.initResponse = options.initResponse ?? DEFAULT_INIT_RESPONSE;
+    this.onUserMessage = options.onUserMessage;
+    this.initFrame = options.initFrame;
   }
 
   async initialize(): Promise<void> {
@@ -94,6 +108,7 @@ export class RecordingTransport implements Transport {
         type: "control_response",
         response: { subtype: "success", request_id: parsed.request_id, response: this.initResponse },
       });
+      if (this.initFrame) this.push(this.initFrame);
     } else if (parsed.type === "control_request" && request?.type === "interrupt") {
       // A real CLI answers interrupt with the queued-message receipts; abort()
       // awaits it, so answer promptly or the adapter burns the control timeout.
@@ -101,6 +116,8 @@ export class RecordingTransport implements Transport {
         type: "control_response",
         response: { subtype: "success", request_id: parsed.request_id, response: { still_queued: [] } },
       });
+    } else if (parsed.type === "user" && this.onUserMessage) {
+      for (const frame of this.onUserMessage(parsed)) this.push(frame);
     }
   }
 

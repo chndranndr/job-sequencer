@@ -57,8 +57,8 @@ test("custom source helpers add, rename, reject conflicts, and repair removal", 
   assert.deepEqual(removed.customSources, []);
 });
 
-test("provider/model validity only accepts an authenticated model for the provider", () => {
-  assert.equal(hasValidProviderModel({ ...defaultSettings, provider: "google", model: "gemini" }, [{ id: "gemini", name: "Gemini" }]), true);
-  assert.equal(hasValidProviderModel({ ...defaultSettings, provider: "google", model: "other" }, [{ id: "gemini", name: "Gemini" }]), false);
-  assert.equal(hasValidProviderModel({ ...defaultSettings, provider: "google", model: "" }, [{ id: "gemini", name: "Gemini" }]), false);
+test("model validity accepts the account default or a cataloged Qoder model", () => {
+  assert.equal(hasValidProviderModel({ ...defaultSettings, model: "" }, [{ id: "gemini", name: "Gemini" }]), true);
+  assert.equal(hasValidProviderModel({ ...defaultSettings, model: "gemini" }, [{ id: "gemini", name: "Gemini" }]), true);
+  assert.equal(hasValidProviderModel({ ...defaultSettings, model: "other" }, [{ id: "gemini", name: "Gemini" }]), false);
 });

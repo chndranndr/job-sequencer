@@ -107,9 +107,9 @@ test("template metadata, structured truth boundary, and path containment", async
   assert.throws(() => containedPath("C:/safe", "..", "escape"));
 });
 
-test("generation Pi session exposes no tools", async () => {
+test("generation session exposes no tools", async () => {
   const session = await createFauxRestrictedGenerationSession();
-  try { assert.deepEqual(session.getActiveToolNames(), []); } finally { session.dispose(); }
+  try { assert.deepEqual(session.getActiveToolNames?.() ?? [], []); } finally { session.dispose(); }
 });
 
 test("document verification treats configured pages as maximums", async () => {

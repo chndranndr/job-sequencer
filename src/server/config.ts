@@ -120,7 +120,12 @@ const SettingsInputSchema = z.object({
 }).transform((settings) => {
   const enabledSources = settings.enabledSources?.length ? settings.enabledSources : [settings.source];
   const firstBuiltIn = enabledSources.find((source): source is (typeof jobSourceKeys)[number] => (jobSourceKeys as readonly string[]).includes(source)) ?? "freehire";
-  return { ...settings, source: firstBuiltIn, enabledSources, customSources: settings.customSources } as Settings;
+  // Explicit Qoder migration: legacy Pi provider ids ("google", "openai-codex", ...)
+  // are NOT reinterpreted as Qoder models. Any stored non-qoder provider resets to
+  // the Qoder account default model, forcing deliberate reselection in Settings.
+  // readSettings writes the parsed value back, so the migration self-heals on load.
+  const migrated = settings.provider === "qoder" ? settings : { ...settings, provider: "qoder", model: "" };
+  return { ...migrated, source: firstBuiltIn, enabledSources, customSources: migrated.customSources } as Settings;
 });
 
 export const SettingsSchema = SettingsInputSchema;
@@ -235,7 +240,7 @@ function normalizeStoredProfile(value: unknown) {
 }
 
 export const defaultCriteria: Criteria = { roles: [], locations: [], remoteOnly: false, keywords: [], excludeKeywords: [], employmentTypes: [], maxJobsPerRun: 20 };
-export const defaultSettings: Settings = { provider: "google", model: "", source: "freehire", enabledSources: ["freehire"], customSources: [], sourceMaxAgeDays: { ...defaultSourceMaxAgeDays }, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
+export const defaultSettings: Settings = { provider: "qoder", model: "", source: "freehire", enabledSources: ["freehire"], customSources: [], sourceMaxAgeDays: { ...defaultSourceMaxAgeDays }, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
 
 export function configPaths(dataDir: string) {
   return {

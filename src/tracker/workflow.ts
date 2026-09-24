@@ -34,7 +34,7 @@ export const WORKFLOW_CHANNELS: WorkflowChannel[] = [
     id: "rank",
     num: "02",
     name: "RANK",
-    hint: "Lihat kandidat yang direkomendasikan Pi",
+    hint: "Lihat kandidat yang direkomendasikan Qoder",
     tab: "PATTERN",
     view: "pattern",
     filter: "Recommended",

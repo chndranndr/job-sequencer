@@ -325,7 +325,7 @@ test("task telemetry is ordered, retry-safe, and source-specific", () => {
     assert.deepEqual(deriveRunTaskRows([], "interview", "running").map((row) => row.status), ["active", "pending", "pending"]);
     assert.deepEqual(deriveRunTaskRows([], "profile_import", "running").map((row) => [row.taskId, row.label, row.status]), [
       ["profile_import:fallback:extract", "Read resume document", "active"],
-      ["profile_import:fallback:map", "Map fields with Pi", "pending"],
+      ["profile_import:fallback:map", "Map fields with Qoder", "pending"],
       ["profile_import:fallback:merge", "Merge into profile bank", "pending"],
     ]);
     assert.deepEqual(deriveRunTaskRows([], "generate", "running").map((row) => [row.taskId, row.label]), [

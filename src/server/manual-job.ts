@@ -536,9 +536,9 @@ export async function parseManualJobText(value: string, settings: Settings, opti
     if (error instanceof AgentRunCancelledError || error instanceof AgentRunTimeoutError) throw error;
     if (error instanceof ManualJobImportError) throw error;
     if (error instanceof StructuredOutputError) {
-      throw new ManualJobImportError("Pi returned job data that could not be validated.", 502);
+      throw new ManualJobImportError("Qoder returned job data that could not be validated.", 502);
     }
-    throw new ManualJobImportError("Pi could not parse the job posting. Check provider settings and try again.", 502);
+    throw new ManualJobImportError("Qoder could not parse the job posting. Check provider settings and try again.", 502);
   }
 }
 
@@ -820,7 +820,6 @@ export class ManualJobRunManager {
 
   private async loadContext() {
     const context = await this.options.load();
-    if (!context.settings.provider || !context.settings.model) throw Object.assign(new Error("Select a provider model in Settings before adding a job."), { statusCode: 409 });
     if (!context.profile.trim()) throw Object.assign(new Error("Review and save a structured profile before adding a job."), { statusCode: 409 });
     return context;
   }

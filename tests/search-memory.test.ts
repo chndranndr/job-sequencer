@@ -322,11 +322,11 @@ test("historical memory bounds and labels external role, location, and query tex
         stdout: JSON.stringify({ meta: { count: 0 }, results: [] }),
       }),
     }),
-    runPi: async (options) => {
+    runAgent: async (options) => {
       prompt = options.prompt;
       await options.createSession();
-      await tools!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location: "Tokyo", limit: 1 }, undefined, undefined, undefined as never);
-      await tools!.finishSearch.execute("f-1", { reason: "Fixture complete." }, undefined, undefined, undefined as never);
+      await tools!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location: "Tokyo", limit: 1 }, undefined);
+      await tools!.finishSearch.execute("f-1", { reason: "Fixture complete." }, undefined);
       options.onAssistantText?.(JSON.stringify({ jobs: [] }));
     },
   });
@@ -410,14 +410,14 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
       run1Tools = tools;
       return new FakeSession();
     },
-    runPi: async (options) => {
+    runAgent: async (options) => {
       run1Prompt = options.prompt;
       await options.createSession();
       // Execute search-1 (high yield)
-      await run1Tools!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
+      await run1Tools!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location: "Remote", limit: 2 }, undefined);
       // Execute search-2 (high duplicate / low useful)
-      await run1Tools!.searchJobs.execute("s-2", { source: "freehire", query: "legacy dev", location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
-      await run1Tools!.finishSearch.execute("f-1", { reason: "Run 1 exploration complete." }, undefined, undefined, undefined as never);
+      await run1Tools!.searchJobs.execute("s-2", { source: "freehire", query: "legacy dev", location: "Remote", limit: 2 }, undefined);
+      await run1Tools!.finishSearch.execute("f-1", { reason: "Run 1 exploration complete." }, undefined);
       options.onAssistantText?.(JSON.stringify({
         jobs: [{ sourceId: "p-1", source: "freehire", url: "https://example.test/p-1", company: "A", role: "Platform Engineer", location: "Remote", posting: "Posting", score: 85, reason: "Fit", strengths: [], gaps: [] }],
       }));
@@ -467,7 +467,7 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
       run2Tools = tools;
       return new FakeSession();
     },
-    runPi: async (options) => {
+    runAgent: async (options) => {
       run2Prompt = options.prompt;
       const signals = parseHistoricalSignals(run2Prompt);
       const platformSignal = signals.find(signal => signal.pattern.startsWith("platform engineer /"));
@@ -477,9 +477,9 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
       assert.ok(signals.findIndex(signal => signal === platformSignal) < signals.findIndex(signal => signal === legacySignal));
       const query = platformSignal?.signal === "positive" && legacySignal?.signal === "negative" ? "platform engineer" : "legacy dev";
       await options.createSession();
-      await run2Tools!.searchJobs.execute("s-1", { source: "freehire", query, location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
-      await run2Tools!.fetchJobDetails.execute("d-1", { source: "freehire", resultId: "p-1" }, undefined, undefined, undefined as never);
-      await run2Tools!.finishSearch.execute("f-1", { reason: "Found promising candidates using memory." }, undefined, undefined, undefined as never);
+      await run2Tools!.searchJobs.execute("s-1", { source: "freehire", query, location: "Remote", limit: 2 }, undefined);
+      await run2Tools!.fetchJobDetails.execute("d-1", { source: "freehire", resultId: "p-1" }, undefined);
+      await run2Tools!.finishSearch.execute("f-1", { reason: "Found promising candidates using memory." }, undefined);
       options.onAssistantText?.(JSON.stringify({
         jobs: [{ sourceId: "p-1", source: "freehire", url: "https://example.test/p-1", company: "A", role: "Platform Engineer", location: "Remote", posting: "Full posting.", score: 92, reason: "Fit", strengths: ["Platform"], gaps: [] }],
       }));
@@ -571,7 +571,7 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
       toolsInstance = tools;
       return new FakeSession();
     },
-    runPi: async (options) => {
+    runAgent: async (options) => {
       prompt = options.prompt;
       const signals = parseHistoricalSignals(prompt);
       const relevantSignals = signals.filter(signal => /^(?:java developer|php developer) \//i.test(signal.pattern));
@@ -581,9 +581,9 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
       const queries = relevantSignals.map(signal => signal.pattern.startsWith("java developer /") ? "java developer" : "php developer");
       await options.createSession();
       for (const [index, query] of queries.entries()) {
-        await toolsInstance!.searchJobs.execute(`s-${index + 1}`, { source: "freehire", query, location: "Remote", limit: 2 }, undefined, undefined, undefined as never);
+        await toolsInstance!.searchJobs.execute(`s-${index + 1}`, { source: "freehire", query, location: "Remote", limit: 2 }, undefined);
       }
-      await toolsInstance!.finishSearch.execute("f-1", { reason: "Retried negative history after a better alternative." }, undefined, undefined, undefined as never);
+      await toolsInstance!.finishSearch.execute("f-1", { reason: "Retried negative history after a better alternative." }, undefined);
       options.onAssistantText?.(JSON.stringify({ jobs: [] }));
     },
     createSourceTools: () => createScrapeTools({
@@ -662,13 +662,13 @@ test("search preferences remain visible when memory favors Singapore", async () 
         stdout: JSON.stringify({ meta: { count: 0 }, results: [] }),
       }),
     }),
-    runPi: async (options) => {
+    runAgent: async (options) => {
       prompt = options.prompt;
       await options.createSession();
       const criteria = prompt.match(/TRUSTED SEARCH PREFERENCES\n---\n([\s\S]*?)\n---/)?.[1] ?? "";
       const location = criteria.includes('"locations":["Tokyo"]') ? "Tokyo" : "Singapore";
-      await tools!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location, limit: 1 }, undefined, undefined, undefined as never);
-      await tools!.finishSearch.execute("f-1", { reason: "Criteria fixture complete." }, undefined, undefined, undefined as never);
+      await tools!.searchJobs.execute("s-1", { source: "freehire", query: "platform engineer", location, limit: 1 }, undefined);
+      await tools!.finishSearch.execute("f-1", { reason: "Criteria fixture complete." }, undefined);
       options.onAssistantText?.(JSON.stringify({ jobs: [] }));
     },
   });

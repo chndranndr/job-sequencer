@@ -64,16 +64,16 @@ test("scrape validation enforces limits and normalized uniqueness before persist
 test("scrape wrapper keeps a fixed command shape and rejects adversarial inputs", async () => {
   const calls: string[][] = [];
   const tools = createScrapeTools({ runCli: async (args) => { calls.push(args); return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) }; } });
-  await tools.searchJobs.execute("search", { query: "backend engineer", location: "Remote", limit: 1 }, undefined, undefined, undefined as never);
+  await tools.searchJobs.execute("search", { query: "backend engineer", location: "Remote", limit: 1 }, undefined);
   assert.deepEqual(calls[0], ["search", "--query", "backend engineer", "--limit", "1", "--format", "json", "--city", "Remote"]);
-  await assert.rejects(() => tools.searchJobs.execute("empty", { query: "", location: "", limit: 1 }, undefined, undefined, undefined as never), /query|empty/i);
-  await assert.rejects(() => tools.searchJobs.execute("long-location", { query: "backend", location: "x".repeat(121), limit: 1 }, undefined, undefined, undefined as never), /location|too long/i);
-  await assert.rejects(() => tools.searchJobs.execute("bad-limit", { query: "backend", location: "", limit: 26 }, undefined, undefined, undefined as never), /limit|maximum/i);
-  await assert.rejects(() => tools.searchJobs.execute("injected", { query: "backend --format json", location: "", limit: 1 }, undefined, undefined, undefined as never), /argument|flag|invalid/i);
+  await assert.rejects(() => tools.searchJobs.execute("empty", { query: "", location: "", limit: 1 }, undefined), /query|empty/i);
+  await assert.rejects(() => tools.searchJobs.execute("long-location", { query: "backend", location: "x".repeat(121), limit: 1 }, undefined), /location|too long/i);
+  await assert.rejects(() => tools.searchJobs.execute("bad-limit", { query: "backend", location: "", limit: 26 }, undefined), /limit|maximum/i);
+  await assert.rejects(() => tools.searchJobs.execute("injected", { query: "backend --format json", location: "", limit: 1 }, undefined), /argument|flag|invalid/i);
   const freshTools = createScrapeTools({ runCli: async (args) => { calls.push(args); return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) }; } });
-  await assert.rejects(() => freshTools.searchJobs.execute("injected-location", { query: "backend", location: "Remote --format json", limit: 1 }, undefined, undefined, undefined as never), /argument|flag|invalid/i);
-  await assert.rejects(() => tools.fetchJobDetails.execute("bad", { resultId: "../escape" }, undefined, undefined, undefined as never), /resultId|invalid/i);
-  await assert.rejects(() => tools.fetchJobDetails.execute("before-search", { resultId: "not-searched" }, undefined, undefined, undefined as never), /was not returned/i);
+  await assert.rejects(() => freshTools.searchJobs.execute("injected-location", { query: "backend", location: "Remote --format json", limit: 1 }, undefined), /argument|flag|invalid/i);
+  await assert.rejects(() => tools.fetchJobDetails.execute("bad", { resultId: "../escape" }, undefined), /resultId|invalid/i);
+  await assert.rejects(() => tools.fetchJobDetails.execute("before-search", { resultId: "not-searched" }, undefined), /was not returned/i);
 });
 
 test("scrape upsert preserves every advanced stage while refreshing posting data", () => {

@@ -50,7 +50,7 @@ function fixtureTools(config: FixtureConfig = {}) {
 }
 
 async function callSearch(tools: ReturnType<typeof fixtureTools>) {
-  const output = await tools.searchJobs.execute("search", { query: "backend", location: "Remote", limit: 5 }, undefined, undefined, undefined as never);
+  const output = await tools.searchJobs.execute("search", { query: "backend", location: "Remote", limit: 5 }, undefined);
   const block = output.content[0];
   if (block.type !== "text") throw new Error("search result was not text");
   return JSON.parse(block.text) as { meta: { count: number }; results: Array<typeof hit> };
@@ -60,7 +60,7 @@ test("registered plugins expose bounded manifests and preserve provenance", asyn
   const tools = fixtureTools();
   const result = await callSearch(tools);
   assert.equal(result.results[0]?.id, hit.id);
-  const fetched = await tools.fetchJobDetails.execute("detail", { resultId: hit.id }, undefined, undefined, undefined as never);
+  const fetched = await tools.fetchJobDetails.execute("detail", { resultId: hit.id }, undefined);
   const block = fetched.content[0];
   if (block.type !== "text") throw new Error("detail result was not text");
   assert.equal(JSON.parse(block.text).id, hit.id);
@@ -115,13 +115,13 @@ test("search contract rejects malformed responses and removes duplicates", async
 test("detail contract rejects provenance mismatches", async () => {
   const tools = fixtureTools({ details: async context => context.request(async () => ({ ...detail, id: "fabricated" })) });
   await callSearch(tools);
-  await assert.rejects(() => tools.fetchJobDetails.execute("detail", { resultId: hit.id }, undefined, undefined, undefined as never), /provenance mismatch/i);
+  await assert.rejects(() => tools.fetchJobDetails.execute("detail", { resultId: hit.id }, undefined), /provenance mismatch/i);
 });
 
 test("source policy propagates aborts and enforces timeouts", async () => {
   const abortTools = fixtureTools({ search: async () => new Promise(() => {}) });
   const controller = new AbortController();
-  const pending = abortTools.searchJobs.execute("abort", { query: "backend", location: "", limit: 1 }, controller.signal, undefined, undefined as never);
+  const pending = abortTools.searchJobs.execute("abort", { query: "backend", location: "", limit: 1 }, controller.signal);
   controller.abort();
   await assert.rejects(pending);
 
@@ -218,7 +218,7 @@ test("all built-in CLI plugins preserve their fixture transport contracts", asyn
     assert.equal("postedAt" in (normalizedResult ?? {}), false);
     assert.equal(normalizedResult?.source, source);
     if (source === "relocate-me") assert.equal(searched.results[0]?.id, "relocate-me:spain%2Fexample%2Fbackend-engineer-1");
-    await tools.fetchJobDetails.execute("detail", { resultId: searched.results[0]?.id ?? id }, undefined, undefined, undefined as never);
+    await tools.fetchJobDetails.execute("detail", { resultId: searched.results[0]?.id ?? id }, undefined);
   }
 });
 
@@ -253,7 +253,7 @@ test("built-in HTML sources parse safe search IDs and detail provenance", async 
         : fixture.detail,
         { headers: { "content-type": "text/html" } }),
     });
-    const searchOutput = await tools.searchJobs.execute("search", { query: "backend", location: fixture.location, limit: 1 }, undefined, undefined, undefined as never);
+    const searchOutput = await tools.searchJobs.execute("search", { query: "backend", location: fixture.location, limit: 1 }, undefined);
     const searchBlock = searchOutput.content[0];
     if (searchBlock.type !== "text") throw new Error(`${source} search result was not text`);
     const searchPayload = JSON.parse(searchBlock.text) as { results: Array<{ id: string; title: string; company: string | null; location: string | null; url: string }> };
@@ -266,7 +266,7 @@ test("built-in HTML sources parse safe search IDs and detail provenance", async 
         ? "https://www.ycombinator.com/companies/example/jobs/yc-123-backend-engineer"
         : `https://id.indeed.com/m/viewjob?jk=${fixture.id}`,
     });
-    const detailOutput = await tools.fetchJobDetails.execute("detail", { resultId: fixture.id }, undefined, undefined, undefined as never);
+    const detailOutput = await tools.fetchJobDetails.execute("detail", { resultId: fixture.id }, undefined);
     const detailBlock = detailOutput.content[0];
     if (detailBlock.type !== "text") throw new Error(`${source} detail result was not text`);
     const detailPayload = JSON.parse(detailBlock.text) as { id: string; title: string; url: string; description: string };
@@ -287,12 +287,12 @@ test("Indeed rejects redirects that leave its fixed host", async () => {
       ? new Response(`<ul><li><a data-jk="indeed-redirect" href="/rc/clk?jk=indeed-redirect"><span>Backend Engineer</span></a><span data-testid="company-name">Example Co</span><div data-testid="text-location">Jakarta</div></li></ul>`)
       : Response.redirect("https://evil.example/job", 302),
   });
-  const searchOutput = await tools.searchJobs.execute("search", { query: "backend", location: "Jakarta", limit: 1 }, undefined, undefined, undefined as never);
+  const searchOutput = await tools.searchJobs.execute("search", { query: "backend", location: "Jakarta", limit: 1 }, undefined);
   const searchBlock = searchOutput.content[0];
   if (searchBlock.type !== "text") throw new Error("Indeed search result was not text");
   const searchPayload = JSON.parse(searchBlock.text) as { results: Array<{ id: string }> };
   await assert.rejects(
-    () => tools.fetchJobDetails.execute("detail", { resultId: searchPayload.results[0]?.id ?? "indeed-redirect" }, undefined, undefined, undefined as never),
+    () => tools.fetchJobDetails.execute("detail", { resultId: searchPayload.results[0]?.id ?? "indeed-redirect" }, undefined),
     /allowed host|unsafe redirect/i,
   );
 });
@@ -303,7 +303,7 @@ test("agent inspection exposes enabled source capabilities and policy", async ()
     sources: [{ key: "fixture", registry }],
     goal: { criteria: defaultCriteria, enabledSources: ["fixture"] },
   });
-  const output = await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never);
+  const output = await tools.inspectSearchState.execute("inspect", {}, undefined);
   const block = output.content[0];
   if (block.type !== "text") throw new Error("inspection result was not text");
   const inspected = JSON.parse(block.text) as { sources: Array<{ id: string; capabilities: SourceManifest["capabilities"]; policy: SourcePolicy }> };
@@ -325,7 +325,7 @@ test("FreeHire maps page requests and preserves pagination metadata", async () =
       return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 1, page: 2, total: 51, nextCursor: null }, results }) };
     },
   });
-  const output = await tools.searchJobs.execute("page-2", { query: "backend", location: "Remote", limit: 25, page: 2 }, undefined, undefined, undefined as never);
+  const output = await tools.searchJobs.execute("page-2", { query: "backend", location: "Remote", limit: 25, page: 2 }, undefined);
   const block = output.content[0];
   if (block.type !== "text") throw new Error("search result was not text");
   const parsed = JSON.parse(block.text) as { pageInfo?: { hasMore: boolean; nextPage?: number; total?: number }; results: unknown[] };
@@ -334,7 +334,7 @@ test("FreeHire maps page requests and preserves pagination metadata", async () =
   assert.equal(parsed.results.length, 1);
   assert.equal(tools.manifest.capabilities.pagination, true);
   await assert.rejects(
-    () => tools.searchJobs.execute("cursor", { query: "backend", location: "Remote", limit: 25, cursor: "opaque" }, undefined, undefined, undefined as never),
+    () => tools.searchJobs.execute("cursor", { query: "backend", location: "Remote", limit: 25, cursor: "opaque" }, undefined),
     /page pagination/i,
   );
 });

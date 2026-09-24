@@ -4,6 +4,7 @@ import {
   type AuthOptions,
   type CanUseTool,
   type McpServerConfig,
+  type ModelInfo,
   type PermissionResult,
   type Query,
   type QueryTransportOptions,
@@ -420,6 +421,11 @@ export class QoderSession implements AgentSessionLike {
     this.listeners.clear();
     this.prompts.end();
     void this.query.close().catch(() => {});
+  }
+
+  /** Account model catalog (control request; zero inference, proven 0-credit in the phase-0 probe). */
+  listModels(): Promise<ModelInfo[]> {
+    return this.query.getAvailableModels({ fetchStrategy: "live" });
   }
 
   getActiveToolNames(): string[] {

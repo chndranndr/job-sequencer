@@ -8,7 +8,7 @@ import { SamplePopup } from "./sample.js";
 export const orderSlots = [
   { key: "Recommended", pos: "B00", pattern: "P-REC", title: "RECO", hint: "Di atas ambang FIT", focus: undefined, gate: false },
   { key: "Selected", pos: "B01", pattern: "P-SEL", title: "SELECT", hint: "Gate · tunggu dokumen", focus: "draft" as const, gate: true },
-  { key: "Drafting", pos: "B02", pattern: "P-DRF", title: "DRAFT", hint: "Pi · generate + verify", focus: "draft" as const, gate: false },
+  { key: "Drafting", pos: "B02", pattern: "P-DRF", title: "DRAFT", hint: "Qoder · generate + verify", focus: "draft" as const, gate: false },
   { key: "Ready", pos: "B03", pattern: "P-RDY", title: "READY", hint: "Gate · submit manual", focus: "ready" as const, gate: true },
   { key: "Applied", pos: "B04", pattern: "P-APP", title: "APPLIED", hint: "Submitted", focus: "follow" as const, gate: false },
   { key: "Interview", pos: "B05", pattern: "P-INT", title: "PHRASE", hint: "Interview nyata", focus: "follow" as const, gate: false },

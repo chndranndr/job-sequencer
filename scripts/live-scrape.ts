@@ -8,7 +8,7 @@ try {
   source = settings.source;
   const criteria = await readCriteria("data");
   const tools = createScrapeTools({ source: settings.source, maxAgeDays: settings.sourceMaxAgeDays?.[settings.source] });
-  const result = await tools.searchJobs.execute("live-search", { query: criteria.roles.join(" ") || "backend engineer", location: criteria.locations[0] ?? "", limit: 5 }, undefined, undefined, undefined as never);
+  const result = await tools.searchJobs.execute("live-search", { query: criteria.roles.join(" ") || "backend engineer", location: criteria.locations[0] ?? "", limit: 5 }, undefined);
   const block = result.content[0];
   console.log(block.type === "text" ? block.text : "[non-text result]");
 } catch (error) {

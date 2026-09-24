@@ -187,28 +187,21 @@ export function DiskView({
       .catch((caught) => setError(caught instanceof Error ? caught.message : "DISK could not load."));
   }, []);
 
-  const provider = settings?.provider ?? "";
   useEffect(() => {
     let cancelled = false;
-    if (!provider) {
-      setModels([]);
-      setModelsError("");
-      setModelsLoading(false);
-      return () => { cancelled = true; };
-    }
     setModelsLoading(true);
     setModelsError("");
     setModels([]);
-    void getAvailableModels(provider).then((result) => {
+    void getAvailableModels().then((result) => {
       if (!cancelled) setModels(result.models);
     }).catch((caught) => {
       if (!cancelled) {
         setModels([]);
-        setModelsError(caught instanceof Error ? caught.message : "Could not load authenticated models.");
+        setModelsError(caught instanceof Error ? caught.message : "Could not load Qoder models.");
       }
     }).finally(() => { if (!cancelled) setModelsLoading(false); });
     return () => { cancelled = true; };
-  }, [provider]);
+  }, []);
 
   const profileDirty = Boolean(profile && savedProfile && JSON.stringify(profile) !== JSON.stringify(savedProfile));
   const criteriaDirty = Boolean(criteria && savedCriteria && JSON.stringify(criteria) !== JSON.stringify(savedCriteria));
@@ -283,7 +276,7 @@ export function DiskView({
   async function saveSettings() {
     if (!settings) return;
     if (!modelValid) {
-      setSettingsError(modelsLoading ? "Wait for authenticated models to load." : modelsError || "Select an authenticated model for the selected provider before writing settings.");
+      setSettingsError(modelsLoading ? "Wait for Qoder models to load." : modelsError || "Select a valid Qoder model before writing settings.");
       return;
     }
     setSettingsError("");
@@ -429,7 +422,7 @@ export function DiskView({
   if (error || !profile || !criteria || !settings) return <section className="panel" style={{ gridColumn: "1 / -1" }}><p className="empty">{error || "Loading DISK…"}</p></section>;
 
   const importBusy = importing || run?.status === "running";
-  const modelLabel = settings.provider && settings.model ? `${settings.provider}/${settings.model}` : settings.model || "";
+  const modelLabel = settings.model || "qoder default";
   return <>
     <section className="panel disk-main">
       <div className="panel-h">DISK · SAMPLE BANK <span>one bank at a time · patch then write</span></div>
@@ -529,22 +522,14 @@ export function DiskView({
       <div className="disk-tune">
         {settingsDirty && <div className="disk-settings-state" role="status">UNSAVED SETTINGS</div>}
         <section className="pe-section pe-theme-tracker">
-          <div className="pe-section-head"><h2>PROVIDER</h2><span className="pe-eyebrow">MODEL</span></div>
+          <div className="pe-section-head"><h2>MODEL</h2><span className="pe-eyebrow">QODER</span></div>
           <div className="pe-section-body">
-            <label className="field">Provider
-              <select value={settings.provider} onChange={(event) => { setSettings({ ...settings, provider: event.target.value, model: "" }); setSettingsError(""); }}>
-                <option value="google">Google</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="openai">OpenAI API key</option>
-                <option value="openai-codex">OpenAI Codex</option>
-              </select>
-            </label>
             <label className="field">Model
               <select value={settings.model} disabled={modelsLoading || Boolean(modelsError) || !models.length} onChange={(event) => { setSettings({ ...settings, model: event.target.value }); setSettingsError(""); }}>
-                <option value="">{modelsLoading ? "Loading authenticated models..." : modelsError ? "Models unavailable" : models.length ? "Select a model" : "No authenticated models"}</option>
+                <option value="">{modelsLoading ? "Loading Qoder models..." : modelsError ? "Models unavailable" : models.length ? "Account default" : "No models available"}</option>
                 {models.map((model) => <option key={model.id} value={model.id}>{model.name === model.id ? model.id : `${model.name} · ${model.id}`}</option>)}
               </select>
-              <small>{modelsLoading ? "Loading authenticated models..." : modelsError || (models.length ? `${models.length} authenticated model${models.length === 1 ? "" : "s"} available.` : "No authenticated models. Run Pi /login or configure provider credentials.")}</small>
+              <small>{modelsLoading ? "Loading Qoder models..." : modelsError || (models.length ? `${models.length} Qoder model${models.length === 1 ? "" : "s"} available. Leave blank to use the account default.` : "No models. Run `qodercli login` or set QODER_PERSONAL_ACCESS_TOKEN.")}</small>
             </label>
             {settingsError && <p className="disk-settings-error" role="alert">{settingsError}</p>}
           </div>

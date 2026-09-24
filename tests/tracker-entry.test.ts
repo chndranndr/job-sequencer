@@ -296,7 +296,7 @@ test("DISK bank A hosts resume import and LOAD bank is gone", () => {
   const fieldsAt = bankA.indexOf("ProfileFields");
   assert.ok(importAt >= 0, "bank A should render ResumeImportPanel");
   assert.ok(fieldsAt > importAt, "ResumeImportPanel should sit before ProfileFields");
-  assert.match(disk, /<h2>PROVIDER<\/h2>/);
+  assert.match(disk, /<h2>MODEL<\/h2>/);
   assert.match(disk, /<h2>SEARCH KNOBS<\/h2>/);
   assert.match(disk, /<h2>ARMED SOURCES<\/h2>/);
   assert.match(disk, /<h2>DOCUMENT SETTINGS<\/h2>/);

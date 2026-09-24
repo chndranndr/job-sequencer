@@ -24,9 +24,9 @@ test("research tool only fetches public HTTP(S) pages", async () => {
     requested = String(url);
     return new Response("company page", { status: 200 });
   });
-  const result = await tool.execute("research-1", { url: "https://example.test/about" }, new AbortController().signal, undefined, undefined as never);
+  const result = await tool.execute("research-1", { url: "https://example.test/about" }, new AbortController().signal);
   assert.equal(requested, "https://example.test/about");
   assert.equal(result.content[0]?.type, "text");
   if (result.content[0]?.type === "text") assert.equal(result.content[0].text, "company page");
-  await assert.rejects(() => tool.execute("research-2", { url: "file:///secret" }, new AbortController().signal, undefined, undefined as never), /HTTP|HTTPS/);
+  await assert.rejects(() => tool.execute("research-2", { url: "file:///secret" }, new AbortController().signal), /HTTP|HTTPS/);
 });

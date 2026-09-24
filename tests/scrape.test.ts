@@ -10,7 +10,7 @@ test("scrape tool session exposes only two tools and rejects unknown IDs", async
   assert.deepEqual(Object.keys(tools).sort(), ["fetchJobDetails", "searchJobs"]);
   assert.equal(Object.prototype.propertyIsEnumerable.call(tools, "detailDescriptions"), false);
   await assert.rejects(
-    tools.fetchJobDetails.execute("call", { resultId: "fabricated-id" }, undefined, undefined, undefined as never),
+    tools.fetchJobDetails.execute("call", { resultId: "fabricated-id" }, undefined),
     /was not returned by searchJobs/,
   );
 });
@@ -30,8 +30,8 @@ test("hydration replaces metadata-only posting and preserves the model fallback 
 
 test("scrape tools enforce the five-search run budget", async () => {
   const tools = createScrapeTools({ runCli: async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) }) });
-  for (let call = 0; call < 5; call++) await tools.searchJobs.execute(String(call), { query: "backend", location: "", limit: 1 }, undefined, undefined, undefined as never);
-  await assert.rejects(tools.searchJobs.execute("six", { query: "backend", location: "", limit: 1 }, undefined, undefined, undefined as never), /at most five/);
+  for (let call = 0; call < 5; call++) await tools.searchJobs.execute(String(call), { query: "backend", location: "", limit: 1 }, undefined);
+  await assert.rejects(tools.searchJobs.execute("six", { query: "backend", location: "", limit: 1 }, undefined), /at most five/);
 });
 
 test("empty combined Japan query falls back to a role and preserves provenance", async () => {
@@ -48,7 +48,7 @@ test("empty combined Japan query falls back to a role and preserves provenance",
       return { code: 0, stderr: "", stdout: JSON.stringify({ count: results.length, results }) };
     },
   });
-  const search = await tools.searchJobs.execute("search", { query: "Fullstack Developer Backend Developer Platform Engineer Infrastructure", location: "", limit: 5 }, undefined, undefined, undefined as never);
+  const search = await tools.searchJobs.execute("search", { query: "Fullstack Developer Backend Developer Platform Engineer Infrastructure", location: "", limit: 5 }, undefined);
   const block = search.content[0];
   if (block.type !== "text") throw new Error("search result was not text");
   const parsed = JSON.parse(block.text) as { results: Array<{ id: string; url: string }> };
@@ -68,7 +68,7 @@ test("Japan-board fallback never exceeds the five-search run budget", async () =
       return { code: 0, stderr: "", stdout: JSON.stringify({ count: 0, results: [] }) };
     },
   });
-  const search = await tools.searchJobs.execute("search", { query: "all roles", location: "", limit: 5 }, undefined, undefined, undefined as never);
+  const search = await tools.searchJobs.execute("search", { query: "all roles", location: "", limit: 5 }, undefined);
   assert.equal(search.details?.count, 0);
   assert.equal(calls, 5);
 });
@@ -83,7 +83,7 @@ test("non-Japan sources do not invoke Japan fallback queries", async () => {
       return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) };
     },
   });
-  await tools.searchJobs.execute("search", { query: "all roles", location: "", limit: 5 }, undefined, undefined, undefined as never);
+  await tools.searchJobs.execute("search", { query: "all roles", location: "", limit: 5 }, undefined);
   assert.equal(calls, 1);
 });
 
@@ -104,7 +104,7 @@ test("duplicate Japan fallback results are deduped and capped at the requested l
       return { code: 0, stderr: "", stdout: JSON.stringify({ count: results.length, results }) };
     },
   });
-  const search = await tools.searchJobs.execute("search", { query: "all roles", location: "", limit: 2 }, undefined, undefined, undefined as never);
+  const search = await tools.searchJobs.execute("search", { query: "all roles", location: "", limit: 2 }, undefined);
   const block = search.content[0];
   if (block.type !== "text") throw new Error("search result was not text");
   const parsed = JSON.parse(block.text) as { count: number; results: Array<{ id: string; url: string }> };
@@ -152,13 +152,13 @@ test("searchJobs wraps the vendored FreeHire CLI and records provenance", async 
     env: { FREEHIRE_API_URL: baseUrl },
   });
   try {
-    const result = await tools.searchJobs.execute("call", { query: "backend", location: "Remote", limit: 1 }, undefined, undefined, undefined as never);
+    const result = await tools.searchJobs.execute("call", { query: "backend", location: "Remote", limit: 1 }, undefined);
     const block = result.content[0];
     assert.equal(block.type, "text");
     const parsed = JSON.parse(block.text) as { results: Array<{ id: string; url: string }> };
     assert.equal(parsed.results[0].id, job.public_slug);
     assert.equal(parsed.results[0].url, job.url);
-    const detail = await tools.fetchJobDetails.execute("detail", { resultId: job.public_slug }, undefined, undefined, undefined as never);
+    const detail = await tools.fetchJobDetails.execute("detail", { resultId: job.public_slug }, undefined);
     const detailBlock = detail.content[0];
     assert.equal(detailBlock.type, "text");
     assert.match(detailBlock.text, /Build APIs/);
@@ -183,11 +183,11 @@ test("non-paginated sources reject continuation requests", async () => {
     },
   });
   await assert.rejects(
-    tools.searchJobs.execute("page-2", { query: "backend", location: "Remote", limit: 1, page: 2 }, undefined, undefined, undefined as never),
+    tools.searchJobs.execute("page-2", { query: "backend", location: "Remote", limit: 1, page: 2 }, undefined),
     /does not support pagination/i,
   );
   await assert.rejects(
-    tools.searchJobs.execute("cursor", { query: "backend", location: "Remote", limit: 1, cursor: "opaque" }, undefined, undefined, undefined as never),
+    tools.searchJobs.execute("cursor", { query: "backend", location: "Remote", limit: 1, cursor: "opaque" }, undefined),
     /does not support pagination/i,
   );
   assert.equal(calls, 0);
@@ -207,20 +207,20 @@ test("LinkedIn search uses the required location and normalizes detail provenanc
       return { code: 0, stderr: "", stdout: JSON.stringify({ id, title: "Backend Engineer", company: "Example", location: "Tokyo", url: detailUrl, description: "Build APIs" }) };
     },
   });
-  await assert.rejects(tools.searchJobs.execute("missing-location", { query: "backend", location: "", limit: 1 }, undefined, undefined, undefined as never), /LinkedIn search requires a location/);
-  const search = await tools.searchJobs.execute("search", { query: "backend", location: "Tokyo, Japan", limit: 1 }, undefined, undefined, undefined as never);
+  await assert.rejects(tools.searchJobs.execute("missing-location", { query: "backend", location: "", limit: 1 }, undefined), /LinkedIn search requires a location/);
+  const search = await tools.searchJobs.execute("search", { query: "backend", location: "Tokyo, Japan", limit: 1 }, undefined);
   assert.deepEqual(calls[0], ["search", "--location", "Tokyo, Japan", "--query", "backend", "--limit", "1", "--format", "json"]);
   const searchBlock = search.content[0];
   if (searchBlock.type !== "text") throw new Error("search result was not text");
   assert.deepEqual(JSON.parse(searchBlock.text), { meta: { count: 1 }, results: [{ id, title: "Backend Engineer", company: "Example", location: "Tokyo", url }] });
-  const detail = await tools.fetchJobDetails.execute("detail", { resultId: id }, undefined, undefined, undefined as never);
+  const detail = await tools.fetchJobDetails.execute("detail", { resultId: id }, undefined);
   assert.deepEqual(calls[1], ["detail", id, "--format", "json"]);
   const detailBlock = detail.content[0];
   if (detailBlock.type !== "text") throw new Error("detail result was not text");
   assert.equal(JSON.parse(detailBlock.text).description, "Build APIs");
   assert.equal(tools.detailDescriptions.get(id), "Build APIs");
   detailUrl = "https://example.com/jobs/view/987654321";
-  await assert.rejects(tools.fetchJobDetails.execute("bad-detail", { resultId: id }, undefined, undefined, undefined as never), /LinkedIn detail provenance mismatch/);
+  await assert.rejects(tools.fetchJobDetails.execute("bad-detail", { resultId: id }, undefined), /LinkedIn detail provenance mismatch/);
   assert.throws(() => validateScrapeResult({ jobs: [{ sourceId: id, source: "freehire", url, company: "Example", role: "Backend Engineer", location: "Tokyo", posting: "Build APIs", score: 81, reason: "fit", strengths: [], gaps: [] }] }, new Map([[id, url]]), 50, "linkedin"), /source must be linkedin/);
 });
 
@@ -238,19 +238,19 @@ for (const source of ["tokyodev", "japan-dev"] as const) {
         return { code: 0, stderr: "", stdout: JSON.stringify({ url: mismatch ? "https://example.test/fabricated" : url, title: "Backend Engineer", text: "Build APIs" }) };
       },
     });
-    const search = await tools.searchJobs.execute("search", { query: "backend", location: "", limit: 1 }, undefined, undefined, undefined as never);
+    const search = await tools.searchJobs.execute("search", { query: "backend", location: "", limit: 1 }, undefined);
     assert.deepEqual(calls[0], ["search", "--source", source, "--query", "backend", "--country", "Japan", "--limit", "1", "--format", "json"]);
     const searchBlock = search.content[0];
     if (searchBlock.type !== "text") throw new Error("search result was not text");
     assert.deepEqual(JSON.parse(searchBlock.text), { meta: { count: 1 }, results: [{ id, source, title: "Backend Engineer", company: "Example", location: "Tokyo, Japan", url }] });
-    const detail = await tools.fetchJobDetails.execute("detail", { resultId: id }, undefined, undefined, undefined as never);
+    const detail = await tools.fetchJobDetails.execute("detail", { resultId: id }, undefined);
     assert.deepEqual(calls[1], ["detail", url, "--format", "json"]);
     const detailBlock = detail.content[0];
     if (detailBlock.type !== "text") throw new Error("detail result was not text");
     assert.deepEqual(JSON.parse(detailBlock.text), { id, title: "Backend Engineer", url, description: "Build APIs" });
     assert.equal(tools.detailDescriptions.get(id), "Build APIs");
     mismatch = true;
-    await assert.rejects(tools.fetchJobDetails.execute("bad-detail", { resultId: id }, undefined, undefined, undefined as never), new RegExp(`${source === "tokyodev" ? "TokyoDev" : "Japan Dev"} detail provenance mismatch`));
+    await assert.rejects(tools.fetchJobDetails.execute("bad-detail", { resultId: id }, undefined), new RegExp(`${source === "tokyodev" ? "TokyoDev" : "Japan Dev"} detail provenance mismatch`));
   });
 }
 
@@ -265,14 +265,14 @@ test("configured built-in age reaches the CLI and loosened Japan Dev results war
     return { code: 0, stderr: "", stdout: JSON.stringify({ count: results.length, results }) };
   };
   const strict = createScrapeTools({ source: "japan-dev", runCli });
-  const strictResult = await strict.searchJobs.execute("strict", { query: "backend", location: "", limit: 1 }, undefined, undefined, undefined as never);
+  const strictResult = await strict.searchJobs.execute("strict", { query: "backend", location: "", limit: 1 }, undefined);
   const strictBlock = strictResult.content[0];
   if (strictBlock.type !== "text") throw new Error("strict Japan Dev result was not text");
   assert.deepEqual(JSON.parse(strictBlock.text).results, []);
   assert.equal(calls[0].includes("--jobage"), false);
 
   const loose = createScrapeTools({ source: "japan-dev", maxAgeDays: 3650, now: () => Date.parse("2026-08-18T00:00:00Z"), runCli });
-  const looseResult = await loose.searchJobs.execute("loose", { query: "backend", location: "", limit: 1 }, undefined, undefined, undefined as never);
+  const looseResult = await loose.searchJobs.execute("loose", { query: "backend", location: "", limit: 1 }, undefined);
   const looseBlock = looseResult.content[0];
   if (looseBlock.type !== "text") throw new Error("loose Japan Dev result was not text");
   assert.equal(JSON.parse(looseBlock.text).results[0].id, fixture.id);

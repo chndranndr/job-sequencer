@@ -375,7 +375,7 @@ export type LiveAgentScrapeDependencies = {
   createTools?: AgentSearchToolsFactory;
   createSourceTools?: SourceToolsFactory;
   createSession?: (settings: Settings, tools: AgentSearchTools, sourceRegistry?: SourceRegistry) => Promise<AgentSessionLike>;
-  runPi?: SourceAgentRunner;
+  runAgent?: SourceAgentRunner;
   loadGuidance?: typeof loadGuidance;
   compileMemory?: typeof compileSearchMemory;
   db?: DatabaseSync;
@@ -410,7 +410,7 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
   const makeTools = dependencies.createTools ?? createAgentSearchTools;
   const makeSourceTools = dependencies.createSourceTools ?? createScrapeTools;
   const makeSession = dependencies.createSession ?? ((settings, tools, registry) => createLiveRestrictedScrapeSession(settings, tools, settings.source, registry));
-  const runPi = dependencies.runPi ?? runBoundedAgent;
+  const runAgent = dependencies.runAgent ?? runBoundedAgent;
   const getGuidance = dependencies.loadGuidance ?? loadGuidance;
   const memoryCompiler = dependencies.compileMemory ?? compileSearchMemory;
   const sourceRegistry = dependencies.sourceRegistry ?? createSourceRegistry();
@@ -534,7 +534,7 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
     tasks.start({ taskId: "scrape:agent:run", label: "Run adaptive search", detail: `${budget.maxSearchCalls} searches, ${budget.maxDetailCalls} detail calls` });
     let assistantText = "";
     try {
-      const output = await runPi({
+      const output = await runAgent({
         prompt,
         timeoutMs: budget.maxRunDurationMs,
         signal: context.signal,
@@ -586,7 +586,7 @@ type SourceAgentRunner = (options: {
 export type LiveSourceScrapeDependencies = {
   createTools?: SourceToolsFactory;
   createSession?: (settings: Settings, tools: SourceTools, source: JobSource, sourceRegistry?: SourceRegistry) => Promise<AgentSessionLike>;
-  runPi?: SourceAgentRunner;
+  runAgent?: SourceAgentRunner;
   loadGuidance?: typeof loadGuidance;
   sourceRegistry?: SourceRegistry;
 };
@@ -604,7 +604,7 @@ function searchToolJson(value: unknown) {
 export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDependencies = {}): SourceScrapeExecutor {
   const makeTools = dependencies.createTools ?? createScrapeTools;
   const makeSession = dependencies.createSession ?? ((settings, tools, source, registry) => createLiveRestrictedScrapeSession(settings, tools, source, registry));
-  const runPi = dependencies.runPi ?? runBoundedAgent;
+  const runAgent = dependencies.runAgent ?? runBoundedAgent;
   const getGuidance = dependencies.loadGuidance ?? loadGuidance;
   const sourceRegistry = dependencies.sourceRegistry ?? createSourceRegistry();
 
@@ -637,7 +637,7 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
       if (preflightEnabled && fallbackQueries?.[0]) {
         if (context.signal.aborted) throw new AgentRunCancelledError();
         try {
-          const preflight = await sharedTools.searchJobs.execute("preflight", { query: fallbackQueries[0], location: "", limit: Math.min(5, criteria.maxJobsPerRun) }, context.signal, undefined, undefined as never);
+          const preflight = await sharedTools.searchJobs.execute("preflight", { query: fallbackQueries[0], location: "", limit: Math.min(5, criteria.maxJobsPerRun) }, context.signal);
           const normalized = searchToolJson(preflight);
           preflightJson = JSON.stringify(normalized);
           preflightHasJobs = normalized.results.length > 0;
@@ -691,7 +691,7 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
           let text = "";
           const fetchTaskIds = new Map<string, string>();
           try {
-            await runPi({
+            await runAgent({
               prompt: attemptPrompt,
               timeoutMs: 120_000,
               signal: context.signal,

@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { defineAgentTool, type AgentToolDefinition } from "../tools.js";
 import { createScrapeTools, type ScrapeTools, type ScrapeToolsOptions } from "../scrape.js";
 import { defaultCriteria } from "../config.js";
 import type { CustomJobSource, JobSource, SearchBudget, SearchGoal, SearchHit, SearchPageInfo, TrajectoryRecorder } from "../../shared.js";
@@ -37,11 +36,11 @@ export type AgentSearchToolOptions = {
 };
 
 export type AgentSearchTools = {
-  searchJobs: ToolDefinition;
-  fetchJobDetails: ToolDefinition;
-  inspectSearchState: ToolDefinition;
-  finishSearch: ToolDefinition;
-  readonly allTools: ToolDefinition[];
+  searchJobs: AgentToolDefinition;
+  fetchJobDetails: AgentToolDefinition;
+  inspectSearchState: AgentToolDefinition;
+  finishSearch: AgentToolDefinition;
+  readonly allTools: AgentToolDefinition[];
   readonly state: AgentSearchState;
   readonly provenance: Map<string, string>;
   readonly detailDescriptions: Map<string, string>;
@@ -49,31 +48,7 @@ export type AgentSearchTools = {
   readonly errors: string[];
 };
 
-const sourceParameter = Type.Optional(Type.String({ minLength: 2, maxLength: 40 }));
-
-const SearchParameters = Type.Object({
-  source: sourceParameter,
-  query: Type.String({ minLength: 1, maxLength: 200 }),
-  location: Type.Optional(Type.String({ maxLength: 120 })),
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 25 })),
-  page: Type.Optional(Type.Integer({ minimum: 1 })),
-  cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
-  intent: Type.Optional(Type.String({ maxLength: 200 })),
-});
-const DetailParameters = Type.Object({ source: sourceParameter, resultId: Type.String({ minLength: 1, maxLength: 200 }) });
-const InspectParameters = Type.Object({});
-const FinishParameters = Type.Object({
-  reason: Type.String({ minLength: 1, maxLength: 500 }),
-  unresolvedGoals: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 240 }), { maxItems: 20 })),
-  reasonCategory: Type.Optional(Type.Union([
-    Type.Literal("coverage_sufficient"),
-    Type.Literal("marginal_utility_low"),
-    Type.Literal("candidates_sufficient"),
-    Type.Literal("budget_exhausted"),
-    Type.Literal("no_results"),
-    Type.Literal("other"),
-  ])),
-});
+const InspectInputSchema = z.object({}).strict();
 
 const SearchInputSchema = z.object({
   source: z.string().trim().min(2).max(40).optional(),
@@ -242,14 +217,13 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
   const sourceManifests = sourceEntries(sourceTools).map(([, tools]) => tools.manifest);
   const toolsBySource = sourceMap(sourceTools);
 
-  const searchJobs = defineTool({
+  const searchJobs = defineAgentTool({
     name: "searchJobs",
     label: "Search enabled job sources",
     description: "Run one bounded discovery search on an enabled source. Returns discovery-only job hits without posting text.",
-    parameters: SearchParameters,
-    executionMode: "sequential",
-    execute: async (toolCallId, params, signal) => {
-      const input = SearchInputSchema.parse(params);
+    schema: SearchInputSchema.shape,
+    execute: async (toolCallId, rawParams, signal) => {
+      const input = SearchInputSchema.parse(rawParams);
       const source = state.resolveSource(input.source, "search");
       const sourceTools = toolsBySource.get(source);
       if (!sourceTools) throw new Error(`No search adapter is configured for ${source}.`);
@@ -262,7 +236,7 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
           limit: reservation.limit,
           ...(reservation.page === undefined ? {} : { page: reservation.page }),
           ...(reservation.cursor === undefined ? {} : { cursor: reservation.cursor }),
-        }, signal, undefined, undefined as never);
+        }, signal);
         const parsed = toSearchHits(source, textResult(raw, "searchJobs"));
         const uniqueHits = state.completeSearch(reservation, parsed.hits.slice(0, reservation.limit), parsed.pageInfo);
         state.addWarnings(sourceTools.warnings ?? []);
@@ -276,21 +250,20 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
     },
   });
 
-  const fetchJobDetails = defineTool({
+  const fetchJobDetails = defineAgentTool({
     name: "fetchJobDetails",
     label: "Fetch selected job details",
     description: "Fetch full posting details only for an ID or URL returned by searchJobs in this run.",
-    parameters: DetailParameters,
-    executionMode: "sequential",
-    execute: async (toolCallId, params, signal) => {
-      const input = DetailInputSchema.parse(params);
+    schema: DetailInputSchema.shape,
+    execute: async (toolCallId, rawParams, signal) => {
+      const input = DetailInputSchema.parse(rawParams);
       const source = state.resolveSource(input.source, "detail");
       const sourceTools = toolsBySource.get(source);
       if (!sourceTools) throw new Error(`No detail adapter is configured for ${source}.`);
       const reservation = state.reserveDetail({ source, resultId: input.resultId });
       let completed = false;
       try {
-        const raw = await sourceTools.fetchJobDetails.execute(toolCallId, { resultId: reservation.resultId }, signal, undefined, undefined as never);
+        const raw = await sourceTools.fetchJobDetails.execute(toolCallId, { resultId: reservation.resultId }, signal);
         const parsed = DetailEnvelopeSchema.parse(textResult(raw, "fetchJobDetails"));
         if (parsed.id && parsed.id !== reservation.sourceId) throw new Error(`${source} detail provenance mismatch`);
         const posting = parsed.posting ?? parsed.description ?? parsed.text;
@@ -307,29 +280,27 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
     },
   });
 
-  const inspectSearchState = defineTool({
+  const inspectSearchState = defineAgentTool({
     name: "inspectSearchState",
     label: "Inspect search state",
     description: "Inspect bounded search progress, discovery hits, source statistics, enriched IDs, and remaining budgets.",
-    parameters: InspectParameters,
-    executionMode: "sequential",
+    schema: InspectInputSchema.shape,
     execute: async () => ({ content: [{ type: "text", text: JSON.stringify({ ...state.inspect(), sources: sourceManifests }) }], details: { finished: Boolean(state.termination) } }),
   });
 
-  const finishSearch = defineTool({
+  const finishSearch = defineAgentTool({
     name: "finishSearch",
     label: "Finish job search",
     description: "Finish the search with a reason, optional category, and optional unresolved goals. This is required before returning final scored JSON.",
-    parameters: FinishParameters,
-    executionMode: "sequential",
-    execute: async (_toolCallId, params) => {
-      const input = FinishInputSchema.parse(params);
+    schema: FinishInputSchema.shape,
+    execute: async (_toolCallId, rawParams) => {
+      const input = FinishInputSchema.parse(rawParams);
       const termination = state.finish(input.reason, input.unresolvedGoals, input.reasonCategory);
       return { content: [{ type: "text", text: JSON.stringify({ finished: true, reason: termination?.reason, reasonCategory: termination?.reasonCategory, unresolvedGoals: termination?.unresolvedGoals, termination, state: state.snapshot() }) }], details: { finished: true } };
     },
   });
 
-  const allTools = [searchJobs, fetchJobDetails, inspectSearchState, finishSearch] as ToolDefinition[];
+  const allTools = [searchJobs, fetchJobDetails, inspectSearchState, finishSearch] as AgentToolDefinition[];
   const tools = { searchJobs, fetchJobDetails, inspectSearchState, finishSearch };
   Object.defineProperties(tools, {
     allTools: { value: allTools, enumerable: false },
