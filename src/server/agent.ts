@@ -557,7 +557,7 @@ function defaultAgentSearchTools(source: JobSource, customSource?: CustomJobSour
 const SEARCH_MCP_SERVER = "search";
 const RESEARCH_MCP_SERVER = "research";
 
-function scrapeToolCatalog(scrapeTools: ScrapeToolSet) {
+export function scrapeToolCatalog(scrapeTools: ScrapeToolSet) {
   const definitions: AgentToolDefinition[] = "allTools" in scrapeTools
     ? [...scrapeTools.allTools]
     : [scrapeTools.searchJobs, scrapeTools.fetchJobDetails];

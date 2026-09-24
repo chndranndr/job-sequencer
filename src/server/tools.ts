@@ -1,5 +1,5 @@
 import { createSdkMcpServer, tool, type McpServerConfig } from "@qoder-ai/qoder-agent-sdk";
-import type { CallToolResult } from "@qoder-ai/qoder-agent-sdk";
+import type { CallToolResult, SdkMcpToolDefinition } from "@qoder-ai/qoder-agent-sdk";
 import type { z } from "zod";
 
 /**
@@ -71,6 +71,8 @@ export type SdkMcpBundle = {
   server: McpServerConfig;
   /** Bare tool names, for the QoderSession canUseTool allowlist. */
   toolNames: string[];
+  /** Wrapped (gated) definitions, as registered on the MCP server. */
+  definitions: SdkMcpToolDefinition[];
 };
 
 /**
@@ -105,5 +107,6 @@ export function createAgentMcpServer(serverName: string, definitions: readonly A
   return {
     server: createSdkMcpServer({ name: serverName, tools }),
     toolNames: definitions.map((definition) => definition.name),
+    definitions: tools,
   };
 }

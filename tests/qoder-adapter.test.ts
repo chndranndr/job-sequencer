@@ -234,3 +234,45 @@ test("12: concurrent prompt rejects busy; prompt after dispose rejects", async (
   session.dispose();
   await assert.rejects(session.prompt("three"), /disposed/);
 });
+
+test("13: abort mid-stream settles the pending prompt after deltas and closes the transport", async () => {
+  const { session, recorder, events } = startSession();
+  const t = await transportOf(recorder);
+  const prompt = session.prompt("synthetic");
+  t.push(fauxInitFrame());
+  t.push(fauxMessageStartFrame());
+  t.push(fauxDeltaFrame("partial answer"));
+  await waitFor(() => events.some((event) => event.type === "message_update"), { label: "delta event" });
+  await session.abort();
+  await prompt;
+  assert.equal(t.closed, true, "transport closed after mid-stream abort");
+  assert.equal(events.some((event) => event.type === "message_update"), true, "deltas emitted before cancel are kept");
+  session.dispose();
+});
+
+test("14: abort while a tool handler is active aborts the handler signal and closes the transport", async () => {
+  let handlerStarted = false;
+  let handlerAborted = false;
+  const slow = tool("slowSearch", "synthetic", { query: z.string() }, async (_args, extra) => {
+    handlerStarted = true;
+    return await new Promise((resolve) => {
+      const signal = extra?.signal as AbortSignal | undefined;
+      if (!signal) { resolve({ content: [{ type: "text", text: "no signal" }], isError: true }); return; }
+      signal.addEventListener("abort", () => {
+        handlerAborted = true;
+        resolve({ content: [{ type: "text", text: "cancelled" }], isError: true });
+      }, { once: true });
+    });
+  });
+  const server = createSdkMcpServer({ name: "search", tools: [slow] });
+  const { session, recorder } = startSession({ mcpServers: { search: server } });
+  const t = await transportOf(recorder);
+  t.push(fauxInitFrame());
+  const call = t.requestFromCli({ subtype: "mcp_message", server_name: "search", message: { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "slowSearch", arguments: { query: "x" } } } });
+  await waitFor(() => handlerStarted, { label: "tool handler start" });
+  await session.abort();
+  await waitFor(() => handlerAborted, { label: "handler signal abort" });
+  void call.catch(() => {});
+  assert.equal(t.closed, true, "transport closed after mid-handler abort");
+  session.dispose();
+});
