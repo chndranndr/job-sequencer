@@ -93,7 +93,7 @@ export async function getAvailablePiModels(provider: string): Promise<AgentModel
 // ponytail: trajectory text cap remains 2 MB; raise after measured DB/storage capacity review.
 const trajectoryTextLimit = 2_000_000;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
 
