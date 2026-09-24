@@ -1,0 +1,14 @@
+{
+  "name": "qoder-sdk-spike",
+  "private": true,
+  "type": "module",
+  "description": "Issue #24 phase 0 spike: prove @qoder-ai/qoder-agent-sdk tool limits, MCP routing, and deterministic testability offline. Not part of the application build.",
+  "scripts": {
+    "test": "node --test spike.test.mjs",
+    "verify-artifacts": "node verify-artifacts.mjs"
+  },
+  "dependencies": {
+    "@qoder-ai/qoder-agent-sdk": "1.0.49",
+    "zod": "4.1.12"
+  }
+}
