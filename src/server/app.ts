@@ -142,20 +142,27 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     ?? (interviewSessionPool
       ? createLiveInterviewExecutor(interviewSessionPool)
       : async () => { throw new Error("Live interview executor is unavailable."); });
-  const baseLoad = async (purpose: "scrape" | "generation" | "interview" | "follow_up") => ({
-    profile: await (async () => {
-      try { return await readProviderContext(dataDir, purpose); }
-      catch (error) {
-        // Injected deterministic test executors predate structured-profile persistence;
-        // live Qoder workflows never take this compatibility path.
-        const injected = purpose === "scrape" ? options.scrapeExecutor : purpose === "generation" ? options.generationExecutor : purpose === "interview" ? (options.interviewExecutor ?? options.interviewSessionFactory) : options.followUpExecutor;
-        if (injected) return readProfile(dataDir);
-        throw error;
-      }
-    })(),
-    criteria: await readCriteria(dataDir),
-    settings: await readSettings(dataDir),
-  });
+  const baseLoad = async (purpose: "scrape" | "generation" | "interview" | "follow_up") => {
+    const settings = await readSettings(dataDir);
+    // The account default ("Auto") bills Qoder credits, so live workflows must
+    // never run on an unselected model. Injected deterministic executors are the
+    // offline test path and carry their own fixtures.
+    const injected = purpose === "scrape" ? options.scrapeExecutor : purpose === "generation" ? options.generationExecutor : purpose === "interview" ? (options.interviewExecutor ?? options.interviewSessionFactory) : options.followUpExecutor;
+    if (!injected && !settings.model.trim()) throw Object.assign(new Error("Select a Qoder model in Settings before starting this workflow."), { statusCode: 409 });
+    return {
+      profile: await (async () => {
+        try { return await readProviderContext(dataDir, purpose); }
+        catch (error) {
+          // Injected deterministic test executors predate structured-profile persistence;
+          // live Qoder workflows never take this compatibility path.
+          if (injected) return readProfile(dataDir);
+          throw error;
+        }
+      })(),
+      criteria: await readCriteria(dataDir),
+      settings,
+    };
+  };
   const manager = new RunManager(db, options.scrapeExecutor ?? liveScrapeExecutor, async () => {
     const context = await baseLoad("scrape");
     return { profile: context.profile, criteria: context.criteria, settings: context.settings };

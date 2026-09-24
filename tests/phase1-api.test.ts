@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { openDatabase } from "../src/server/db.js";
 import { buildServer } from "../src/server/app.js";
 import { AgentRunTimeoutError } from "../src/server/agent.js";
+import { writeSettings, writeStructuredProfile } from "../src/server/config.js";
 import { createEmptyProfile } from "../src/shared.js";
 
 const fixture = { sourceId:"free-1", source:"freehire", url:"https://example.test/1", company:"Example", role:"Backend", location:"Remote", posting:"APIs", score:81, reason:"Strong", strengths:["TS"], gaps:[] };
@@ -117,6 +118,23 @@ test("profile import enqueues a run and returns the draft in the run summary", a
     assert.equal(receivedType,"application/pdf");
     assert.equal(receivedText,"Resume text from upload");
     assert.equal(receivedCurrent,"Draft");
+  } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
+});
+test("migrated empty-model settings block live manual and profile-import runs", async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"pjs-guard-")); const db=openDatabase(":memory:");
+  await writeSettings(dir,{provider:"google",model:"gemini-2.5-pro",source:"freehire",enabledSources:["freehire"],customSources:[],sourceMaxAgeDays:{},scoreThreshold:60,maxResults:50,cvPages:2,coverLetterPages:1});
+  const profile=createEmptyProfile(); profile.identity.headline="Backend Engineer"; profile.identity.summary="TypeScript backend engineer.";
+  await writeStructuredProfile(dir,profile);
+  const app=await buildServer({dataDir:dir,db});
+  const boundary="guard-boundary";
+  const payload=Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="resume.pdf"\r\nContent-Type: application/pdf\r\n\r\nResume text\r\n--${boundary}--\r\n`);
+  try {
+    const manual=await app.inject({method:"POST",url:"/api/jobs/manual",payload:{input:"pasted job"}});
+    assert.equal(manual.statusCode,409); assert.match(manual.json().error,/Select a Qoder model/i);
+    const imported=await app.inject({method:"POST",url:"/api/profile/import",headers:{"content-type":`multipart/form-data; boundary=${boundary}`},payload});
+    assert.equal(imported.statusCode,409); assert.match(imported.json().error,/Select a Qoder model/i);
+    const scraped=await app.inject({method:"POST",url:"/api/scrape"});
+    assert.equal(scraped.statusCode,409); assert.match(scraped.json().error,/Select a Qoder model/i);
   } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
 });
 

@@ -2,7 +2,7 @@
 
 Job Sequencer is a local-first job-search workbench for one person. It turns a reviewed profile and optional search preferences into a ranked shortlist, then keeps every next step manual.
 
-The app runs on loopback. Pi handles bounded search and drafting workflows in-process. SQLite keeps the local record. Credentials stay in Pi's auth store or environment variables. The user approves documents and records applications.
+The app runs on loopback. The Qoder Agent SDK handles bounded search and drafting workflows through the local qodercli runtime. SQLite keeps the local record. Credentials stay in qodercli's auth store or `QODER_PERSONAL_ACCESS_TOKEN`. The user approves documents and records applications.
 
 <p align="center">
   <img src="docs/assets/job-sequencer-pattern.png" alt="Job Sequencer Tracker showing ranked remote engineering jobs and the last adaptive run" width="100%">
@@ -20,7 +20,7 @@ The screenshot and animated walkthrough use deterministic fixture data. They sho
 
 1. Define a profile and optional search preferences in **DISK**.
 2. Start a bounded search from **PATTERN**.
-3. Let Pi refine the query when the first pass is weak.
+3. Let the agent refine the query when the first pass is weak.
 4. Review ranked jobs and open their evidence in **SAMPLE**.
 5. Select jobs yourself before document generation.
 6. Approve drafts before you record **Applied**.
@@ -35,8 +35,8 @@ The workflow never submits an application, sends a message, or silently advances
 flowchart LR
   Tracker[React Tracker] --> API[Fastify API]
   API --> Orchestrator[Agent orchestrator]
-  Orchestrator --> Pi[Pi Coding Agent]
-  Pi --> Tools[Bounded source tools]
+  Orchestrator --> Qoder[Qoder Agent SDK session]
+  Qoder --> Tools[Bounded source tools]
   Tools --> Sources[Job sources]
   API --> SQLite[(SQLite)]
   Orchestrator --> Memory[(Search memory)]
@@ -44,13 +44,13 @@ flowchart LR
   API --> Evidence
 ```
 
-The browser owns Tracker views and calls the API through `src/api.ts`. The API owns workflow state, run coordination, SQLite persistence, and approval boundaries. The orchestrator gives Pi typed search and detail tools instead of shell access. Search memory improves later queries without overriding current preferences.
+The browser owns Tracker views and calls the API through `src/api.ts`. The API owns workflow state, run coordination, SQLite persistence, and approval boundaries. The orchestrator gives the Qoder session typed search and detail tools instead of shell access. Search memory improves later queries without overriding current preferences.
 
 ## What the repository demonstrates
 
 - A React and Vite workbench with PATTERN, SAMPLE, ORDER, PHRASE, DISK, and TRACE surfaces.
 - Fastify routes backed by SQLite and explicit run IDs.
-- Bounded Pi sessions with typed, source-specific tools.
+- Bounded Qoder sessions with typed, source-specific tools.
 - Deterministic fixtures for search adaptation, ranking, provenance checks, budget limits, and trace telemetry.
 - Local-only operation with no cloud sync, automatic provider fallback, or hidden job submission.
 
@@ -158,10 +158,10 @@ Vite proxies `/api` and `/health` to the backend. After changing server-side Typ
 ## First-run checklist
 
 1. Open **DISK** and enable the job sources to search (FreeHire, LinkedIn, TokyoDev, Japan Dev, Relocate.me, Y Combinator Remote, or Indeed Indonesia). A scrape searches every checked source; each built-in source has an editable maximum age in days. FreeHire, LinkedIn, Relocate.me, Y Combinator Remote, and Indeed Indonesia default to `9999` (effectively no cutoff); TokyoDev and Japan Dev default to 45 days. Increasing a source above 45 days can return older postings and adds a warning asking you to verify that they are still active. Custom sources keep their bounded declarative HTTP(S) controls and do not require a posted-date field.
-2. Select the Pi provider (`google`, `anthropic`, `openai`, or `openai-codex`).
-3. Choose a model from the authenticated Model dropdown and save settings. The model field is non-secret configuration only.
-4. Click **Test connection**. The credential remains in Pi auth storage/environment variables.
-5. Open **DISK**, review and save the structured profile. Add search preferences when useful; they steer discovery but are not required.
+2. Log in with `qodercli login` or set `QODER_PERSONAL_ACCESS_TOKEN`, and set `QODERCLI_PATH` to the local qodercli executable.
+3. Choose a model from the authenticated Model dropdown in DISK and save settings. The account default ("Auto") bills Qoder credits, so an explicit model is required. The model field is non-secret configuration only.
+4. Open **DISK** and confirm the catalog loaded; the Model dropdown lists your authenticated Qoder models.
+5. Review and save the structured profile. Add search preferences when useful; they steer discovery but are not required.
 6. Use **PATTERN** to scrape and review jobs. Select jobs manually before generating documents.
 
 The canonical profile is `data/profile.json`. A legacy `data/profile.md` is preserved for review/import and is not overwritten automatically. Runtime data and generated applications are under gitignored `data/`.
@@ -203,9 +203,9 @@ GitHub Actions runs `npm run check`, `npm test`, and `npm run eval` for pushes a
 ## Workflow and safety boundaries
 
 - Profile facts are serialized deterministically for each provider workflow.
-- Pi sessions disable ambient skills, extensions, prompt templates, themes, context discovery, and unrestricted built-in tools where the workflow requires it.
+- Qoder sessions disable ambient skills, extensions, prompt templates, themes, context discovery, and unrestricted built-in tools where the workflow requires it.
 - Scraping exposes only typed `searchJobs` and `fetchJobDetails` wrappers. Built-in sources use their vendored CLIs; custom sources use bounded HTTP(S) URL templates and data-only JSON paths or simple HTML selectors. No arbitrary commands or user code are accepted.
 - Every workflow is manual: scraping does not automatically select jobs, generate documents, apply, start interview practice, or send follow-ups.
 - Document generation stops at `Drafting`; explicit approval is required for `Ready`, and explicit manual recording is required for `Applied`.
 - There is no user authentication, CORS, cloud sync, job submission, email sending, or automatic provider fallback.
-- Keep credentials in Pi auth storage or environment variables. Never commit `auth.json`, `.env` files, API keys, tokens, or generated personal data.
+- Keep credentials in qodercli auth storage or `QODER_PERSONAL_ACCESS_TOKEN`. Never commit auth files, `.env` files, API keys, tokens, or generated personal data.
