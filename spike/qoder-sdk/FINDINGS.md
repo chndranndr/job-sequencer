@@ -19,7 +19,7 @@ Sumber unduhan (untuk regenerasi di mesin lain): `https://download.qoder.com/qod
 - **Dependency runtime**: hanya `@modelcontextprotocol/sdk ^1.27.1`.
 - **postinstall**: `node scripts/postinstall.cjs` mengunduh worker runtime (delivery default; `runtime-manifest.json`: `defaultTransport: "worker"`, `packaged: false`, `delivery: "install"` — jadi install dengan `--ignore-scripts` tidak meninggalkan runtime apa pun; tidak relevan setelah transport disuntikkan, tetapi itu biaya install sebenarnya). Verifikasi sha256: manifest tidak memuat digest worker runtime, jadi script jatuh ke sidecar `.sha256` same-origin (lihat caveat). Bisa dilewati dengan `QODER_SKIP_DOWNLOAD=1` — fixture di spike ini berjalan tanpa binary apa pun.
 - **Platform**: `windows-x64` dan `windows-arm64` didukung eksplisit (`SUPPORTED_CLI_PLATFORM_TARGETS`).
-- **Autentikasi** (dari deklarasi `dist/auth.d.ts` + fixture A): `accessToken()`, `accessTokenFromEnv()` (`QODER_PERSONAL_ACCESS_TOKEN`), `serviceAccount()`, `serviceAccountFromEnv()` (`QODER_SERVICE_ACCOUNT_KEY`), `qodercliAuth()`. Token ditulis ke temp file dengan mode 0600 (`QODER_SDK_AUTH_PAYLOAD_FILE`), **dihapus saat close** — keduanya diassert fixture A — dan tidak pernah muncul di argv. Strategi produk: PAT/Service Account hanya di environment backend; browser tidak pernah menerima atau menampilkan kredensial. **Belum diverifikasi**: panggilan live dengan PAT asli (butuh persetujuan eksplisit + batas kredit).
+- **Autentikasi** (dari deklarasi `dist/auth.d.ts` + fixture A): `accessToken()`, `accessTokenFromEnv()` (`QODER_PERSONAL_ACCESS_TOKEN`), `serviceAccount()`, `serviceAccountFromEnv()` (`QODER_SERVICE_ACCOUNT_KEY`), `qodercliAuth()`. Token tidak pernah muncul di argv; ia ditulis ke payload file di mkdtemp khusus (`qoder-sdk-auth-`, intent mode 0600 di bundle — enforcement POSIX tidak terverifikasi di NTFS, lihat fixture A) yang **dihapus saat close** (diassert). Strategi produk: PAT/Service Account hanya di environment backend; browser tidak pernah menerima atau menampilkan kredensial. **Belum diverifikasi**: panggilan live dengan PAT asli (butuh persetujuan eksplisit + batas kredit).
 - **Mode permission berbahaya ada di API**: `PermissionMode` mencakup `'bypassPermissions' | 'yolo'`, dan `allowDangerouslySkipPermissions` tersedia. Rencana migrasi menyatakan mode yang melewati approval bertentangan dengan batas repo. Adapter fase 1 harus pin mode aman, tidak pernah menyetel opsi bypass, dan fail-closed via `canUseTool` (fixture D membuktikan kedua sisi: deny terkirim, tanpa callback → error, bukan allow).
 
 ## Seam transport: PUTUSAN
@@ -49,7 +49,7 @@ Konsekuensi untuk strategi tes fase 1:
 
 | Fixture | Klaim yang dibuktikan |
 | --- | --- |
-| A | `spawnQoderCLIProcess` menangkap launch args tanpa men-spawn binary nyata (command = path palsu yang diassert): `tools: []` → `--tools ""`; `disallowedTools` → 4× `--disallowed-tools`; `persistSession:false` → `--no-session-persistence`; tidak ada `--dangerously-skip-permissions`; token tidak ada di argv; auth payload file dibuat 0600 dan **dihapus saat close** |
+| A | `spawnQoderCLIProcess` menangkap launch args tanpa men-spawn binary nyata (command = path palsu yang diassert): `tools: []` → `--tools ""`; `disallowedTools` → 4× `--disallowed-tools`; `persistSession:false` → `--no-session-persistence`; tidak ada `--dangerously-skip-permissions`; token tidak ada di argv; auth payload ditulis ke mkdtemp khusus (`qoder-sdk-auth-`) dan **dihapus saat close**. Mode 0600 = intent (terbukti dari `writeFile {mode:0o600}`+`chmod` di bundle); enforcement POSIX hanya diassert di non-Windows karena NTFS tidak mengekspos mode bits (statSync selalu 0o666) — di Windows fixture assert file nyata + dir mkdtemp khusus |
 | B | `tools`/`disallowedTools`/`settingSources` sampai utuh ke transport launch options; `allowedTools` tidak diset (bukan default permisif); `initialize` request tidak memuat batasan tool (boundary fact di atas) |
 | C | `createSdkMcpServer` + `tool()`: `tools/list` lewat control channel mengembalikan **hanya** tool terdaftar; `tools/call` mengeksekusi handler in-process dengan argumen tervalidasi zod dan hasilnya kembali lewat control channel; argumen invalid ditolak sebelum handler; tool tak terdaftar (`Bash`) ditolak; server name asing → error; instance server tidak pernah menyeberang wire (`createOptions.mcpServers` undefined) |
 | D | `canUseTool` deny sampai sebagai `behavior: "deny"`; **tanpa callback, SDK membalas error control request (fail-closed), bukan allow** |
@@ -71,17 +71,35 @@ Fixture membuktikan sisi SDK: opsi yang dikirim, handshake, routing MCP in-proce
 
 ## Risiko untuk keputusan go/no-go
 
-1. **Privasi**: `qodercli` mengirim konteks tugas (prompt, potongan CV/posting yang masuk konteks) ke layanan inferensi Qoder. Klaim "data tetap lokal" tidak lagi berlaku. Loopback-only UI tidak berubah, tetapi boundary data bergeser ke vendor. Sisi positif yang terbukti: token tidak pernah lewat argv, payload auth 0600 dan dibersihkan (fixture A).
+1. **Privasi**: `qodercli` mengirim konteks tugas (prompt, potongan CV/posting yang masuk konteks) ke layanan inferensi Qoder. Klaim "data tetap lokal" tidak lagi berlaku. Loopback-only UI tidak berubah, tetapi boundary data bergeser ke vendor. Sisi positif yang terbukti: token tidak pernah lewat argv; payload auth ditulis ke mkdtemp khusus dan dihapus saat close (fixture A). Mode 0600 adalah intent yang terbukti di bundle, bukan sesuatu yang bisa diverifikasi enforcement-nya di NTFS.
 2. **Biaya**: kredit Qoder ≠ USD. `total_cost_usd` dari SDK tidak dapat dipercaya sebagai biaya nyata (fixture E: 0 sementara credits 12). Kolom `estimatedCost` lama tetap `null`; metering kredit butuh unit terpisah. Biaya kredit per tugas belum terukur — butuh live run berpasangan dengan cap.
 3. **Lisensi & rantai pasok**: ToS proprietary (bukan OSS) untuk repo yang saat ini pin dependency MIT-ish; turunan Gemini CLI Apache-2.0 yang dipublikasikan ulang; postinstall mengunduh ~125 MB dari CDN Alibaba OSS dengan integrity same-origin saja; worker runtime obfuscated + bundled `rg.exe` + plugin `qoder-security`. Pin versi SDK + CLI dan simpan digest di repo (lever `verify-artifacts.mjs`).
 4. **Tidak ada perubahan gerbang approval**: spike tidak menyentuh `src/`; approval manual, provenance, dan validator tetap di kode aplikasi. Mode `bypassPermissions`/`yolo`/`allowDangerouslySkipPermissions` tidak pernah disentuh dan harus tetap dilarang di adapter.
 
+## Pemilihan model: katalog Qoder vs custom model (BYOK)
+
+Ada **tiga mekanisme terpisah** di SDK 1.0.49. "Custom model yang ditambahkan di qodercli" masuk lewat mekanisme pertama; yang kedua untuk routing per-request; yang ketiga untuk mengelola config-nya.
+
+1. **`options.model` (push mode)** — string identifier; CLI meresolusi lewat rantai lokal (options → settings → model router). Custom model yang sudah terdaftar di akun bisa dipilih di sini **bila `value`-nya muncul di katalog akun**. Bukti deklarasi: `types/options.d.ts` (`model?: string`); `Query.getAvailableModels({ fetchStrategy: 'live' })` → `ModelInfo[]` dengan `source: 'system' | 'user' | 'organization' | 'custom'` — entri BYOK/custom muncul sebagai `source` non-system, dan `value` itulah yang diberikan ke `options.model`.
+2. **`resolveModel` (pull mode)** — callback `ModelPolicyProvider` dipanggil CLI sebelum **setiap** LLM call (`get_model_policy`); mengembalikan id platform ATAU objek `CustomModel` inline (`{ provider, api_key, model?, url?, style?, isVl? }` — `protocol/control.d.ts:730`) yang diteruskan sebagai `custom_model` di wire. Ini jalur untuk routing per-request (mis. tier hemat untuk parsing terstruktur, tier kuat untuk penalaran pencarian — eksperimen di tabel optimasi rencana migrasi). Timeout default 500ms (`resolveModelTimeoutMs`); error/timeout **dipropagasi, tanpa silent fallback**.
+3. **BYOK config CRUD via `Query`** — `listByokProviders()`, `validateByokModel()`, `listByokConfigs()` (kredensial tidak pernah dikembalikan), `createByokConfig()`, dst. Custom model yang ditambahkan lewat `qodercli` seharusnya terlisting di `listByokConfigs()` sebagai persisted config.
+
+**Status bukti**: ketiganya ada di deklarasi paket terpasang; **pemanggilan live belum diverifikasi** (gate issue #24). `live-probe.mjs` mode katalog (default, **nol inferensi, nol kredit**) menjawab sekaligus: apakah custom model muncul di `getAvailableModels` dengan `value` apa, apakah `listByokConfigs` melihatnya, dan apakah `QODER_SPIKE_MODEL=<value>` diterima sebagai `system/init.model`.
+
+**Konsekuensi produk fase 1 bila custom model dipakai**: API key pihak ketiga mengalir lewat config Qoder CLI / `CustomModel.api_key` — kredensial tambahan di luar PAT Qoder, tetap tidak boleh menyentuh browser. Bila custom model adalah provider eksternal (BYOK ke OpenAI/dsb), **konteks tugas terkirim ke provider itu juga**, bukan hanya ke Qoder — risiko privasi ganda yang harus dicatat eksplisit di Settings UI. Rencana migrasi §2 sudah mengunci ini: jangan diam-diam mengartikan `google`/`openai-codex` lama sebagai model Qoder.
+
 ## Live probe yang dimintakan persetujuan (belum dijalankan)
 
-`live-probe.mjs` di direktori ini menolak berjalan tanpa `QODER_SPIKE_LIVE=1` + `QODER_PERSONAL_ACCESS_TOKEN`. Satu query sintetis, `tools: []` + `disallowedTools` + `canUseTool` deny, lalu assert `system/init.tools` kosong dan prompt yang meminta `Bash` ditolak. Estimasi biaya: satu putaran sintetis kecil; angka kredit pasti belum diketahui — **usulkan cap 10 kredit** dan hentikan bila `getUsageInfo()` melewatinya. Jalankan hanya setelah pemilik akun menyetujui.
+`live-probe.mjs` menolak berjalan tanpa `QODER_SPIKE_LIVE=1` + `QODER_PERSONAL_ACCESS_TOKEN`. Dua mode:
+
+1. **Default (katalog, NOL kredit)**: handshake initialize + `getAvailableModels` + `listByokConfigs` + dump `system/init` (model, tools). Tidak ada prompt yang dikirim, tidak ada inferensi — hanya control requests. Menutup kriteria platform/auth-artifact DAN menjawab pertanyaan custom model di atas.
+2. **`QODER_SPIKE_ENFORCE=1` (1 panggilan inferensi)**: menambah satu turn adversarial sintetis (`maxTurns: 1`) untuk membuktikan enforcement sisi CLI: `system/init.tools` kosong, permintaan `Bash` ditolak. Estimasi biaya: satu putaran sintetis kecil; angka kredit pasti belum diketahui — **usulan cap: 10 kredit, butuh persetujuan pemilik**; probe FAIL bila `total_credits` melewatinya.
 
 ```
-QODER_SPIKE_LIVE=1 QODER_PERSONAL_ACCESS_TOKEN=<token> node live-probe.mjs
+cd spike/qoder-sdk
+QODER_SPIKE_LIVE=1 QODER_PERSONAL_ACCESS_TOKEN=<token> node live-probe.mjs                              # katalog saja, nol kredit
+QODER_SPIKE_LIVE=1 QODER_SPIKE_ENFORCE=1 QODER_PERSONAL_ACCESS_TOKEN=<token> node live-probe.mjs        # + enforcement, usulan cap 10 kredit
+QODER_SPIKE_LIVE=1 QODER_SPIKE_MODEL=<value> QODER_PERSONAL_ACCESS_TOKEN=<token> node live-probe.mjs    # pin custom model, verifikasi init.model
 ```
 
 ## Menjalankan ulang spike

@@ -77,10 +77,17 @@ test("A: spawnQoderCLIProcess seam captures launch args; tools:[] maps to empty 
   assert.ok(!args.some((a) => a.includes("fixture-token")), "token never appears in argv");
   const payloadPath = captured.env.QODER_SDK_AUTH_PAYLOAD_FILE;
   assert.ok(typeof payloadPath === "string" && payloadPath.length > 0, "auth travels as a temp payload file path, not an argv flag");
-  if (process.platform !== "win32") {
-    // NTFS does not expose POSIX mode bits (statSync reports 0o666 even after chmod 0600);
-    // on Windows the enforceable guarantees are payload-file indirection + removal on close.
-    const payloadStat = statSync(payloadPath);
+  const payloadStat = statSync(payloadPath);
+  if (process.platform === "win32") {
+    // NTFS exposes no POSIX mode bits: Node's chmod only toggles the read-only
+    // flag from S_IWUSR, and 0o600 keeps user-write, so stat reports 0o666.
+    // The 0600 intent is proven by the bundle's { mode: 0o600 } write + chmod
+    // calls; Unix-mode enforcement is unverifiable here. Assert the positive
+    // guarantees Windows CAN give: payload sits in a qoder-sdk-auth- mkdtemp dir.
+    assert.ok(payloadStat.isFile(), "auth payload is a real file");
+    assert.match(payloadPath, /qoder-sdk-auth-/, "payload lives in a dedicated mkdtemp dir");
+    assert.ok(payloadStat.mode & 0o200, "file is present and readable on Windows; strict modes unenforceable on NTFS");
+  } else {
     assert.equal(payloadStat.mode & 0o777, 0o600, "auth payload file is owner-only while the session lives");
   }
   await q.close();
