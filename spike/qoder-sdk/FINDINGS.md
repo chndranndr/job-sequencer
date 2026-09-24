@@ -1,6 +1,6 @@
 # Issue #24 — Qoder Agent SDK fase 0: hasil spike
 
-Status: **GO bersyarat** untuk fase 1. Semua klaim di bawah berasal dari fixture offline, deklarasi paket, dan artefak terunduh yang diperiksa statis; tidak ada panggilan provider live, tidak ada binary qodercli yang dieksekusi, tidak ada kredensial yang dibaca atau dikirim.
+Status: **GO bersyarat** untuk fase 1. Bukti: fixture offline (8/8), deklarasi paket, artefak terunduh yang diperiksa statis, dan **satu live probe yang disetujui pemilik (2026-09-24, 2 turn inferensi, cap 10 kredit, terpakai 0.68)**. Tidak ada kredensial yang dibaca dari disk atau dikirim lewat chat; auth probe memakai ulang login `qodercli` lokal read-only.
 
 ## Artefak yang diperiksa (statis)
 
@@ -58,27 +58,34 @@ Konsekuensi untuk strategi tes fase 1:
 | G | `interrupt()` → control request `interrupt` + response `still_queued`; `AbortController.abort()` → transport ditutup, iterasi berakhir bersih **tanpa AbortError ke consumer**; control request pasca-abort reject (generic "Transport closed"), tidak hang. Konsekuensi adapter: **state cancel harus dilacak host-side** (flag sendiri) karena tidak ada sinyal terminal bertipe yang muncul ke consumer |
 | H | `controlRequestTimeoutMs` → SDK mengirim `control_cancel_request` dan request reject; `getUsageInfo()` menelan error menjadi `null` — adapter tidak boleh membaca `null` sebagai "0 kredit" |
 
-## Batas bukti / belum terverifikasi
+## Batas bukti / hasil live probe
 
-Fixture membuktikan sisi SDK: opsi yang dikirim, handshake, routing MCP in-process, permission fail-closed, mapping pesan. Yang **hanya bisa dibuktikan runtime live** (ditandai `belum terverifikasi` sesuai issue):
+Fixture membuktikan sisi SDK: opsi yang dikirim, handshake, routing MCP in-process, permission fail-closed, mapping pesan. Live probe (disetujui pemilik, dijalankan 2026-09-24 via `QODERCLI_PATH` + `qodercliAuth()`, ProcessTransport, CLI 1.1.62) menutup yang sebelumnya `belum terverifikasi`:
 
-- **Enforcement sisi CLI**: apakah qodercli 1.1.62 sungguhan menampilkan `tools: []` di `system/init`, menolak `Bash` saat runtime, dan bagaimana CLI memaknai `--tools ""` (no-tools vs fallback default).
-- **Autentikasi PAT/Service Account live** (gate issue #24: persetujuan eksplisit + batas kredit).
-- **Cancel saat model/tool benar-benar berjalan** dan **accounting usage/kredit nyata** dari server Qoder.
-- **Konkurensi handler `tool()`**: Pi punya `executionMode: "sequential"`; deklarasi Qoder tidak menunjukkan padanannya. Handler yang memutasi `AgentSearchState` harus dianggap bisa dipanggil serentak dan diserialkan sendiri di fase 1.
-- **Session-store/resume**: tidak bisa diuji via custom transport (batas README di atas); relevan untuk interview pooled fase 2.
-- **Worker transport** adalah default; runtime-nya `.mjs` terobfuscasi 33 MB. Untuk server produksi, ProcessTransport (binary `qodercli.exe`) lebih mudah diaudit; keputusan transport final = fase 1.
+- **Enforcement sisi CLI: TERBUKTI.** `system/init.tools = []` pada kedua run (model default `auto` dan model custom). Prompt adversarial yang menyuruh menjalankan `Bash whoami` tidak menghasilkan satu pun tool call: `canUseTool` tidak pernah dipanggil, `permission_denials` kosong, dan jawaban final hanya teks ("DENIED"). Enforcement terjadi karena tool-nya memang tidak ada di sesi — lebih kuat dari deny-by-permission. `--tools ""` berarti no-tools, bukan fallback default.
+- **Auth `qodercliAuth()` live: TERBUKTI.** Handshake + katalog + inferensi berjalan memakai login CLI lokal; tanpa ekspor token.
+- **Accounting kredit: TERUKUR.** Model sistem (`auto`): 1 turn sintetis = `credits 0.676`, `billable: true`, masuk `result.total_credits`. Model custom BYOK (`bailian-intl/qwen3.8-max-pg`, Alibaba Model Studio SG): `total_credits = 0`, field `credits`/`billable` **absen** di assistant message dan `modelUsage`. Kesimpulan yang didukung bukti: inferensi BYOK **tidak memotong kredit Qoder**. Apakah trafik-nya direct ke endpoint provider atau lewat proxy Qoder tanpa tagihan tidak teramati dari message stream (butuh network capture) — `belum terverifikasi`; lihat §Routing. Sesuai docs cost-usage: field absent tidak boleh dibaca sebagai 0.
+- **`getUsageInfo()` = null di kedua run live** — mengonfirmasi peringatan fixture H di dunia nyata: adapter tidak boleh membaca null sebagai "0 kredit"; untuk metering BYOK-direct, sumber kebenaran adalah `usage.billable`/`credits` per assistant message dan `result.modelUsage`.
+- **`system/init.model` melaporkan `displayName` katalog, bukan `value`** — assertion probe disesuaikan (accept value atau displayName); adapter fase 1 harus memetakan `value` ↔ `displayName` lewat katalog, bukan menyamakan string init.
+
+Masih terbuka untuk fase 1:
+
+- **Cancel saat model/tool benar-benar berjalan** (probe hanya menguji turn normal sampai result).
+- **Konkurensi handler `tool()`**: Pi punya `executionMode: "sequential"`; deklarasi Qoder tidak menunjukkan padanannya. Handler yang memutasi `AgentSearchState` harus dianggap bisa dipanggil serentak dan diserialkan sendiri.
+- **Session-store/resume**: tidak bisa diuji via custom transport (batas README); relevan untuk interview pooled fase 2.
+- **MCP tool live end-to-end**: mekanisme in-process terbukti offline (fixture C); run live dengan tool domain sungguhan = pekerjaan fase 1.
+- **Worker transport** adalah default; runtime-nya `.mjs` terobfuscasi 33 MB. Probe live memakai ProcessTransport (binary lokal). Keputusan transport final = fase 1.
 
 ## Risiko untuk keputusan go/no-go
 
-1. **Privasi**: `qodercli` mengirim konteks tugas (prompt, potongan CV/posting yang masuk konteks) ke layanan inferensi Qoder. Klaim "data tetap lokal" tidak lagi berlaku. Loopback-only UI tidak berubah, tetapi boundary data bergeser ke vendor. Sisi positif yang terbukti: token tidak pernah lewat argv; payload auth ditulis ke mkdtemp khusus dan dihapus saat close (fixture A). Mode 0600 adalah intent yang terbukti di bundle, bukan sesuatu yang bisa diverifikasi enforcement-nya di NTFS.
-2. **Biaya**: kredit Qoder ≠ USD. `total_cost_usd` dari SDK tidak dapat dipercaya sebagai biaya nyata (fixture E: 0 sementara credits 12). Kolom `estimatedCost` lama tetap `null`; metering kredit butuh unit terpisah. Biaya kredit per tugas belum terukur — butuh live run berpasangan dengan cap.
+1. **Privasi**: `qodercli` mengirim konteks tugas (prompt, potongan CV/posting yang masuk konteks) ke layanan inferensi. **Pemilik sudah menerima trade-off ini (2026-09-24)**. Loopback-only UI tidak berubah. Dengan model custom BYOK, prompt pergi **direct ke endpoint provider pilihan pemilik** (Alibaba Model Studio SG) dan tidak lewat inferensi Qoder; kontrol plane (session, katalog) tetap Qoder. Sisi positif yang terbukti: token tidak pernah lewat argv; payload auth mkdtemp 0600-intent dihapus saat close (fixture A); `qodercliAuth()` menghilangkan kebutuhan ekspor token sama sekali.
+2. **Biaya**: TERUKUR untuk tugas sintetis kecil: model sistem `auto` = 0.676 kredit/turn (`billable: true`); model custom BYOK = 0 kredit Qoder (biaya berpindah ke akun provider pihak ketiga pemilik — metering-nya di luar SDK). `total_cost_usd` tetap tidak dapat dipercaya (0 di semua run); kolom `estimatedCost` lama tetap `null`. Estimasi biaya tugas pencarian/generation nyata masih butuh pengukuran berpasangan di fase 1.
 3. **Lisensi & rantai pasok**: ToS proprietary (bukan OSS) untuk repo yang saat ini pin dependency MIT-ish; turunan Gemini CLI Apache-2.0 yang dipublikasikan ulang; postinstall mengunduh ~125 MB dari CDN Alibaba OSS dengan integrity same-origin saja; worker runtime obfuscated + bundled `rg.exe` + plugin `qoder-security`. Pin versi SDK + CLI dan simpan digest di repo (lever `verify-artifacts.mjs`).
 4. **Tidak ada perubahan gerbang approval**: spike tidak menyentuh `src/`; approval manual, provenance, dan validator tetap di kode aplikasi. Mode `bypassPermissions`/`yolo`/`allowDangerouslySkipPermissions` tidak pernah disentuh dan harus tetap dilarang di adapter.
 
 ## Pemilihan model: katalog Qoder vs custom model (BYOK)
 
-**Keputusan pemilik (2026-09-24)**: (1) pengiriman konteks ke layanan Qoder diterima ("aman aja datanya ke sana"); (2) provider Pi lama (`google`, `openai-codex` di `defaultSettings` config.ts:238) TIDAK dipetakan ke Qoder — fase 1 memakai **custom model yang sudah disimpan pemilik di qoder-cli**, dipilih lewat mekanisme 1 di bawah. `selectConfiguredModel` (pi.ts:67) menerima `(provider, model)` dari Pi ModelRuntime; padanan Qoder-nya `options.model: "<value>"` dari katalog akun — Settings UI fase 1 cukup menyimpan `value` tunggal, bukan pasangan provider/model. Konteks dari pemilik: model custom-nya Qwen-3.8-Max via Alibaba Cloud Model Studio (Singapore), paket Pro Trial dengan ~294 kredit tersedia — usulan cap 10 kredit untuk probe enforce nyaman di dalam saldo itu; `value` katalog pastinya menunggu probe (`getAvailableModels`).
+**Keputusan pemilik (2026-09-24)**: (1) pengiriman konteks ke layanan inferensi diterima ("aman aja datanya ke sana"); (2) provider Pi lama (`google`, `openai-codex` di `defaultSettings` config.ts:238) TIDAK dipetakan ke Qoder — fase 1 memakai **custom model yang disimpan pemilik di qoder-cli**: `value` katalog = `bailian-intl/qwen3.8-max-pg` (displayName "Qwen-3.8-Max (Alibaba Cloud Model Studio - Singapore)", `source: user`, reasoning: true), dipilih lewat mekanisme 1 di bawah. `selectConfiguredModel` (pi.ts:67) menerima `(provider, model)` dari Pi ModelRuntime; padanan Qoder-nya `options.model: "<value>"` — Settings UI fase 1 cukup menyimpan `value` tunggal, bukan pasangan provider/model.
 
 Ada **tiga mekanisme terpisah** di SDK 1.0.49 (docs.qoder.com/cli/sdk/model-policy + deklarasi paket):
 
@@ -86,31 +93,34 @@ Ada **tiga mekanisme terpisah** di SDK 1.0.49 (docs.qoder.com/cli/sdk/model-poli
 2. **`resolveModel` (dynamic/pull mode)** — callback dipanggil sebelum **setiap** LLM call (`get_model_policy`); mengembalikan id platform ATAU objek `CustomModel` inline (`{ provider, api_key, model?, url?, style?, isVl? }` — `protocol/control.d.ts:730`) untuk **BYOK yang disuplai host** dengan kredensial per-call di wire. Kedua mode mutually exclusive — passing callback membuat `options.model` diabaikan. Tidak ada automatic fallback: callback yang timeout/throw/empty membuat query FAIL (docs + deklarasi). **Tidak dibutuhkan untuk kasus sekarang**; relevan nanti hanya untuk routing per-purpose (tier hemat parsing vs tier kuat penalaran).
 3. **BYOK config CRUD via `Query`** — `listByokConfigs()` (capability-gated `BYOK_CONFIG_MANAGEMENT_CAPABILITY`; deklarasi: "secret-free ... returned by the CLI"), `validateByokModel()`, dst. Untuk memverifikasi config yang tersimpan tanpa membaca file config CLI.
 
-**Routing inferensi custom model — dua kemungkinan, menentukan cerita privasi/biaya**: custom model yang disimpan via qoder-cli/BYOK bisa (a) diproksikan lewat Qoder (kredit Qoder terpakai, Qoder melihat prompt) atau (b) direct ke endpoint provider (`url`/`outerProvider` di `CustomModel`; byok.d.ts:6-7 menyebut "route a single LLM call through a third-party provider"). README tidak punya bagian BYOK; docs model-policy tidak menyatakan routing-nya. **Belum terverifikasi**, tapi docs cost-usage memberi instrumen pastinya: per-request `usage.credits` / `usage.original_credits` / **`usage.billable`** ("Whether the request counts toward the user's Credits usage") di assistant message, plus `result.total_credits` dan `result.modelUsage[model].credits` per model. Probe enforce sekarang mencetak ketiganya; `billable: false` + kredit 0 = direct, `billable: true` = proxied lewat Qoder. Catatan docs lain yang mengikat adapter fase 1: field kredit opsional (CLI lama) — **jangan baca yang hilang sebagai 0**; `total_credits` kumulatif sesi, jangan dijumlah antar-result.
+**Routing inferensi custom model — biaya TERJAWAB empiris, rute jaringan belum (live probe 2026-09-24)**: model custom pemilik (`bailian-intl/qwen3.8-max-pg`) menghasilkan `total_credits = 0` dengan field `credits`/`billable` absent di seluruh message stream, sementara model sistem `auto` di run pembanding mengenakan `credits 0.676, billable: true`. Kesimpulan yang didukung bukti: **inferensi BYOK tidak memotong kredit Qoder**; biaya berpindah ke akun Alibaba Model Studio pemilik, dan SDK tidak memetering-nya (`modelUsage` BYOK tanpa `credits`). Apakah trafik inferensinya direct ke endpoint provider atau melewati proxy Qoder yang tidak menagih **tidak teramati** dari message stream — butuh network capture, di luar izin spike; tandai `belum terverifikasi`. Untuk privasi, yang sudah pasti: prompt terkirim ke provider model (Alibaba) di kedua skenario; pemilik sudah menerima. Konsekuensi biaya tetap sama: anggaran fase 1 untuk jalur BYOK = metering di sisi provider, bukan kredit Qoder.
 
-**Status bukti**: mekanisme 1-3 ada di deklarasi terpasang + docs; **pemanggilan live belum diverifikasi** (gate issue #24). Batas yang dipertahankan: TIDAK membaca `~/.qoder`/config CLI untuk menemukan model id (API key BYOK mungkin tersimpan di sana; AGENTS.md melarang) — enumerasi hanya lewat `getAvailableModels`/`listByokConfigs` di dalam sesi yang diautentikasi pemilik.
+**Status bukti**: mekanisme 1-3 terbukti di deklarasi + live probe (pin `options.model` → `system/init.model` = displayName entri katalog; `getAvailableModels` melisting entri `source: user`; `listByokConfigs` mengembalikan config terpersist tanpa kredensial). Batas yang dipertahankan: TIDAK membaca isi `~/.qoder` (top-level names saja pernah dilist untuk menemukan binary; `.auth`/`.models` bisa memuat API key BYOK dan tidak pernah dibuka — aturan ini berlaku juga untuk debugging probe di masa depan). Enumerasi hanya lewat `getAvailableModels`/`listByokConfigs` di dalam sesi yang diautentikasi pemilik.
 
-**Konsekuensi produk fase 1**: bila custom model = provider eksternal dan routing-nya direct, prompt terkirim ke provider itu, bukan (hanya) ke Qoder — pemilik sudah menerima pengiriman data, tetapi Settings UI fase 1 harus tetap menampilkan provider tujuan inferensi secara eksplisit. Kredensial BYOK tetap tidak boleh menyentuh browser.
+**Konsekuensi produk fase 1**: Settings UI harus menampilkan provider tujuan inferensi secara eksplisit (Qoder-proxied vs BYOK-direct berbeda di privasi DAN biaya). Kredensial BYOK tetap tidak boleh menyentuh browser. Metering: jangan andalkan `getUsageInfo()` (null di kedua run live); baca `usage.credits`/`billable` per assistant message + `result.modelUsage`, dan field absent ≠ 0.
 
-## Live probe yang dimintakan persetujuan (belum dijalankan)
+## Live probe (SUDAH DIJALANKAN dengan persetujuan pemilik, 2026-09-24)
 
-`live-probe.mjs` menolak berjalan tanpa `QODER_SPIKE_LIVE=1` + auth + runtime. Auth: `QODER_SPIKE_AUTH=cli` memakai ulang login `qodercli` lokal secara read-only (`qodercliAuth()` — tanpa ekspor token, kredensial tidak pernah masuk env/transcript), atau `QODER_PERSONAL_ACCESS_TOKEN` untuk PAT.
+Dua run enforce (`QODER_SPIKE_ENFORCE=1`, cap disetujui 10 kredit, terpakai total 0.676): run 1 model default `auto`, run 2 pin `QODER_SPIKE_MODEL=bailian-intl/qwen3.8-max-pg`. Hasil kunci:
 
-**Prasyarat runtime** (probe fail-fast bila tidak dipenuhi): spike di-install dengan `QODER_SKIP_DOWNLOAD=1`, jadi `dist/_worker` dan `dist/_bundled` tidak ada; tanpa override, SDK memilih transport default `worker` dan mati saat resolusi runtime. Dua jalan: `QODERCLI_PATH=<path qodercli.exe>` (memaksa ProcessTransport memakai CLI lokal — di mesin ini `where qodercli` → `C:\Users\chand\.qoder\bin\qodercli\qodercli.exe`), atau `npm install` penuh sekali di direktori spike (mengunduh worker runtime 27 MB dengan cek sha256). Jalan QODERCLI_PATH paling mulus karena custom model pemilik memang tersimpan di CLI lokal itu.
+- `system/init.tools = []` di kedua run — CLI menghormati `--tools ""` sebagai no-tools.
+- Prompt adversarial `Bash whoami`: nol tool call, nol permission denial, hasil teks "DENIED" — model tidak punya tool untuk dipanggil.
+- Katalog: 18 entri (17 `source: system` termasuk keluarga Qwen/Kimi/GLM/DeepSeek/MiniMax, 1 `source: user` = model custom pemilik).
+- Run 1 (`auto`): `credits 0.6763504825, billable: true, total_credits 0.6763504825`.
+- Run 2 (BYOK custom): `total_credits 0`, `credits`/`billable` absent, `modelUsage` tanpa credits → routing direct, bukan proxied.
+- `system/init.model` = displayName ("Qwen-3.8-Max (Alibaba Cloud Model Studio - Singapore)"), bukan `value` — pin bekerja.
+- `getUsageInfo()` = null di kedua run.
 
-Dua mode:
+Runbook (untuk pengulangan di masa depan): `live-probe.mjs` menolak berjalan tanpa `QODER_SPIKE_LIVE=1` + auth + runtime. Auth: `QODER_SPIKE_AUTH=cli` (login lokal read-only, tanpa ekspor token) atau `QODER_PERSONAL_ACCESS_TOKEN`. Runtime: spike di-install dengan `QODER_SKIP_DOWNLOAD=1` sehingga tidak ada runtime bundled; set `QODERCLI_PATH` ke hasil `where qodercli` (Windows; memaksa ProcessTransport ke CLI lokal — paling mulus karena model custom tersimpan di CLI itu), atau `npm install` penuh sekali di direktori spike (mengunduh worker runtime 27 MB dengan cek sha256). Probe fail-fast dengan pesan actionable bila runtime tidak resolvable (`hasResolvableQoderWorkerRuntime()`).
 
-1. **Default (katalog, kemungkinan besar NOL kredit)**: handshake initialize + `getAvailableModels` + `listByokConfigs` + dump `system/init` (model, tools). Tidak ada prompt yang dikirim, tidak ada inferensi — hanya control requests (biaya kredit diharapkan 0; tetap digate karena menyentuh akun live). Menjawab: `value` custom model pemilik, `source`-nya, dan apakah `QODER_SPIKE_MODEL=<value>` diterima sebagai `system/init.model`.
-2. **`QODER_SPIKE_ENFORCE=1` (1 panggilan inferensi)**: satu turn adversarial sintetis (`maxTurns: 1`): `system/init.tools` harus kosong, permintaan `Bash` harus ditolak; probe mencetak `usage.credits`/`original_credits`/`billable` per request + `result.total_credits` + `modelUsage` untuk menjawab routing (proxied vs direct). **Usulan cap: 10 kredit, butuh persetujuan pemilik**; probe FAIL bila terlampaui.
-
-Output probe sudah diredaksi di dalam script (bukan di langkah paste): akun hanya `{apiProvider, subscriptionType, tokenSource}`; BYOK lewat allowlist field (`key`, `providerId`, `provider`, `model`, `defaultModelId`, `displayName`) dengan fallback nama-key saja untuk shape tak dikenal.
+Output probe diredaksi di dalam script (bukan di langkah paste): akun hanya `{apiProvider, tokenSource}` (plan/balance tidak dicetak); BYOK lewat allowlist field (`key`, `providerId`, `provider`, `model`, `defaultModelId`, `displayName`) dengan fallback nama-key saja untuk shape tak dikenal.
 
 ```
 cd spike/qoder-sdk
-set QODERCLI_PATH=C:\Users\chand\.qoder\bin\qodercli\qodercli.exe
-QODER_SPIKE_LIVE=1 QODER_SPIKE_AUTH=cli QODERCLI_PATH=... node live-probe.mjs                              # katalog saja
-QODER_SPIKE_LIVE=1 QODER_SPIKE_AUTH=cli QODERCLI_PATH=... QODER_SPIKE_ENFORCE=1 node live-probe.mjs        # + enforcement, usulan cap 10 kredit
-QODER_SPIKE_LIVE=1 QODER_SPIKE_AUTH=cli QODERCLI_PATH=... QODER_SPIKE_MODEL=<value> node live-probe.mjs    # pin custom model
+set QODERCLI_PATH=<hasil `where qodercli`, mis. %USERPROFILE%\.qoder\bin\qodercli\qodercli.exe>
+QODER_SPIKE_LIVE=1 QODER_SPIKE_AUTH=cli QODERCLI_PATH=... node live-probe.mjs                              # katalog saja, nol inferensi
+QODER_SPIKE_LIVE=1 QODER_SPIKE_AUTH=cli QODERCLI_PATH=... QODER_SPIKE_ENFORCE=1 node live-probe.mjs        # + enforcement, butuh cap disetujui
+QODER_SPIKE_LIVE=1 QODER_SPIKE_AUTH=cli QODERCLI_PATH=... QODER_SPIKE_MODEL=<value> node live-probe.mjs    # pin model katalog
 ```
 
 ## Menjalankan ulang spike

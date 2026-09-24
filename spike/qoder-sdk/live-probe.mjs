@@ -111,13 +111,13 @@ const iterating = (async () => {
 const failures = [];
 
 const init = await q.initializationResult();
-// AccountInfo carries userId/name/email/organization. Probe output is pasted
-// to a public issue, so print only the non-identifying routing facts.
 const account = init.account ?? {};
+// AccountInfo carries userId/name/email/organization plus plan status. Probe
+// output is pasted to a public issue, so print only non-identifying routing
+// provenance — no plan/subscription/balance metadata.
 console.log(
   `\ninitialize account = ${JSON.stringify({
     apiProvider: account.apiProvider ?? null,
-    subscriptionType: account.subscriptionType ?? null,
     tokenSource: account.tokenSource ?? null,
   })}`,
 );
@@ -159,7 +159,17 @@ if (byok) {
 const initFrame = seen.find((m) => m.type === "system" && m.subtype === "init");
 if (initFrame) {
   if (initFrame.tools.length !== 0) failures.push(`init.tools not empty: ${JSON.stringify(initFrame.tools)}`);
-  if (MODEL && initFrame.model !== MODEL) failures.push(`init.model=${initFrame.model}, expected ${MODEL}`);
+  if (MODEL) {
+    // system/init.model reports the catalog entry's displayName, not its value;
+    // accept either so the pin is verified without assuming which the CLI echoes.
+    const entry = models.find((m) => m.value === MODEL);
+    const expected = [MODEL, entry?.displayName].filter(Boolean);
+    if (!expected.includes(initFrame.model)) {
+      failures.push(`init.model=${initFrame.model}, expected one of ${JSON.stringify(expected)}`);
+    } else {
+      console.log(`\nmodel pin confirmed: options.model=${MODEL} → init.model=${JSON.stringify(initFrame.model)}`);
+    }
+  }
 } else {
   failures.push("no system/init frame observed");
 }

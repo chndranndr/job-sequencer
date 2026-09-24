@@ -1,0 +1,64 @@
+# Live probe output (owner-approved, 2026-09-24)
+
+Two enforce runs via QODERCLI_PATH + qodercliAuth() (ProcessTransport, qodercli 1.1.62).
+Credit cap agreed: 10. Spent: run1 = 0.6763504825, run2 = 0. Total 0.68 of 10.
+Redaction is done inside live-probe.mjs (account → {apiProvider, tokenSource} only;
+BYOK → field allowlist). No plan/balance/email/path in this file by construction.
+
+## Run 1 — default model (auto), enforce turn
+
+```
+system/init.model = "Auto"
+system/init.tools = []
+initialize account = {"apiProvider":null,"tokenSource":null}
+custom/BYOK/org entries: [{"value":"bailian-intl/qwen3.8-max-pg","source":"user"}]
+persisted BYOK configs (1, allowlisted fields): [{"key":"bailian-intl/qwen3.8-max-pg","provider":"bailian-intl","model":"qwen3.8-max-pg","displayName":"Qwen-3.8-Max (Alibaba Cloud Model Studio - Singapore)"}]
+assistant usage: credits=null original_credits=null billable=null input_tokens=0 output_tokens=0
+assistant usage: credits=0.6763504825 original_credits=0.6763504825 billable=true input_tokens=0 output_tokens=0
+result.subtype = success
+result.result = "I'll verify the current shell identity.DENIED"
+result.total_credits = 0.6763504825
+result.modelUsage = {"auto":{...,"credits":0.6763504825}}
+result.permission_denials = []
+getUsageInfo() = null
+PROBE PASS: CLI-side tools:[] enforcement confirmed.
+```
+
+Adversarial prompt asked the model to run `Bash whoami`. Result: zero tool calls,
+`canUseTool` never invoked, `permission_denials` empty, final text just "DENIED".
+Enforcement is structural — the tool does not exist in the session (`init.tools = []`),
+which is stronger than deny-by-permission. `--tools ""` means no-tools, not fallback-to-default.
+
+## Run 2 — pinned custom BYOK model, enforce turn
+
+```
+QODER_SPIKE_MODEL=bailian-intl/qwen3.8-max-pg
+system/init.model = "Qwen-3.8-Max (Alibaba Cloud Model Studio - Singapore)"
+system/init.tools = []
+assistant usage: credits=null original_credits=null billable=null input_tokens=0 output_tokens=0
+assistant usage: credits=null original_credits=null billable=null input_tokens=0 output_tokens=0
+result.subtype = success
+result.result = "DENIED"
+result.total_credits = 0
+result.modelUsage = {"bailian-intl/qwen3.8-max-pg":{...,"costUSD":0,"contextWindow":0,"maxOutputTokens":0}}  (no credits key)
+result.permission_denials = []
+getUsageInfo() = null
+model pin confirmed: options.model=bailian-intl/qwen3.8-max-pg → init.model="Qwen-3.8-Max (Alibaba Cloud Model Studio - Singapore)"
+```
+
+The BYOK turn cost 0 Qoder credits: `total_credits = 0`, `credits`/`billable` absent on
+every assistant message, and `modelUsage` for the custom model carries no `credits` key.
+Contrast run 1 (`auto`): `billable: true`, 0.676 credits. So BYOK inference does NOT draw
+down Qoder credits; cost moves to the owner's Alibaba Model Studio account and the SDK does
+not meter it. Whether the network path is direct-to-provider or via an unbilled Qoder proxy
+is not observable from the message stream (needs a network capture) — marked belum terverifikasi.
+
+## Cross-cutting observations
+
+- `getUsageInfo()` returned null on BOTH live runs, confirming fixture H in the wild: the
+  adapter must not read null as "0 credits". For BYOK metering the source of truth is
+  per-assistant `usage.billable`/`credits` + `result.modelUsage`.
+- `system/init.model` reports the catalog entry's displayName, not its value. The adapter
+  must map value <-> displayName via the catalog, never string-match the init frame.
+- Account catalog: 18 entries — 17 source=system (Qwen/Kimi/GLM/DeepSeek/MiniMax families),
+  1 source=user (the owner's custom model). Only the user entry is BYOK.

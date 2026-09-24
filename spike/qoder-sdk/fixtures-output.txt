@@ -1,12 +1,11 @@
-✔ A: spawnQoderCLIProcess seam captures launch args; tools:[] maps to empty --tools (2032.6896ms)
-✔ B: tools:[] and disallowedTools ride the transport launch options, not the initialize frame (16.0121ms)
-✔ C: in-process MCP server exposes only the registered tool over the control channel (93.4667ms)
-✔ D: canUseTool deny is delivered as a permission decision; missing callback fails closed (63.5687ms)
-✔ E: SDKMessage mapping — init, deltas, final text, usage/credits separation (16.8557ms)
-✔ F: error result subtypes surface as messages, not thrown exceptions (14.6972ms)
-✔ G: interrupt control request and AbortController cancel (31.4354ms)
-✔ H: control request timeout cancels the request and surfaces as null usage (325.7875ms)
+✔ A: spawnQoderCLIProcess seam captures launch args; tools:[] maps to empty --tools (2028.4378ms)
+✔ B: tools:[] and disallowedTools ride the transport launch options, not the initialize frame (15.3966ms)
+✔ C: in-process MCP server exposes only the registered tool over the control channel (78.8877ms)
+✔ D: canUseTool deny is delivered as a permission decision; missing callback fails closed (61.1258ms)
+✔ E: SDKMessage mapping — init, deltas, final text, usage/credits separation (15.826ms)
+✔ F: error result subtypes surface as messages, not thrown exceptions (15.0017ms)
+✔ G: interrupt control request and AbortController cancel (30.8811ms)
+✔ H: control request timeout cancels the request and surfaces as null usage (328.2879ms)
 ℹ tests 8
 ℹ pass 8
 ℹ fail 0
-ℹ duration_ms 2911.3959
