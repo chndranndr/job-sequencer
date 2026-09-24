@@ -3,7 +3,7 @@ import { query, accessToken } from "@qoder-ai/qoder-agent-sdk";
 if (process.env.QODER_SPIKE_LIVE !== "1") {
   console.error(
     "Refusing to run: live probe requires explicit owner approval.\n" +
-      "Set QODER_SPIKE_LIVE=1 and QODER_PERSONAL_ACCESS_TOKEN=<token> (credit cap agreed: 10 credits) to run.",
+      "Set QODER_SPIKE_LIVE=1 and QODER_PERSONAL_ACCESS_TOKEN=<token> to run (proposed credit cap: 10 — requires owner agreement).",
   );
   process.exit(2);
 }
