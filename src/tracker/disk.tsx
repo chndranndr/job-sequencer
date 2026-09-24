@@ -422,7 +422,7 @@ export function DiskView({
   if (error || !profile || !criteria || !settings) return <section className="panel" style={{ gridColumn: "1 / -1" }}><p className="empty">{error || "Loading DISK…"}</p></section>;
 
   const importBusy = importing || run?.status === "running";
-  const modelLabel = settings.model || "qoder default";
+  const modelLabel = settings.model || "none";
   return <>
     <section className="panel disk-main">
       <div className="panel-h">DISK · SAMPLE BANK <span>one bank at a time · patch then write</span></div>
@@ -526,10 +526,10 @@ export function DiskView({
           <div className="pe-section-body">
             <label className="field">Model
               <select value={settings.model} disabled={modelsLoading || Boolean(modelsError) || !models.length} onChange={(event) => { setSettings({ ...settings, model: event.target.value }); setSettingsError(""); }}>
-                <option value="">{modelsLoading ? "Loading Qoder models..." : modelsError ? "Models unavailable" : models.length ? "Account default" : "No models available"}</option>
+                <option value="">{modelsLoading ? "Loading Qoder models..." : modelsError ? "Models unavailable" : models.length ? "Select a model" : "No models available"}</option>
                 {models.map((model) => <option key={model.id} value={model.id}>{model.name === model.id ? model.id : `${model.name} · ${model.id}`}</option>)}
               </select>
-              <small>{modelsLoading ? "Loading Qoder models..." : modelsError || (models.length ? `${models.length} Qoder model${models.length === 1 ? "" : "s"} available. Leave blank to use the account default.` : "No models. Run `qodercli login` or set QODER_PERSONAL_ACCESS_TOKEN.")}</small>
+              <small>{modelsLoading ? "Loading Qoder models..." : modelsError || (models.length ? `${models.length} Qoder model${models.length === 1 ? "" : "s"} available. Pick one; the account default bills Qoder credits.` : "No models. Run `qodercli login` or set QODER_PERSONAL_ACCESS_TOKEN.")}</small>
             </label>
             {settingsError && <p className="disk-settings-error" role="alert">{settingsError}</p>}
           </div>

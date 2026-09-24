@@ -67,9 +67,10 @@ export function removeCustomSourceSettings(settings: Settings, key: string): Set
 }
 
 export function hasValidProviderModel(settings: Settings, models: readonly SettingsModelOption[]): boolean {
-  // Qoder is single-provider; an empty model selects the account default, which
-  // is valid. A non-empty model must appear in the fetched catalog.
-  if (!settings.model.trim()) return true;
+  // Qoder is single-provider and the account default ("Auto") bills Qoder
+  // credits, so a saved model must be an explicit catalog member. A failed or
+  // empty catalog fetch cannot verify, so it must not block unrelated edits.
+  if (models.length === 0) return true;
   return models.some((model) => model.id === settings.model);
 }
 

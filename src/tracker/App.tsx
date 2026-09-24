@@ -259,6 +259,7 @@ export function TrackerApp() {
   const scrapeIssues = useMemo(() => {
     const issues = [];
     if (!profileReady) issues.push("Save a structured profile first.");
+    if (!settings?.model) issues.push("Select a Qoder model on DISK.");
     return issues;
   }, [profileReady, settings]);
   const enabledLabels = settings ? (settings.enabledSources?.length ? settings.enabledSources : [settings.source]).map((source) => jobSourceLabel(source, settings.customSources ?? [])).join(", ") : "…";

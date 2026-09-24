@@ -820,6 +820,7 @@ export class ManualJobRunManager {
 
   private async loadContext() {
     const context = await this.options.load();
+    if (!context.settings.model.trim()) throw Object.assign(new Error("Select a Qoder model in Settings before adding a job."), { statusCode: 409 });
     if (!context.profile.trim()) throw Object.assign(new Error("Review and save a structured profile before adding a job."), { statusCode: 409 });
     return context;
   }

@@ -14,7 +14,7 @@ import {
 import type { AgentSessionLike } from "../src/server/agent.js";
 import { createEmptyProfile, type StructuredProfile } from "../src/shared.js";
 
-const settings = { provider: "job-sequencer-faux", model: "phase0", source: "freehire" as const, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
+const settings = { provider: "qoder", model: "phase0", source: "freehire" as const, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
 
 class FakeSession implements AgentSessionLike {
   constructor(private readonly payload: unknown) {}

@@ -158,6 +158,9 @@ export class QoderSession implements AgentSessionLike {
         ? { behavior: "allow" }
         : { behavior: "deny", message: "Tool is outside Job Sequencer bounds" };
 
+    if (!options.transport && !process.env.QODERCLI_PATH) {
+      throw new Error("No local Qoder runtime: set QODERCLI_PATH to the qodercli executable or inject a transport. The SDK default worker runtime is not used.");
+    }
     this.query = query({
       prompt: this.prompts.iterate(),
       options: {
@@ -407,11 +410,10 @@ export class QoderSession implements AgentSessionLike {
   async abort(): Promise<void> {
     if (this.abortRequested) return;
     this.abortRequested = true;
-    try {
-      await this.query.interrupt();
-    } catch {
-      /* the pump settles the pending prompt when iteration ends */
-    }
+    // interrupt() awaits a control response that a dead CLI never sends
+    // (controlRequestTimeoutMs defaults to 30s); close() terminates the pump
+    // regardless, so interrupt stays best-effort for live CLIs.
+    void this.query.interrupt().catch(() => {});
     await this.query.close().catch(() => {});
   }
 

@@ -35,9 +35,9 @@ Working plans and execution records are usually local-only and untracked. The pu
 ## Security
 
 - [README workflow and safety boundaries](../README.md#workflow-and-safety-boundaries) are authoritative.
-- Provider credentials remain in Pi authentication storage or environment variables and must not enter this repository.
+- Provider credentials remain in qodercli authentication storage or `QODER_PERSONAL_ACCESS_TOKEN` and must not enter this repository.
 - Live scrape and live AI evaluation are explicit, never default verification steps.
-- Security and prompt-boundary regressions are covered by `tests/injection.test.ts`, `tests/pi-tools.test.ts`, and related workflow tests.
+- Security and prompt-boundary regressions are covered by `tests/injection.test.ts`, `tests/agent-tools.test.ts`, and related workflow tests.
 
 ## Debt and deferred capabilities
 

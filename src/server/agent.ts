@@ -74,7 +74,11 @@ export type AgentModelOption = { id: string; name: string };
 export async function getAvailableAgentModels(): Promise<AgentModelOption[]> {
   const session = new QoderSession({});
   try {
-    const models = await session.listModels();
+    // The SDK's initialize timeout is 120s; the Settings route must degrade fast.
+    const models = await Promise.race([
+      session.listModels(),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("Qoder model catalog timed out after 10s.")), 10_000)),
+    ]);
     return models.map((model) => ({ id: String(model.value), name: String(model.displayName ?? model.value) }));
   } finally {
     session.dispose();

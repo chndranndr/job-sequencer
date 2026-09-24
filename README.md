@@ -81,80 +81,37 @@ npm ci
 
 The application uses Node/TypeScript. The vendored FreeHire, LinkedIn, and Japan board CLIs remain Bun-based; Relocate.me reuses the Japan-board CLI, while Y Combinator Remote and Indeed Indonesia use bounded public HTML adapters.
 
-## Configure Pi authentication
+## Configure Qoder authentication
 
-The dashboard does **not** accept or display API keys. Pi resolves credentials from its normal auth store or from environment variables.
+The dashboard does **not** accept or display API keys. The Qoder Agent SDK resolves credentials from the local `qodercli` login or from `QODER_PERSONAL_ACCESS_TOKEN`.
 
-### Option A — Pi login (recommended)
-
-Use the local Pi CLI bundled by this project:
+### Option A — qodercli login (recommended)
 
 ```bash
-npx --no-install pi
+qodercli login
 ```
 
-Inside Pi, run:
-
-```text
-/login
-```
-
-Choose the provider and complete its API-key or OAuth flow. Credentials are stored in:
-
-```text
-%USERPROFILE%\.pi\agent\auth.json
-```
-
-Do not copy this file into the repository or commit it.
-
-**ChatGPT/Codex login uses provider `openai-codex`, not `openai`.** Verify it with:
-
-```bash
-npx --no-install pi auth check --provider openai-codex --model gpt-5.6-luna
-```
+Complete the browser flow. Credentials stay in the qodercli auth store outside this repository. Do not copy auth files into the repository or commit them.
 
 ### Option B — environment variable
 
-Use the variable matching the provider:
+Set `QODER_PERSONAL_ACCESS_TOKEN` before starting the backend. Never put a real token in `data/`, `README.md`, or `data/settings.json`.
 
-| Pi provider | Environment variable |
-|---|---|
-| `google` | `GEMINI_API_KEY` |
-| `anthropic` | `ANTHROPIC_API_KEY` |
-| `openai` (API key) | `OPENAI_API_KEY` |
-| `openai-codex` (ChatGPT/Codex OAuth) | Use Pi `/login`; no `OPENAI_API_KEY` required |
+### Local runtime requirement
 
-Git Bash:
+Sessions run through the local qodercli executable (process transport). Point the server at it:
 
 ```bash
-export GEMINI_API_KEY="<your-key>"
+set QODERCLI_PATH=C:\Users\you\.qoder\bin\qodercli\qodercli.exe
 ```
 
-PowerShell:
+On POSIX use the `qodercli` path under `~/.qoder/bin/qodercli/`. The SDK's bundled worker runtime is intentionally not used.
 
-```powershell
-$env:GEMINI_API_KEY = "<your-key>"
-```
+### Check readiness
 
-Set the variable before starting the backend. Never put a real key in `data/`, `README.md`, or `data/settings.json`.
+Start the backend and open the Tracker. DISK → MODEL lists the authenticated Qoder catalog once login succeeds. Pick a model and save; the account default ("Auto") bills Qoder credits, so an explicit selection is required.
 
-### Check provider readiness
-
-```bash
-npx --no-install pi auth check --provider google
-npx --no-install pi auth check --provider anthropic
-npx --no-install pi auth check --provider openai
-```
-
-Run only the check for the provider you use. Add `--model <exact-model-id>` when you want to validate a specific model. Do **not** use `--credentials` because it prints the resolved secret.
-
-The dashboard Settings dropdown exposes `google`, `anthropic`, API-key `openai`, and `openai-codex` for ChatGPT/Codex OAuth. After selecting a provider, the Model dropdown is populated from Pi's authenticated model list. Select a model, save, then run **Test connection**.
-
-List available model IDs when needed:
-
-```bash
-npx --no-install pi --list-models
-```
+Model selection uses the catalog `value` stored in Settings. BYOK custom models configured inside qodercli bill the provider account, not Qoder credits.
 
 ## Run the application
 

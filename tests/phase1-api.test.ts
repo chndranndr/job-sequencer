@@ -104,7 +104,7 @@ test("profile import enqueues a run and returns the draft in the run summary", a
     `--${boundary}--\r\n`
   );
   try {
-    assert.equal((await app.inject({method:"PUT",url:"/api/settings",payload:{provider:"fixture",model:"test",source:"freehire",enabledSources:["freehire"],scoreThreshold:60,maxResults:50,cvPages:2,coverLetterPages:1}})).statusCode,200);
+    assert.equal((await app.inject({method:"PUT",url:"/api/settings",payload:{provider:"qoder",model:"test",source:"freehire",enabledSources:["freehire"],scoreThreshold:60,maxResults:50,cvPages:2,coverLetterPages:1}})).statusCode,200);
     const response=await app.inject({method:"POST",url:"/api/profile/import",headers:{"content-type":`multipart/form-data; boundary=${boundary}`},payload});
     assert.equal(response.statusCode,202);
     assert.equal(typeof response.json().runId,"string");

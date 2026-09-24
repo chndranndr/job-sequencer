@@ -121,9 +121,10 @@ const SettingsInputSchema = z.object({
   const enabledSources = settings.enabledSources?.length ? settings.enabledSources : [settings.source];
   const firstBuiltIn = enabledSources.find((source): source is (typeof jobSourceKeys)[number] => (jobSourceKeys as readonly string[]).includes(source)) ?? "freehire";
   // Explicit Qoder migration: legacy Pi provider ids ("google", "openai-codex", ...)
-  // are NOT reinterpreted as Qoder models. Any stored non-qoder provider resets to
-  // the Qoder account default model, forcing deliberate reselection in Settings.
-  // readSettings writes the parsed value back, so the migration self-heals on load.
+  // are NOT reinterpreted as Qoder models. Any stored non-qoder provider clears the
+  // model so Settings forces deliberate selection; the billable account default
+  // ("Auto") is never chosen silently. readSettings writes the parsed value back,
+  // so the migration self-heals on load.
   const migrated = settings.provider === "qoder" ? settings : { ...settings, provider: "qoder", model: "" };
   return { ...migrated, source: firstBuiltIn, enabledSources, customSources: migrated.customSources } as Settings;
 });

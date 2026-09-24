@@ -1,7 +1,9 @@
 # Live probe output (owner-approved, 2026-09-24)
 
-Two enforce runs via QODERCLI_PATH + qodercliAuth() (ProcessTransport, qodercli 1.1.62).
-Credit cap agreed: 10. Spent: run1 = 0.6763504825, run2 = 0. Total 0.68 of 10.
+Three executions of the two enforce scenarios via QODERCLI_PATH + qodercliAuth()
+(ProcessTransport, qodercli 1.1.62): run 1 (auto), a first pinned run that failed
+only on the probe's own model-pin assertion, and the re-run pinned run in §Run 2.
+Credit cap agreed: 10. Spent: run1 = 0.6763504825, pinned runs = 0. Total 0.68 of 10.
 Redaction is done inside live-probe.mjs (account → {apiProvider, tokenSource} only;
 BYOK → field allowlist). No plan/balance/email/path in this file by construction.
 

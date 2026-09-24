@@ -20,6 +20,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+        env:
+          QODER_SKIP_DOWNLOAD: "1"
       - run: npm run check
       - run: npm test
       - run: npm run eval

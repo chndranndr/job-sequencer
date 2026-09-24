@@ -109,7 +109,7 @@ test("template metadata, structured truth boundary, and path containment", async
 
 test("generation session exposes no tools", async () => {
   const session = await createFauxRestrictedGenerationSession();
-  try { assert.deepEqual(session.getActiveToolNames?.() ?? [], []); } finally { session.dispose(); }
+  try { if (typeof session.getActiveToolNames !== "function") throw new Error("generation session must expose getActiveToolNames"); assert.deepEqual(session.getActiveToolNames(), []); } finally { session.dispose(); }
 });
 
 test("document verification treats configured pages as maximums", async () => {

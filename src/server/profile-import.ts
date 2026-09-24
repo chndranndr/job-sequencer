@@ -551,6 +551,7 @@ export class ProfileImportRunManager {
     const existing = this.coordinator.findByIdempotencyKey(idempotencyKey);
     if (existing) return existing;
     const context = await this.options.load();
+    if (!context.settings.model.trim()) throw Object.assign(new Error("Select a Qoder model in Settings before importing a resume."), { statusCode: 409 });
     const busy = this.options.db.prepare("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").get();
     if (busy) throw Object.assign(new Error("Another AI run is already active."), { statusCode: 409 });
     const buffer = Buffer.from(file.buffer);

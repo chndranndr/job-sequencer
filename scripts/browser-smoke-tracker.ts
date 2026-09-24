@@ -76,7 +76,7 @@ const manualImportFixture: ManualJobImportResult = {
 };
 
 const smokeSettings = {
-  provider: "job-sequencer-faux",
+  provider: "qoder",
   model: "fixture",
   source: "freehire" as const,
   enabledSources: ["freehire"],

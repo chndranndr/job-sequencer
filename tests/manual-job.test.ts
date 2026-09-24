@@ -11,7 +11,7 @@ import { MAX_MANUAL_BATCH_SIZE, MAX_MANUAL_FETCH_BYTES, importManualJob, ManualJ
 import type { AgentSessionLike } from "../src/server/agent.js";
 
 const settings = {
-  provider: "job-sequencer-faux",
+  provider: "qoder",
   model: "phase0",
   source: "freehire" as const,
   enabledSources: ["freehire"],
