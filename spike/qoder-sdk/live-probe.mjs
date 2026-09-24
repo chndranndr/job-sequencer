@@ -82,7 +82,16 @@ const iterating = (async () => {
 const failures = [];
 
 const init = await q.initializationResult();
-console.log(`\ninitialize account = ${JSON.stringify(init.account)}`);
+// AccountInfo carries userId/name/email/organization. Probe output is pasted
+// to a public issue, so print only the non-identifying routing facts.
+const account = init.account ?? {};
+console.log(
+  `\ninitialize account = ${JSON.stringify({
+    apiProvider: account.apiProvider ?? null,
+    subscriptionType: account.subscriptionType ?? null,
+    tokenSource: account.tokenSource ?? null,
+  })}`,
+);
 const models = await q.getAvailableModels({ fetchStrategy: "live" }).catch((err) => {
   failures.push(`getAvailableModels failed: ${err?.message}`);
   return [];
@@ -103,7 +112,20 @@ const byok = await q.listByokConfigs().catch((err) => {
   console.log(`listByokConfigs unavailable: ${err?.message}`);
   return null;
 });
-if (byok) console.log(`persisted BYOK configs (ids only): ${JSON.stringify(byok.map((c) => c.id ?? c.modelId ?? c))}`);
+if (byok) {
+  // ByokConfigInfo = ByokModelConfigInfo | CustomByokProviderConfigInfo. Neither
+  // member declares id/modelId, so allowlist the identity fields that exist and
+  // fall back to key names only. Never dump a whole config object: baseUrl,
+  // authType and protocol are config internals that do not belong in a public issue.
+  const BYOK_SAFE_FIELDS = ["key", "providerId", "provider", "model", "defaultModelId", "displayName"];
+  const entries = Array.isArray(byok) ? byok : (byok.configs ?? []);
+  const redacted = entries.map((c) => {
+    const picked = {};
+    for (const field of BYOK_SAFE_FIELDS) if (c?.[field] !== undefined) picked[field] = c[field];
+    return Object.keys(picked).length > 0 ? picked : { fields: Object.keys(c ?? {}) };
+  });
+  console.log(`persisted BYOK configs (${redacted.length}, allowlisted fields): ${JSON.stringify(redacted)}`);
+}
 
 const initFrame = seen.find((m) => m.type === "system" && m.subtype === "init");
 if (initFrame) {
