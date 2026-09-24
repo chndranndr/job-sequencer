@@ -2,9 +2,18 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-const PKG_DIR = process.env.QODER_SPIKE_PKG_DIR ?? "H:/work/qoder-sdk-spike/pkg";
+const PKG_DIR = process.env.QODER_SPIKE_PKG_DIR;
+if (!PKG_DIR) {
+  console.error(
+    "QODER_SPIKE_PKG_DIR is required: a directory holding the npm tarball, the extracted package/, and the CLI artifacts.\n" +
+      "Download URLs and digests are recorded in FINDINGS.md ('Artefak yang diperiksa').",
+  );
+  process.exit(2);
+}
 const SDK_VERSION = "1.0.49";
 const CLI_VERSION = "1.1.62";
+// Pinned so a re-download on another machine proves provenance against this repo, not just transport consistency.
+const SDK_TARBALL_SHA512_BASE64 = "wtNfj0zMVpbNrqAH0JVCwGdKeZIAQImpC8hyTXmCrvX4eNDiu7bRWEbO0SGH7zwQeXW6IM3696NFYgR2Ic8ZLw==";
 
 const EXPECTED = {
   "qodercli-windows-x64.zip": {
@@ -36,9 +45,13 @@ assert(sdkPkg.qoderCliVersion === CLI_VERSION, "CLI version pin");
 assert(manifest.defaultTransport === "worker", "default transport");
 
 const tarball = join(PKG_DIR, "qoder-ai-qoder-agent-sdk-1.0.49.tgz");
+const tarballSha512 = createHash("sha512").update(readFileSync(tarball)).digest("base64");
 console.log(`\nnpm tarball: ${tarball}`);
-console.log(`  sha256: ${sha256File(tarball)}`);
+console.log(`  sha512 (base64): ${tarballSha512}`);
+console.log(`  expected (registry dist.integrity): ${SDK_TARBALL_SHA512_BASE64}`);
+console.log(`  match: ${tarballSha512 === SDK_TARBALL_SHA512_BASE64 ? "OK" : "MISMATCH"}`);
 console.log(`  size: ${statSync(tarball).size}`);
+assert(tarballSha512 === SDK_TARBALL_SHA512_BASE64, "npm tarball sha512 vs registry integrity");
 
 for (const [name, expected] of Object.entries(EXPECTED)) {
   const file = join(PKG_DIR, name);

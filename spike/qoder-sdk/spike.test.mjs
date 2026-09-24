@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { statSync, existsSync } from "node:fs";
 import { query, accessToken, createSdkMcpServer, tool, AbortError } from "@qoder-ai/qoder-agent-sdk";
 import { z } from "zod";
 import {
@@ -45,10 +46,12 @@ test("A: spawnQoderCLIProcess seam captures launch args; tools:[] maps to empty 
     prompt: "synthetic",
     options: {
       auth: fixtureAuth,
+      pathToQoderCLIExecutable: "fake-qodercli-spike.exe",
       tools: [],
       disallowedTools: ["Bash", "Read", "Edit", "Write"],
       persistSession: false,
       settingSources: [],
+      controlRequestTimeoutMs: 500,
       spawnQoderCLIProcess: fakeSpawn(captured),
       stderr: () => {},
     },
@@ -59,6 +62,7 @@ test("A: spawnQoderCLIProcess seam captures launch args; tools:[] maps to empty 
     } catch {}
   })();
   await waitFor(() => captured.args, { label: "spawn capture" });
+  assert.equal(captured.command, "fake-qodercli-spike.exe", "fixture spawned the fake path only, never a real qodercli");
   const args = captured.args;
   assert.ok(args.includes("--print"), "--print present");
   assert.ok(args.includes("--no-session-persistence"), "persistSession:false honored");
@@ -70,13 +74,18 @@ test("A: spawnQoderCLIProcess seam captures launch args; tools:[] maps to empty 
   assert.ok(args.filter((a) => a === "--disallowed-tools").length === 4, "one flag per disallowed tool");
   assert.ok(!args.includes("--dangerously-skip-permissions"), "no permission bypass flag");
   assert.ok(!args.includes("--allowed-tools"), "no allowedTools flag when unset");
-  assert.ok(
-    typeof captured.env.QODER_SDK_AUTH_PAYLOAD_FILE === "string",
-    "auth travels as a temp payload file path, not an argv flag",
-  );
   assert.ok(!args.some((a) => a.includes("fixture-token")), "token never appears in argv");
+  const payloadPath = captured.env.QODER_SDK_AUTH_PAYLOAD_FILE;
+  assert.ok(typeof payloadPath === "string" && payloadPath.length > 0, "auth travels as a temp payload file path, not an argv flag");
+  if (process.platform !== "win32") {
+    // NTFS does not expose POSIX mode bits (statSync reports 0o666 even after chmod 0600);
+    // on Windows the enforceable guarantees are payload-file indirection + removal on close.
+    const payloadStat = statSync(payloadPath);
+    assert.equal(payloadStat.mode & 0o777, 0o600, "auth payload file is owner-only while the session lives");
+  }
   await q.close();
   await consumed;
+  await waitFor(() => !existsSync(payloadPath), { timeoutMs: 5000, label: "auth payload removed on close" });
 });
 
 test("B: tools:[] and disallowedTools ride the transport launch options, not the initialize frame", { timeout: 15000 }, async () => {

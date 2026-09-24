@@ -1,6 +1,6 @@
 # Issue #24 — Qoder Agent SDK fase 0: hasil spike
 
-Status: **GO bersyarat** untuk fase 1. Semua klaim di bawah berasal dari fixture offline dan deklarasi paket terpasang; tidak ada panggilan provider live, tidak ada binary qodercli yang dieksekusi, tidak ada kredensial yang dibaca atau dikirim.
+Status: **GO bersyarat** untuk fase 1. Semua klaim di bawah berasal dari fixture offline, deklarasi paket, dan artefak terunduh yang diperiksa statis; tidak ada panggilan provider live, tidak ada binary qodercli yang dieksekusi, tidak ada kredensial yang dibaca atau dikirim.
 
 ## Artefak yang diperiksa (statis)
 
@@ -8,20 +8,34 @@ Status: **GO bersyarat** untuk fase 1. Semua klaim di bawah berasal dari fixture
 | --- | --- | --- |
 | `@qoder-ai/qoder-agent-sdk` | 1.0.49 (latest, dipublikasi 2026-09-23) | tarball npm sha512 `wtNfj0zM…ZLw==` cocok dengan `dist.integrity` registry |
 | `qodercli` (binary proses) | 1.1.62, `qodercli-windows-x64.zip` 97.778.572 bytes | sha256 `15978912…e5b5` cocok dengan `channels/1.1.62/manifest.json` (runtime `bun`, variant `standard`, `min_windows_build: 17763`) |
-| worker runtime (transport default) | 1.1.62, `qodercli-worker-runtime-win32-x64.tgz` 27.204.225 bytes | sha256 `c466805d…4bb1` cocok dengan sidecar `.sha256`; isi: `qoder-worker-runtime.obf.mjs` (obfuscated, 33 MB) + `vendor/ripgrep/x64-win32/rg.exe` |
+| worker runtime (transport default) | 1.1.62, `qodercli-worker-runtime-win32-x64.tgz` 27.204.225 bytes | sha256 `c466805d…4bb1` cocok dengan sidecar `.sha256`; isi: `qoder-worker-runtime.obf.mjs` (obfuscated, 33 MB) + `vendor/ripgrep/x64-win32/rg.exe` (5,4 MB) + plugin `vendor/qoder-security` dengan skills/config sendiri |
 
-Jalankan ulang: `node verify-artifacts.mjs` (butuh artefak di `QODER_SPIKE_PKG_DIR`, default `H:/work/qoder-sdk-spike/pkg`).
+Sumber unduhan (untuk regenerasi di mesin lain): `https://download.qoder.com/qodercli/releases/1.1.62/qodercli-windows-x64.zip`, `https://download.qoder.com/qodercli/releases/1.1.62/qodercli-worker-runtime-win32-x64.tgz` (+ sidecar `.sha256` di URL yang sama), manifest `https://download.qoder.com/qodercli/channels/1.1.62/manifest.json`. Jalankan ulang: `QODER_SPIKE_PKG_DIR=<dir artefak> node verify-artifacts.mjs`.
 
-- **Lisensi**: BUKAN open source. `SEE LICENSE IN LICENSE` → "Qoder Product Service Terms" (https://qoder.com/product-service). Instalasi = persetujuan terms. Ini keputusan hukum pemilik akun, bukan keputusan teknis.
+**Caveat integritas**: setiap pemeriksaan di rantai ini same-origin. `manifest.json`, artefak, dan sidecar `.sha256` semuanya berasal dari `download.qoder.com` / `qoder-ide.oss-accelerate.aliyuncs.com`, dan `QODER_CLI_MIRROR` bisa mengarahkan ulang keduanya. Tidak ada digest yang dipin di dalam paket SDK. "sha256 cocok manifest" membuktikan konsistensi transport, bukan provenance; CDN yang compromised mengalahkan semua pemeriksaan. Mitigasi yang mungkin: pin digest di repo ini (tabel di atas) dan bandingkan saat upgrade.
+
+- **Lisensi & provenance**: top-level `LICENSE` proprietary — `SEE LICENSE IN LICENSE` → "Qoder Product Service Terms" (https://qoder.com/product-service); instalasi = persetujuan terms. TAPI 14 file deklarasi membawa header "Copyright 2026 Google LLC / SPDX-License-Identifier: Apache-2.0" (`dist/protocol/*.d.ts` — index, messages, control, permissions, hooks, mcp, launch, common, agents, version, model-prompt-patches, skill-evolution, memory, feedback — plus `core/security-scan-options.d.ts`, `core/usage-normalize.d.ts`, `daemon/protocol.d.ts`), dan `protocol/index.d.ts:11-13` menyebut skema zod sisi CLI hidup di `@google/gemini-cli-core`. Artinya paket ini turunan Gemini CLI (Apache-2.0) yang dipublikasikan ulang di bawah terms proprietary Qoder. Catat sebagai risiko provenance/rantai pasok dengan file-file tersebut sebagai bukti; keputusan hukum tetap di pemilik akun.
 - **Peer dependency**: `zod ^3.25.0 || ^4.0.0` — repo sudah memakai zod 4.1.12, tidak ada dependency baru.
 - **Dependency runtime**: hanya `@modelcontextprotocol/sdk ^1.27.1`.
-- **postinstall**: `node scripts/postinstall.cjs` mengunduh worker runtime dari `download.qoder.com` dengan verifikasi sha256 (sidecar `.sha256`; manifest tidak memuat digest worker runtime, hanya digest CLI zip). Bisa dilewati dengan `QODER_SKIP_DOWNLOAD=1` — fixture di spike ini berjalan tanpa binary apa pun.
+- **postinstall**: `node scripts/postinstall.cjs` mengunduh worker runtime (delivery default; `runtime-manifest.json`: `defaultTransport: "worker"`, `packaged: false`, `delivery: "install"` — jadi install dengan `--ignore-scripts` tidak meninggalkan runtime apa pun; tidak relevan setelah transport disuntikkan, tetapi itu biaya install sebenarnya). Verifikasi sha256: manifest tidak memuat digest worker runtime, jadi script jatuh ke sidecar `.sha256` same-origin (lihat caveat). Bisa dilewati dengan `QODER_SKIP_DOWNLOAD=1` — fixture di spike ini berjalan tanpa binary apa pun.
 - **Platform**: `windows-x64` dan `windows-arm64` didukung eksplisit (`SUPPORTED_CLI_PLATFORM_TARGETS`).
-- **Autentikasi** (dari deklarasi `dist/auth.d.ts` + bundle): `accessToken()`, `accessTokenFromEnv()` (`QODER_PERSONAL_ACCESS_TOKEN`), `serviceAccount()`, `serviceAccountFromEnv()` (`QODER_SERVICE_ACCOUNT_KEY`), `qodercliAuth()`. Token ditulis ke temp file 0600 (`QODER_SDK_AUTH_PAYLOAD_FILE`) dan dibersihkan setelah launch; **tidak pernah muncul di argv** (dibuktikan fixture A). Strategi produk: PAT/Service Account hanya di environment backend; browser tidak pernah menerima atau menampilkan kredensial. **Belum diverifikasi**: panggilan live dengan PAT asli (butuh persetujuan eksplisit + batas kredit).
+- **Autentikasi** (dari deklarasi `dist/auth.d.ts` + fixture A): `accessToken()`, `accessTokenFromEnv()` (`QODER_PERSONAL_ACCESS_TOKEN`), `serviceAccount()`, `serviceAccountFromEnv()` (`QODER_SERVICE_ACCOUNT_KEY`), `qodercliAuth()`. Token ditulis ke temp file dengan mode 0600 (`QODER_SDK_AUTH_PAYLOAD_FILE`), **dihapus saat close** — keduanya diassert fixture A — dan tidak pernah muncul di argv. Strategi produk: PAT/Service Account hanya di environment backend; browser tidak pernah menerima atau menampilkan kredensial. **Belum diverifikasi**: panggilan live dengan PAT asli (butuh persetujuan eksplisit + batas kredit).
+- **Mode permission berbahaya ada di API**: `PermissionMode` mencakup `'bypassPermissions' | 'yolo'`, dan `allowDangerouslySkipPermissions` tersedia. Rencana migrasi menyatakan mode yang melewati approval bertentangan dengan batas repo. Adapter fase 1 harus pin mode aman, tidak pernah menyetel opsi bypass, dan fail-closed via `canUseTool` (fixture D membuktikan kedua sisi: deny terkirim, tanpa callback → error, bukan allow).
 
 ## Seam transport: PUTUSAN
 
-`options.transport` menerima `QueryTransportProvider` publik (`dist/core/transport.d.ts`, diekspor dari index). `query()` memanggil `provider.create(options)` per sesi; guard-nya hanya `typeof create === 'function'`. Ini seam stabil yang terdokumentasi — **transport bisa disuntikkan ke tes tanpa proses live dan tanpa emulator JSONL penuh**. `./protocol` sendiri types-only (runtime hanya `WIRE_PROTOCOL_VERSION = "1.5.0"`), jadi bukan itu seam-nya; seam-nya `options.transport`.
+`options.transport` menerima `QueryTransportProvider` publik dan **terdokumentasi**: `README.md:87-90` — "`query()` is the only query entry point and defaults to Worker. Pass `transport: ProcessTransport.default`, `transport: WorkerTransport.default`, or a custom transport provider when a single call needs to override the package default." Deklarasi: `dist/core/transport.d.ts` (diekspor dari index), guard runtime hanya `typeof create === 'function'`. **Transport bisa disuntikkan ke tes tanpa proses live dan tanpa emulator JSONL penuh.** `./protocol` types-only (runtime hanya `WIRE_PROTOCOL_VERSION = "1.5.0"`), jadi bukan itu seam-nya.
+
+Dua seam yang dipakai spike, keduanya memanggil `query()` sungguhan:
+
+1. **`options.spawnQoderCLIProcess`** (fixture A): menangkap argv/env yang dibangun `RuntimeLaunchOptionsBuilder.buildArgs()` sungguhan tanpa men-spawn binary. Bukti: `tools: []` → `--tools ""`, `disallowedTools` → 4× `--disallowed-tools`, `persistSession:false` → `--no-session-persistence`, tanpa flag bypass, `pathToQoderCLIExecutable` palsu → command yang di-spawn terbukti fake (hermetic).
+2. **Custom `Transport`** (fixture B–H): mengendalikan kedua sisi JSONL control protocol (initialize handshake, `mcp_message`, `can_use_tool`, interrupt, timeout) dengan frame sintetis.
+
+**Batas yang terdokumentasi**: `README.md:454-456` — "Session storage cannot be combined with `persistSession: false`, file checkpointing, custom transports, or the Cloud Agent runtime." Konsekuensi: strategi fake-transport **tidak bisa** menutup perilaku session-store/resume, yang relevan untuk sesi interview pooled di rencana fase 2. Perilaku itu butuh uji live atau desain ulang (resume per turn).
+
+**Fakta boundary yang penting untuk tes fase 1**: pembatasan tool TIDAK muncul di `initialize` control request (isinya hanya `sdkMcpServers` + capability flags). `tools`/`disallowedTools`/`permissionMode` naik lewat launch options → argv (ProcessTransport). Dengan custom transport, batasan teramati di `create(options)` (`ProcessTransportOptions`); dengan ProcessTransport, teramati sebagai argv. Assert di seam yang sama pada adapter nanti.
+
+**Semantik flag yang didokumentasikan README**: `README.md:243-246` — "`allowedTools` is an approval allowlist: listed tools are auto-approved… It does not remove tools from the agent's available toolset. To block tools, use `disallowedTools`." Ini mengonfirmasi asumsi rencana §1 dan memaku desain adapter. **Gap**: `tools: []` menjadi `--tools ""` (`s.join(",")` di bundle), dan tidak ada dokumentasi apa arti nilai kosong bagi qodercli (no-tools vs fallback ke default) — **belum terverifikasi**. Karena itu boundary produk tidak boleh bersandar pada satu flag tak terdokumentasi: pertahankan **defense-in-depth** — `tools: []` DAN `disallowedTools: ["Bash","Read","Write","Edit"]` DAN `canUseTool` fail-closed.
 
 Konsekuensi untuk strategi tes fase 1:
 
@@ -35,41 +49,48 @@ Konsekuensi untuk strategi tes fase 1:
 
 | Fixture | Klaim yang dibuktikan |
 | --- | --- |
-| A | `spawnQoderCLIProcess` menangkap launch args tanpa men-spawn binary: `tools: []` → `--tools ""`; `disallowedTools` → 4× `--disallowed-tools`; `persistSession:false` → `--no-session-persistence`; tidak ada `--dangerously-skip-permissions`; token tidak ada di argv, hanya path payload file di env |
-| B | `tools`/`disallowedTools`/`settingSources` sampai utuh ke transport launch options; `allowedTools` tidak diset (bukan default permisif) |
-| C | `createSdkMcpServer` + `tool()`: `tools/list` lewat control channel mengembalikan **hanya** tool terdaftar; `tools/call` mengeksekusi handler in-process dengan argumen tervalidasi zod; argumen invalid ditolak sebelum handler; tool tak terdaftar (`Bash`) ditolak; server name asing → error |
+| A | `spawnQoderCLIProcess` menangkap launch args tanpa men-spawn binary nyata (command = path palsu yang diassert): `tools: []` → `--tools ""`; `disallowedTools` → 4× `--disallowed-tools`; `persistSession:false` → `--no-session-persistence`; tidak ada `--dangerously-skip-permissions`; token tidak ada di argv; auth payload file dibuat 0600 dan **dihapus saat close** |
+| B | `tools`/`disallowedTools`/`settingSources` sampai utuh ke transport launch options; `allowedTools` tidak diset (bukan default permisif); `initialize` request tidak memuat batasan tool (boundary fact di atas) |
+| C | `createSdkMcpServer` + `tool()`: `tools/list` lewat control channel mengembalikan **hanya** tool terdaftar; `tools/call` mengeksekusi handler in-process dengan argumen tervalidasi zod dan hasilnya kembali lewat control channel; argumen invalid ditolak sebelum handler; tool tak terdaftar (`Bash`) ditolak; server name asing → error; instance server tidak pernah menyeberang wire (`createOptions.mcpServers` undefined) |
 | D | `canUseTool` deny sampai sebagai `behavior: "deny"`; **tanpa callback, SDK membalas error control request (fail-closed), bukan allow** |
 | E | Mapping `SDKMessage`: `system/init` (termasuk `tools: []` dan `protocol_version`), `stream_event` delta teks 1:1, `assistant.message.usage`, `result.result` sebagai teks final, `usage.credits`/`total_credits` terpisah dari `total_cost_usd` (kolom biaya USD lama harus tetap `null`) |
 | F | `result` subtype `error_during_execution` muncul sebagai pesan dengan `is_error:true` + `errors[]`, iterator tidak melempar |
-| G | `interrupt()` → control request `interrupt` + response `still_queued`; `AbortController.abort()` → transport ditutup, iterasi berakhir bersih (tanpa throw ke consumer); control request pasca-abort reject, tidak hang |
-| H | `controlRequestTimeoutMs` → SDK mengirim `control_cancel_request` dan promise reject `CONTROL_REQUEST_TIMEOUT`; catatan: `getUsageInfo()` menelan error menjadi `null` — adapter tidak boleh membaca `null` sebagai "0 kredit" |
+| G | `interrupt()` → control request `interrupt` + response `still_queued`; `AbortController.abort()` → transport ditutup, iterasi berakhir bersih **tanpa AbortError ke consumer**; control request pasca-abort reject (generic "Transport closed"), tidak hang. Konsekuensi adapter: **state cancel harus dilacak host-side** (flag sendiri) karena tidak ada sinyal terminal bertipe yang muncul ke consumer |
+| H | `controlRequestTimeoutMs` → SDK mengirim `control_cancel_request` dan request reject; `getUsageInfo()` menelan error menjadi `null` — adapter tidak boleh membaca `null` sebagai "0 kredit" |
 
 ## Batas bukti / belum terverifikasi
 
-- **Enforcement sisi CLI**: fixture membuktikan SDK *mengirim* batas yang benar dan MCP in-process hanya mengekspos tool terdaftar. Apakah qodercli 1.1.62 sungguhan menampilkan `tools: []` di `system/init` dan menolak `Bash` saat runtime — **belum terverifikasi**, butuh satu panggilan live yang disetujui (perintah persetujuan ada di bawah).
-- **Autentikasi PAT live**: belum diverifikasi (gate issue #24).
+Fixture membuktikan sisi SDK: opsi yang dikirim, handshake, routing MCP in-process, permission fail-closed, mapping pesan. Yang **hanya bisa dibuktikan runtime live** (ditandai `belum terverifikasi` sesuai issue):
+
+- **Enforcement sisi CLI**: apakah qodercli 1.1.62 sungguhan menampilkan `tools: []` di `system/init`, menolak `Bash` saat runtime, dan bagaimana CLI memaknai `--tools ""` (no-tools vs fallback default).
+- **Autentikasi PAT/Service Account live** (gate issue #24: persetujuan eksplisit + batas kredit).
+- **Cancel saat model/tool benar-benar berjalan** dan **accounting usage/kredit nyata** dari server Qoder.
 - **Konkurensi handler `tool()`**: Pi punya `executionMode: "sequential"`; deklarasi Qoder tidak menunjukkan padanannya. Handler yang memutasi `AgentSearchState` harus dianggap bisa dipanggil serentak dan diserialkan sendiri di fase 1.
-- **Worker transport** adalah default (`runtime-manifest.json`). Worker runtime berupa `.mjs` terobfuscasi 33 MB. Untuk server produksi, ProcessTransport (binary `qodercli.exe`) lebih mudah diaudit; keputusan transport final = fase 1.
+- **Session-store/resume**: tidak bisa diuji via custom transport (batas README di atas); relevan untuk interview pooled fase 2.
+- **Worker transport** adalah default; runtime-nya `.mjs` terobfuscasi 33 MB. Untuk server produksi, ProcessTransport (binary `qodercli.exe`) lebih mudah diaudit; keputusan transport final = fase 1.
 
 ## Risiko untuk keputusan go/no-go
 
-1. **Privasi**: `qodercli` mengirim konteks tugas (prompt, potongan CV/posting yang masuk konteks) ke layanan inferensi Qoder. Klaim "data tetap lokal" tidak lagi berlaku. Loopback-only UI tidak berubah, tetapi boundary data bergeser ke vendor.
-2. **Biaya**: kredit Qoder ≠ USD. `total_cost_usd` dari SDK tidak dapat dipercaya sebagai biaya nyata (fixture E: 0 sementara credits 12). Kolom `estimatedCost` lama tetap `null`; metering kredit butuh unit terpisah.
-3. **Lisensi & rantai pasok**: terms proprietary + postinstall mengunduh binary ~125 MB dari CDN Alibaba OSS dengan verifikasi sha256 sidecar. Pin versi SDK + CLI dan simpan digest (lever `verify-artifacts.mjs`).
-4. **Tidak ada perubahan gerbang approval**: spike tidak menyentuh `src/`; approval manual, provenance, dan validator tetap di kode aplikasi.
+1. **Privasi**: `qodercli` mengirim konteks tugas (prompt, potongan CV/posting yang masuk konteks) ke layanan inferensi Qoder. Klaim "data tetap lokal" tidak lagi berlaku. Loopback-only UI tidak berubah, tetapi boundary data bergeser ke vendor. Sisi positif yang terbukti: token tidak pernah lewat argv, payload auth 0600 dan dibersihkan (fixture A).
+2. **Biaya**: kredit Qoder ≠ USD. `total_cost_usd` dari SDK tidak dapat dipercaya sebagai biaya nyata (fixture E: 0 sementara credits 12). Kolom `estimatedCost` lama tetap `null`; metering kredit butuh unit terpisah. Biaya kredit per tugas belum terukur — butuh live run berpasangan dengan cap.
+3. **Lisensi & rantai pasok**: ToS proprietary (bukan OSS) untuk repo yang saat ini pin dependency MIT-ish; turunan Gemini CLI Apache-2.0 yang dipublikasikan ulang; postinstall mengunduh ~125 MB dari CDN Alibaba OSS dengan integrity same-origin saja; worker runtime obfuscated + bundled `rg.exe` + plugin `qoder-security`. Pin versi SDK + CLI dan simpan digest di repo (lever `verify-artifacts.mjs`).
+4. **Tidak ada perubahan gerbang approval**: spike tidak menyentuh `src/`; approval manual, provenance, dan validator tetap di kode aplikasi. Mode `bypassPermissions`/`yolo`/`allowDangerouslySkipPermissions` tidak pernah disentuh dan harus tetap dilarang di adapter.
 
-## Perintah untuk satu live-run yang disetujui (fase berikutnya, bukan sekarang)
+## Live probe yang dimintakan persetujuan (belum dijalankan)
+
+`live-probe.mjs` di direktori ini menolak berjalan tanpa `QODER_SPIKE_LIVE=1` + `QODER_PERSONAL_ACCESS_TOKEN`. Satu query sintetis, `tools: []` + `disallowedTools` + `canUseTool` deny, lalu assert `system/init.tools` kosong dan prompt yang meminta `Bash` ditolak. Estimasi biaya: satu putaran sintetis kecil; angka kredit pasti belum diketahui — **usulkan cap 10 kredit** dan hentikan bila `getUsageInfo()` melewatinya. Jalankan hanya setelah pemilik akun menyetujui.
 
 ```
-# hanya setelah pemilik akun menyetujui + batas kredit disepakati:
-QODER_PERSONAL_ACCESS_TOKEN=<token> node live-probe.mjs   # belum dibuat; satu query sintetis, tools:[], assert system/init.tools kosong
+QODER_SPIKE_LIVE=1 QODER_PERSONAL_ACCESS_TOKEN=<token> node live-probe.mjs
 ```
 
 ## Menjalankan ulang spike
 
 ```
 cd spike/qoder-sdk
-QODER_SKIP_DOWNLOAD=1 npm install
-npm test                 # 8 fixture offline
-npm run verify-artifacts # digest artefak (butuh artefak terunduh di scratch)
+QODER_SKIP_DOWNLOAD=1 npm ci      # lockfile ter-commit; skip-download mencegah postinstall fetch binary
+npm test                          # 8 fixture offline
+QODER_SPIKE_PKG_DIR=<dir> npm run verify-artifacts   # digest artefak (unduh dulu dari URL di atas)
 ```
+
+Direktori spike ini sengaja di luar glob `tsconfig.json` (`src/`, `tests/`, `scripts/`), `npm test` root (`tests/*.test.ts`), dan `harness:check` (markdown roots + `src/server`/`src/tracker`), sehingga tidak pernah masuk suite proyek dan tidak menyentuh dependency root.
