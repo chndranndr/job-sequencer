@@ -44,7 +44,13 @@ result.modelUsage = {"bailian-intl/qwen3.8-max-pg":{...,"costUSD":0,"contextWind
 result.permission_denials = []
 getUsageInfo() = null
 model pin confirmed: options.model=bailian-intl/qwen3.8-max-pg → init.model="Qwen-3.8-Max (Alibaba Cloud Model Studio - Singapore)"
+PROBE PASS: CLI-side tools:[] enforcement confirmed.
 ```
+
+Run 2 re-executed after fixing the probe's own model-pin assertion (the first pinned run
+ended in a FAILURES tail because the assertion compared options.model value against
+init.model displayName; fixed in commit b4c9afa). The re-run is a genuine PROBE PASS,
+exit 0, still 0 credits. The sole original failure was the probe's assertion, not the SDK.
 
 The BYOK turn cost 0 Qoder credits: `total_credits = 0`, `credits`/`billable` absent on
 every assistant message, and `modelUsage` for the custom model carries no `credits` key.
