@@ -5,6 +5,7 @@ import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createSourceRegistry, type JobSourcePlugin } from "../src/server/source-plugins.js";
 import { createAgentMcpServer } from "../src/server/tools.js";
 import { createAgentSearchTools } from "../src/server/search/tools.js";
+import { waitFor } from "../src/server/testing/qoder-faux.js";
 
 test("restricted scrape session exposes exactly the four bounded search tools", async () => {
   const session = await createRestrictedScrapeSession();
@@ -44,17 +45,26 @@ test("live session resolver uses an injected fixture-only source registry", () =
 
 test("concurrent MCP tool handlers serialize without corrupting budget or provenance", async () => {
   let hits = 0;
+  let entered = 0;
+  let active = 0;
+  let maxActive = 0;
+  const releases: Array<() => void> = [];
   const plugin: JobSourcePlugin = {
     manifest: {
       id: "fixture",
       label: "Fixture",
       version: "1.0.0",
       capabilities: { search: true, detail: false, pagination: false, location: true, freshness: false, remote: true, activeStatus: false },
-      policy: { maxRequestsPerRun: 8, maxConcurrentRequests: 1, timeoutMs: 1_000, minimumDelayMs: 0 },
+      policy: { maxRequestsPerRun: 8, maxConcurrentRequests: 8, timeoutMs: 1_000, minimumDelayMs: 0 },
       guidance: { strengths: ["Fixture source."], caveats: ["Fixture data is local."], query: "Use the fixture query." },
     },
     search: async () => {
       hits += 1;
+      entered += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => { releases.push(resolve); });
+      active -= 1;
       return { meta: { count: 1 }, results: [{ id: `hit-${hits}`, title: "Engineer", url: `https://example.test/job-${hits}`, company: "Example", location: "Remote" }] };
     },
   };
@@ -66,10 +76,23 @@ test("concurrent MCP tool handlers serialize without corrupting budget or proven
   const bundle = createAgentMcpServer("search", scrapeToolCatalog(tools).definitions);
   const searchDefinition = bundle.definitions.find((candidate) => candidate.name === "searchJobs");
   if (!searchDefinition) throw new Error("searchJobs missing from bundle");
-  const calls = await Promise.all([0, 1, 2, 3, 4].map((index) =>
-    searchDefinition.handler({ query: `backend ${index}`, limit: 5 }, { requestId: `concurrent-${index}` } as never),
+  type HandlerExtra = Parameters<typeof searchDefinition.handler>[1];
+  const extra = (requestId: string): HandlerExtra =>
+    // The gate wrapper reads only requestId and signal; the real MCP extra carries more.
+    ({ requestId, signal: new AbortController().signal }) as HandlerExtra;
+  const callsPromise = Promise.all([0, 1, 2, 3, 4].map((index) =>
+    searchDefinition.handler({ query: `backend ${index}`, limit: 5 }, extra(`concurrent-${index}`)),
   ));
+  for (let index = 0; index < 5; index += 1) {
+    await waitFor(() => (entered === index + 1 ? true : undefined), { label: `handler ${index + 1} entry` });
+    assert.equal(active, 1, "exactly one handler inside the gate at a time");
+    const release = releases.shift();
+    if (!release) throw new Error("no release registered for the entered handler");
+    release();
+  }
+  const calls = await callsPromise;
   assert.equal(calls.every((call) => call.isError !== true), true, "every concurrent search completes");
+  assert.equal(maxActive, 1, "the per-server gate serializes handlers; plugin calls never overlap");
   const snapshot = tools.state.inspect();
   const searchAttempts = snapshot.attempts.filter((attempt) => attempt.operation === "search");
   assert.equal(searchAttempts.length, 5, "five search attempts recorded exactly once");
