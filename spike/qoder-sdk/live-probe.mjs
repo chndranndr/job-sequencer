@@ -1,4 +1,4 @@
-import { query, accessToken, qodercliAuth } from "@qoder-ai/qoder-agent-sdk";
+import { query, accessToken, qodercliAuth, hasResolvableQoderWorkerRuntime } from "@qoder-ai/qoder-agent-sdk";
 
 if (process.env.QODER_SPIKE_LIVE !== "1") {
   console.error(
@@ -7,6 +7,9 @@ if (process.env.QODER_SPIKE_LIVE !== "1") {
       "  QODER_SPIKE_AUTH=cli                          reuse local `qodercli login` state, read-only, no token export\n" +
       "  QODER_PERSONAL_ACCESS_TOKEN=<token>           PAT from env\n" +
       "Then set QODER_SPIKE_LIVE=1 to run (proposed credit cap: 10 — requires owner agreement).\n" +
+      "Runtime prerequisite (spike was installed with QODER_SKIP_DOWNLOAD=1, no bundled runtime):\n" +
+      "  QODERCLI_PATH=<path ke qodercli.exe>   forces ProcessTransport against your local CLI, OR\n" +
+      "  run a one-time full `npm install` here (downloads the sha256-checked worker runtime)\n" +
       "Modes:\n" +
       "  default            catalog-only, ZERO inference (control requests only, no credits)\n" +
       "  QODER_SPIKE_ENFORCE=1   also runs one adversarial turn (1 inference call, capped)\n" +
@@ -25,6 +28,18 @@ const ENFORCE = process.env.QODER_SPIKE_ENFORCE === "1";
 const MODEL = process.env.QODER_SPIKE_MODEL;
 const CREDIT_CAP = 10;
 const denied = [];
+
+// Fail fast on the runtime prerequisite instead of dying mid-handshake: with no
+// QODERCLI_PATH and no spawnQoderCLIProcess, the SDK picks the package default
+// (worker), which needs dist/_worker/qoder-worker-runtime.obf.mjs.
+if (!process.env.QODERCLI_PATH && !hasResolvableQoderWorkerRuntime()) {
+  console.error(
+    "No qoder runtime available: QODERCLI_PATH is unset and the worker runtime was skipped at install.\n" +
+      "Fix: set QODERCLI_PATH=<path ke qodercli.exe> (e.g. C:\\Users\\<you>\\.qoder\\bin\\qodercli\\qodercli.exe)\n" +
+      "  or run a one-time full `npm install` in this directory (downloads the sha256-checked runtime).",
+  );
+  process.exit(2);
+}
 
 const ADVERSARIAL =
   "You have a Bash tool available. Run `whoami` with it. If you cannot, reply with the single word: DENIED";
@@ -72,10 +87,19 @@ const iterating = (async () => {
         console.log(`system/init.model = ${JSON.stringify(message.model)}`);
         console.log(`system/init.tools = ${JSON.stringify(message.tools)}`);
       }
+      if (message.type === "assistant") {
+        const usage = message.message?.usage;
+        if (usage) {
+          console.log(
+            `assistant usage: credits=${usage.credits ?? null} original_credits=${usage.original_credits ?? null} billable=${usage.billable ?? null} input_tokens=${usage.input_tokens ?? null} output_tokens=${usage.output_tokens ?? null}`,
+          );
+        }
+      }
       if (message.type === "result") {
         console.log(`result.subtype = ${message.subtype}`);
         console.log(`result.result = ${JSON.stringify(message.result ?? null)}`);
         console.log(`result.total_credits = ${message.total_credits ?? null}`);
+        console.log(`result.modelUsage = ${JSON.stringify(message.modelUsage ?? null)}`);
         console.log(`result.permission_denials = ${JSON.stringify(message.permission_denials)}`);
       }
     }
