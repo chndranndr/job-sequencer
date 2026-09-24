@@ -78,28 +78,34 @@ Fixture membuktikan sisi SDK: opsi yang dikirim, handshake, routing MCP in-proce
 
 ## Pemilihan model: katalog Qoder vs custom model (BYOK)
 
-Ada **tiga mekanisme terpisah** di SDK 1.0.49. "Custom model yang ditambahkan di qodercli" masuk lewat mekanisme pertama; yang kedua untuk routing per-request; yang ketiga untuk mengelola config-nya.
+**Keputusan pemilik (2026-09-24)**: (1) pengiriman konteks ke layanan Qoder diterima ("aman aja datanya ke sana"); (2) provider Pi lama (`google`, `openai-codex` di `defaultSettings` config.ts:238) TIDAK dipetakan ke Qoder — fase 1 memakai **custom model yang sudah disimpan pemilik di qoder-cli**, dipilih lewat mekanisme 1 di bawah. `selectConfiguredModel` (pi.ts:67) menerima `(provider, model)` dari Pi ModelRuntime; padanan Qoder-nya `options.model: "<value>"` dari katalog akun — Settings UI fase 1 cukup menyimpan `value` tunggal, bukan pasangan provider/model.
 
-1. **`options.model` (push mode)** — string identifier; CLI meresolusi lewat rantai lokal (options → settings → model router). Custom model yang sudah terdaftar di akun bisa dipilih di sini **bila `value`-nya muncul di katalog akun**. Bukti deklarasi: `types/options.d.ts` (`model?: string`); `Query.getAvailableModels({ fetchStrategy: 'live' })` → `ModelInfo[]` dengan `source: 'system' | 'user' | 'organization' | 'custom'` — entri BYOK/custom muncul sebagai `source` non-system, dan `value` itulah yang diberikan ke `options.model`.
-2. **`resolveModel` (pull mode)** — callback `ModelPolicyProvider` dipanggil CLI sebelum **setiap** LLM call (`get_model_policy`); mengembalikan id platform ATAU objek `CustomModel` inline (`{ provider, api_key, model?, url?, style?, isVl? }` — `protocol/control.d.ts:730`) yang diteruskan sebagai `custom_model` di wire. Ini jalur untuk routing per-request (mis. tier hemat untuk parsing terstruktur, tier kuat untuk penalaran pencarian — eksperimen di tabel optimasi rencana migrasi). Timeout default 500ms (`resolveModelTimeoutMs`); error/timeout **dipropagasi, tanpa silent fallback**.
-3. **BYOK config CRUD via `Query`** — `listByokProviders()`, `validateByokModel()`, `listByokConfigs()` (kredensial tidak pernah dikembalikan), `createByokConfig()`, dst. Custom model yang ditambahkan lewat `qodercli` seharusnya terlisting di `listByokConfigs()` sebagai persisted config.
+Ada **tiga mekanisme terpisah** di SDK 1.0.49 (docs.qoder.com/cli/sdk/model-policy + deklarasi paket):
 
-**Status bukti**: ketiganya ada di deklarasi paket terpasang; **pemanggilan live belum diverifikasi** (gate issue #24). `live-probe.mjs` mode katalog (default, **nol inferensi, nol kredit**) menjawab sekaligus: apakah custom model muncul di `getAvailableModels` dengan `value` apa, apakah `listByokConfigs` melihatnya, dan apakah `QODER_SPIKE_MODEL=<value>` diterima sebagai `system/init.model`.
+1. **`options.model` (fixed/push mode)** — string identifier; CLI meresolusi lewat rantai lokal (options → settings → model router). **Ini jalur untuk custom model yang disimpan di qoder-cli**: host tidak pernah menyentuh API key (kredensial tetap di config CLI); cukup pass `value` katalognya. Runtime: `Query.setModel()` bisa mengganti model fixed-mode; `getAvailableModels({ fetchStrategy: 'live' })` → `ModelInfo[]` dengan `source: 'system' | 'user' | 'organization' | 'custom'` untuk enumerasi. Bila diomit, default akun yang dipakai.
+2. **`resolveModel` (dynamic/pull mode)** — callback dipanggil sebelum **setiap** LLM call (`get_model_policy`); mengembalikan id platform ATAU objek `CustomModel` inline (`{ provider, api_key, model?, url?, style?, isVl? }` — `protocol/control.d.ts:730`) untuk **BYOK yang disuplai host** dengan kredensial per-call di wire. Kedua mode mutually exclusive — passing callback membuat `options.model` diabaikan. Tidak ada automatic fallback: callback yang timeout/throw/empty membuat query FAIL (docs + deklarasi). **Tidak dibutuhkan untuk kasus sekarang**; relevan nanti hanya untuk routing per-purpose (tier hemat parsing vs tier kuat penalaran).
+3. **BYOK config CRUD via `Query`** — `listByokConfigs()` (capability-gated `BYOK_CONFIG_MANAGEMENT_CAPABILITY`; deklarasi: "secret-free ... returned by the CLI"), `validateByokModel()`, dst. Untuk memverifikasi config yang tersimpan tanpa membaca file config CLI.
 
-**Konsekuensi produk fase 1 bila custom model dipakai**: API key pihak ketiga mengalir lewat config Qoder CLI / `CustomModel.api_key` — kredensial tambahan di luar PAT Qoder, tetap tidak boleh menyentuh browser. Bila custom model adalah provider eksternal (BYOK ke OpenAI/dsb), **konteks tugas terkirim ke provider itu juga**, bukan hanya ke Qoder — risiko privasi ganda yang harus dicatat eksplisit di Settings UI. Rencana migrasi §2 sudah mengunci ini: jangan diam-diam mengartikan `google`/`openai-codex` lama sebagai model Qoder.
+**Routing inferensi custom model — dua kemungkinan, menentukan cerita privasi/biaya**: custom model yang disimpan via qoder-cli/BYOK bisa (a) diproksikan lewat Qoder (kredit Qoder terpakai, Qoder melihat prompt) atau (b) direct ke endpoint provider (`url`/`outerProvider` di `CustomModel`; byok.d.ts:6-7 menyebut "route a single LLM call through a third-party provider"). README tidak punya bagian BYOK; docs model-policy tidak menyatakan routing-nya. **Belum terverifikasi** — probe katalog + satu turn enforce dengan `result.total_credits`/`modelUsage` menjawab ini secara empiris (kredit 0 + hasil benar = direct; kredit terpakai = proxied).
+
+**Status bukti**: mekanisme 1-3 ada di deklarasi terpasang + docs; **pemanggilan live belum diverifikasi** (gate issue #24). Batas yang dipertahankan: TIDAK membaca `~/.qoder`/config CLI untuk menemukan model id (API key BYOK mungkin tersimpan di sana; AGENTS.md melarang) — enumerasi hanya lewat `getAvailableModels`/`listByokConfigs` di dalam sesi yang diautentikasi pemilik.
+
+**Konsekuensi produk fase 1**: bila custom model = provider eksternal dan routing-nya direct, prompt terkirim ke provider itu, bukan (hanya) ke Qoder — pemilik sudah menerima pengiriman data, tetapi Settings UI fase 1 harus tetap menampilkan provider tujuan inferensi secara eksplisit. Kredensial BYOK tetap tidak boleh menyentuh browser.
 
 ## Live probe yang dimintakan persetujuan (belum dijalankan)
 
-`live-probe.mjs` menolak berjalan tanpa `QODER_SPIKE_LIVE=1` + `QODER_PERSONAL_ACCESS_TOKEN`. Dua mode:
+`live-probe.mjs` menolak berjalan tanpa `QODER_SPIKE_LIVE=1` + auth. Auth: `QODER_SPIKE_AUTH=cli` memakai ulang login `qodercli` lokal secara read-only (`qodercliAuth()` — tanpa ekspor token, kredensial tidak pernah masuk env/transcript), atau `QODER_PERSONAL_ACCESS_TOKEN` untuk PAT. Dua mode:
 
-1. **Default (katalog, NOL kredit)**: handshake initialize + `getAvailableModels` + `listByokConfigs` + dump `system/init` (model, tools). Tidak ada prompt yang dikirim, tidak ada inferensi — hanya control requests. Menutup kriteria platform/auth-artifact DAN menjawab pertanyaan custom model di atas.
-2. **`QODER_SPIKE_ENFORCE=1` (1 panggilan inferensi)**: menambah satu turn adversarial sintetis (`maxTurns: 1`) untuk membuktikan enforcement sisi CLI: `system/init.tools` kosong, permintaan `Bash` ditolak. Estimasi biaya: satu putaran sintetis kecil; angka kredit pasti belum diketahui — **usulan cap: 10 kredit, butuh persetujuan pemilik**; probe FAIL bila `total_credits` melewatinya.
+1. **Default (katalog, kemungkinan besar NOL kredit)**: handshake initialize + `getAvailableModels` + `listByokConfigs` + dump `system/init` (model, tools). Tidak ada prompt yang dikirim, tidak ada inferensi — hanya control requests (biaya kredit diharapkan 0; tetap digate karena menyentuh akun live). Menjawab: `value` custom model pemilik, `source`-nya, dan apakah `QODER_SPIKE_MODEL=<value>` diterima sebagai `system/init.model`.
+2. **`QODER_SPIKE_ENFORCE=1` (1 panggilan inferensi)**: satu turn adversarial sintetis (`maxTurns: 1`): `system/init.tools` harus kosong, permintaan `Bash` harus ditolak, dan `total_credits`/`modelUsage` mengungkap routing custom model (proxied vs direct). **Usulan cap: 10 kredit, butuh persetujuan pemilik**; probe FAIL bila terlampaui.
+
+Output probe sudah diredaksi di dalam script (bukan di langkah paste): akun hanya `{apiProvider, subscriptionType, tokenSource}`; BYOK lewat allowlist field (`key`, `providerId`, `provider`, `model`, `defaultModelId`, `displayName`) dengan fallback nama-key saja untuk shape tak dikenal.
 
 ```
 cd spike/qoder-sdk
-QODER_SPIKE_LIVE=1 QODER_PERSONAL_ACCESS_TOKEN=<token> node live-probe.mjs                              # katalog saja, nol kredit
-QODER_SPIKE_LIVE=1 QODER_SPIKE_ENFORCE=1 QODER_PERSONAL_ACCESS_TOKEN=<token> node live-probe.mjs        # + enforcement, usulan cap 10 kredit
-QODER_SPIKE_LIVE=1 QODER_SPIKE_MODEL=<value> QODER_PERSONAL_ACCESS_TOKEN=<token> node live-probe.mjs    # pin custom model, verifikasi init.model
+QODER_SPIKE_LIVE=1 QODER_SPIKE_AUTH=cli node live-probe.mjs                              # katalog saja, pakai login lokal
+QODER_SPIKE_LIVE=1 QODER_SPIKE_AUTH=cli QODER_SPIKE_ENFORCE=1 node live-probe.mjs        # + enforcement, usulan cap 10 kredit
+QODER_SPIKE_LIVE=1 QODER_SPIKE_AUTH=cli QODER_SPIKE_MODEL=<value> node live-probe.mjs    # pin custom model, verifikasi init.model
 ```
 
 ## Menjalankan ulang spike

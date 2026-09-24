@@ -1,9 +1,12 @@
-import { query, accessToken } from "@qoder-ai/qoder-agent-sdk";
+import { query, accessToken, qodercliAuth } from "@qoder-ai/qoder-agent-sdk";
 
 if (process.env.QODER_SPIKE_LIVE !== "1") {
   console.error(
     "Refusing to run: live probe requires explicit owner approval.\n" +
-      "Set QODER_SPIKE_LIVE=1 and QODER_PERSONAL_ACCESS_TOKEN=<token> to run (proposed credit cap: 10 — requires owner agreement).\n" +
+      "Auth (pick one):\n" +
+      "  QODER_SPIKE_AUTH=cli                          reuse local `qodercli login` state, read-only, no token export\n" +
+      "  QODER_PERSONAL_ACCESS_TOKEN=<token>           PAT from env\n" +
+      "Then set QODER_SPIKE_LIVE=1 to run (proposed credit cap: 10 — requires owner agreement).\n" +
       "Modes:\n" +
       "  default            catalog-only, ZERO inference (control requests only, no credits)\n" +
       "  QODER_SPIKE_ENFORCE=1   also runs one adversarial turn (1 inference call, capped)\n" +
@@ -12,10 +15,12 @@ if (process.env.QODER_SPIKE_LIVE !== "1") {
   process.exit(2);
 }
 const token = process.env.QODER_PERSONAL_ACCESS_TOKEN;
-if (!token) {
-  console.error("QODER_PERSONAL_ACCESS_TOKEN is not set.");
+const useCliAuth = process.env.QODER_SPIKE_AUTH === "cli";
+if (!useCliAuth && !token) {
+  console.error("Set QODER_SPIKE_AUTH=cli (reuse local login) or QODER_PERSONAL_ACCESS_TOKEN=<token>.");
   process.exit(2);
 }
+const auth = useCliAuth ? qodercliAuth() : accessToken(token);
 const ENFORCE = process.env.QODER_SPIKE_ENFORCE === "1";
 const MODEL = process.env.QODER_SPIKE_MODEL;
 const CREDIT_CAP = 10;
@@ -42,7 +47,7 @@ async function* promptMessages() {
 const q = query({
   prompt: promptMessages(),
   options: {
-    auth: accessToken(token),
+    auth,
     tools: [],
     disallowedTools: ["Bash", "Read", "Edit", "Write"],
     permissionMode: "default",
