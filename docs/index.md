@@ -19,7 +19,9 @@ This index points to maintained evidence. Code and executable configuration desc
 
 ## Planning artifacts
 
-Working plans and execution records are intentionally local-only. They are not required application source and are not tracked in the repository.
+Working plans and execution records are usually local-only and untracked. The published Qoder migration plan is an exception shared by its four implementation issues:
+
+- [Rencana migrasi backend agent ke Qoder](../qoder_migration_plan.md).
 
 ## Quality, evaluation, and reliability
 
