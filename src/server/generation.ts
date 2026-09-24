@@ -8,7 +8,7 @@ import { compileAndVerify, containedPath, type CommandRunner } from "./documents
 import { createTaskReporter, getJobDetail, updateJobDirection } from "./db.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 import { loadGuidance } from "./guidance.js";
-import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "./pi.js";
+import { createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage } from "./agent.js";
 import { buildAgentCandidateContext } from "./agents/context.js";
 import { validateClaims } from "./agents/claim-validator.js";
 import { splitDescriptionIntoBullets, validateApplicationStrategy } from "./agents/evidence.js";
@@ -39,7 +39,7 @@ export const GenerationOutputSchema = z.object({
   gaps: z.array(z.string().trim().min(1)).max(20),
 }).strict();
 export type GenerationOutput = z.infer<typeof GenerationOutputSchema>;
-export type GenerationExecutor = (context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; guidance?: string; settings: Settings; cvPageEstimate?: number | null; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; direction?: GenerationDirection }) => Promise<unknown>;
+export type GenerationExecutor = (context: { profile: string; job: Record<string, unknown>; rank: unknown; templates: unknown; guidance?: string; settings: Settings; cvPageEstimate?: number | null; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: AgentRunUsage) => void; direction?: GenerationDirection }) => Promise<unknown>;
 
 function availableCvTemplateIds(templates: unknown) {
   if (!templates || typeof templates !== "object" || Array.isArray(templates) || !("cv" in templates)) return [];
@@ -110,7 +110,7 @@ export const liveGenerationExecutor: GenerationExecutor = async context => {
     schema: GenerationOutputSchema,
     execute: async attemptPrompt => {
       let text = "";
-      await runBoundedPi({
+      await runBoundedAgent({
         prompt: attemptPrompt,
         timeoutMs: 120_000,
         signal: context.signal,
@@ -730,7 +730,7 @@ function generationOutputFromDocument(
   };
 }
 
-export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn; critic?: CriticFn; reviser?: ReviserFn; researcher?: ResearcherFn; researchEnabled?: boolean; atsReviewer?: AtsReviewerFn; atsEnabled?: boolean; visualQa?: VisualQaFn; visualEnabled?: boolean }) {
+export async function generateJob(options: { db: DatabaseSync; dataDir: string; projectRoot?: string; jobId: string; settings: Settings; profile: string; execute: GenerationExecutor; signal: AbortSignal; runner?: CommandRunner; allowDrafting?: boolean; now?: string; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: AgentRunUsage) => void; strategist?: StrategistFn; writer?: WriterFn; auditor?: FactualAuditorFn; critic?: CriticFn; reviser?: ReviserFn; researcher?: ResearcherFn; researchEnabled?: boolean; atsReviewer?: AtsReviewerFn; atsEnabled?: boolean; visualQa?: VisualQaFn; visualEnabled?: boolean }) {
   const job = options.db.prepare("SELECT * FROM jobs WHERE id=?").get(options.jobId) as Record<string, unknown> | undefined;
   if (!job) throw new Error("Job not found.");
   const direction = getJobDetail(options.db, options.jobId)?.generation_direction ?? { ...defaultGenerationDirection };

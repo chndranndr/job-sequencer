@@ -8,7 +8,7 @@ import { openDatabase, markFollowUpSent, resetInterview, saveFollowUpDraft, save
 import { buildServer } from "../src/server/app.js";
 import { containedPath } from "../src/server/documents.js";
 import type { InterviewExecutor } from "../src/server/interview.js";
-import type { PiSessionLike } from "../src/server/pi.js";
+import type { AgentSessionLike } from "../src/server/agent.js";
 
 function insert(db: ReturnType<typeof openDatabase>, stage: "Applied" | "Interview" = "Applied") {
   const id = randomUUID();
@@ -160,7 +160,7 @@ test("pooled live interview keeps native sessions and SSE deltas across turns", 
     interviewSessionFactory: async ({ systemPrompt }) => {
       const state = { promptTexts: [] as string[], disposed: false };
       const listeners = new Set<(event: unknown) => void>();
-      const session: PiSessionLike = {
+      const session: AgentSessionLike = {
         systemPrompt,
         subscribe(listener) {
           listeners.add(listener);

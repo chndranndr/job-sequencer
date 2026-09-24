@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import type { Settings } from "./config.js";
 import {
-  PiRunCancelledError,
-  runBoundedPi,
-  type PiRunUsage,
-  type PiSessionLike,
-} from "./pi.js";
+  AgentRunCancelledError,
+  runBoundedAgent,
+  type AgentRunUsage,
+  type AgentSessionLike,
+} from "./agent.js";
 import type { TrajectoryRecorder } from "../shared.js";
 
 // ponytail: session pool max 8 jobs with 15-minute TTL; raise after heap and provider-session measurements.
@@ -19,7 +19,7 @@ export type InterviewSessionFactory = (input: {
   jobId: string;
   systemPrompt: string;
   settings: Settings;
-}) => PiSessionLike | Promise<PiSessionLike>;
+}) => AgentSessionLike | Promise<AgentSessionLike>;
 
 export type InterviewSessionRun = {
   jobId: string;
@@ -31,7 +31,7 @@ export type InterviewSessionRun = {
   runId?: string;
   trajectory?: TrajectoryRecorder;
   onDelta?: (fullText: string) => void;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 };
 
 export type InterviewSessionPoolOptions = {
@@ -46,7 +46,7 @@ export type InterviewSessionPoolOptions = {
 };
 
 type PooledSession = {
-  session: PiSessionLike;
+  session: AgentSessionLike;
   lastUsedAt: number;
   systemPromptHash: string;
 };
@@ -87,16 +87,16 @@ function positiveInteger(value: number | undefined, fallback: number, label: str
   return result;
 }
 
-function safeDispose(session: PiSessionLike) {
+function safeDispose(session: AgentSessionLike) {
   try { session.dispose(); } catch { /* preserve the original pool outcome */ }
 }
 
-class PooledSessionAdapter implements PiSessionLike {
+class PooledSessionAdapter implements AgentSessionLike {
   private readonly unsubscriptions = new Set<() => void>();
   private abortPromise: Promise<void> | undefined;
   private disposed = false;
 
-  constructor(private readonly pooled: PiSessionLike) {}
+  constructor(private readonly pooled: AgentSessionLike) {}
 
   get systemPrompt() { return this.pooled.systemPrompt; }
   get model() { return this.pooled.model; }
@@ -141,7 +141,7 @@ class PooledSessionAdapter implements PiSessionLike {
   dispose() {
     this.disposed = true;
     for (const unsubscribe of [...this.unsubscriptions]) unsubscribe();
-    // runBoundedPi owns this adapter, while the pool owns the underlying session.
+    // runBoundedAgent owns this adapter, while the pool owns the underlying session.
   }
 }
 
@@ -271,10 +271,10 @@ export class InterviewSessionPool {
   }
 
   private async waitForTurn(previous: Promise<void>, signal: AbortSignal) {
-    if (signal.aborted) throw new PiRunCancelledError();
+    if (signal.aborted) throw new AgentRunCancelledError();
     let onAbort!: () => void;
     const cancelled = new Promise<never>((_, reject) => {
-      onAbort = () => reject(new PiRunCancelledError());
+      onAbort = () => reject(new AgentRunCancelledError());
       signal.addEventListener("abort", onAbort, { once: true });
     });
     try {
@@ -285,7 +285,7 @@ export class InterviewSessionPool {
   }
 
   private async runTurn(input: InterviewSessionRun) {
-    if (input.signal.aborted) throw new PiRunCancelledError();
+    if (input.signal.aborted) throw new AgentRunCancelledError();
     const hash = systemPromptHash(input.systemPrompt, input.settings);
     const { entry, rebuild } = await this.acquire(input, hash);
     const adapter = new PooledSessionAdapter(entry.session);
@@ -298,7 +298,7 @@ export class InterviewSessionPool {
     let succeeded = false;
     let text = "";
     try {
-      await runBoundedPi({
+      await runBoundedAgent({
         prompt: rebuild ? input.rebuildPrompt : input.prompt,
         timeoutMs: this.timeoutMs,
         inactivityTimeoutMs: this.inactivityTimeoutMs,
@@ -317,7 +317,7 @@ export class InterviewSessionPool {
         },
         onAssistantText: value => { text = value; },
       });
-      if (controller.signal.aborted) throw new PiRunCancelledError();
+      if (controller.signal.aborted) throw new AgentRunCancelledError();
       const result = text.trim();
       if (!result) throw new Error("Provider returned an empty response.");
       succeeded = true;
@@ -346,7 +346,7 @@ export class InterviewSessionPool {
       if (!this.evictOldestIdle()) throw new Error("Interview session pool is full.");
     }
     this.creating += 1;
-    let session: PiSessionLike;
+    let session: AgentSessionLike;
     try {
       session = await this.createSession({
         jobId: input.jobId,
@@ -362,7 +362,7 @@ export class InterviewSessionPool {
     }
     if (input.signal.aborted) {
       safeDispose(session);
-      throw new PiRunCancelledError();
+      throw new AgentRunCancelledError();
     }
     const entry: PooledSession = {
       session,

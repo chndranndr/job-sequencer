@@ -1,6 +1,6 @@
 import type { GenerationDirection, Rank, TrajectoryRecorder } from "../../shared.js";
 import type { Settings } from "../config.js";
-import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "../pi.js";
+import { createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage } from "../agent.js";
 import type { StructuredRunOptions } from "../structured.js";
 import { validateApplicationStrategy } from "./evidence.js";
 import { buildStrategistPrompt } from "./prompts/strategist.js";
@@ -19,7 +19,7 @@ export type RunStrategistInput = {
   trajectory?: TrajectoryRecorder;
   runId?: string;
   settings?: Settings;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 };
 
 export type StrategistFn = (input: RunStrategistInput) => Promise<ApplicationStrategy>;
@@ -29,7 +29,7 @@ function liveExecute(input: RunStrategistInput): StructuredRunOptions<Applicatio
   if (!settings) throw new Error("runStrategist requires execute or settings.");
   return async prompt => {
     let text = "";
-    await runBoundedPi({
+    await runBoundedAgent({
       prompt,
       timeoutMs: 120_000,
       signal: input.signal,

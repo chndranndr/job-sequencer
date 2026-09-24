@@ -1,4 +1,4 @@
-import { runNoToolExactSmoke } from "../src/server/pi.js";
+import { runNoToolExactSmoke } from "../src/server/agent.js";
 import { createSmokeDatabase } from "../src/server/db.js";
 
 const db = createSmokeDatabase();

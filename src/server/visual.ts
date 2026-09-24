@@ -6,7 +6,7 @@ import type { Settings } from "./config.js";
 import { projectPromptContext, trustedSection } from "./context.js";
 import type { CVDocument } from "./agents/types.js";
 import { runCommand, type CommandRunner } from "./documents.js";
-import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "./pi.js";
+import { createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage } from "./agent.js";
 import type { StructuredRunOptions } from "./structured.js";
 import { runAgentStructured } from "./agents/runtime.js";
 
@@ -24,7 +24,7 @@ export type VisualQaInput = {
   trajectory?: TrajectoryRecorder;
   runId?: string;
   settings?: Settings;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 };
 export type VisualQaFn = (input: VisualQaInput) => Promise<VisualReview>;
 
@@ -50,7 +50,7 @@ function liveExecute(input: VisualQaInput, images: Awaited<ReturnType<typeof rea
   if (!input.settings) throw new Error("runVisualReviewer requires execute or settings.");
   return async prompt => {
     let text = "";
-    await runBoundedPi({
+    await runBoundedAgent({
       prompt,
       images,
       timeoutMs: 120_000,

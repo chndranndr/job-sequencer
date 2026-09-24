@@ -1,11 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { classifyPiError, PiRunCancelledError, PiRunTimeoutError, type PiRunUsage } from "./pi.js";
+import { classifyAgentError, AgentRunCancelledError, AgentRunTimeoutError, type AgentRunUsage } from "./agent.js";
 import { createTaskReporter, insertSearchAttempt, persistScrape } from "./db.js";
 import { createScrapeTools, hydrateScrapeResult, provenanceKey, ScrapeResultSchema, validateScrapeResult, type ScrapeResult, type ScrapeTools, type ScrapeToolsOptions } from "./scrape.js";
 import { runRankVerifier } from "./verifier.js";
 import type { Criteria, Settings } from "./config.js";
-import { createLiveRestrictedScrapeSession, runBoundedPi, type PiSessionLike } from "./pi.js";
+import { createLiveRestrictedScrapeSession, runBoundedAgent, type AgentSessionLike } from "./agent.js";
 import { projectPromptContext, projectPromptText, untrustedSection } from "./context.js";
 import { loadGuidance } from "./guidance.js";
 import { generateJob, liveGenerationExecutor, type GenerationExecutor } from "./generation.js";
@@ -26,7 +26,7 @@ import { runStructured } from "./structured.js";
 import { RunCoordinator } from "./coordinator.js";
 import { compileSearchMemory } from "./search/memory.js";
 
-export interface ScrapeContext { profile:string; criteria:Criteria; settings:Settings; signal:AbortSignal; runId?:string; trajectory?:TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; searchBudget?: Partial<SearchBudget>; db?: DatabaseSync }
+export interface ScrapeContext { profile:string; criteria:Criteria; settings:Settings; signal:AbortSignal; runId?:string; trajectory?:TrajectoryRecorder; onUsage?: (usage: AgentRunUsage) => void; searchBudget?: Partial<SearchBudget>; db?: DatabaseSync }
 export type ScrapeEvidence = SearchHit & { posting?: string };
 export type ScrapeFunnelSource = {
   searches: number;
@@ -374,8 +374,8 @@ type AgentSearchToolsFactory = (options: AgentSearchToolsOptions) => AgentSearch
 export type LiveAgentScrapeDependencies = {
   createTools?: AgentSearchToolsFactory;
   createSourceTools?: SourceToolsFactory;
-  createSession?: (settings: Settings, tools: AgentSearchTools, sourceRegistry?: SourceRegistry) => Promise<PiSessionLike>;
-  runPi?: SourcePiRunner;
+  createSession?: (settings: Settings, tools: AgentSearchTools, sourceRegistry?: SourceRegistry) => Promise<AgentSessionLike>;
+  runPi?: SourceAgentRunner;
   loadGuidance?: typeof loadGuidance;
   compileMemory?: typeof compileSearchMemory;
   db?: DatabaseSync;
@@ -410,7 +410,7 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
   const makeTools = dependencies.createTools ?? createAgentSearchTools;
   const makeSourceTools = dependencies.createSourceTools ?? createScrapeTools;
   const makeSession = dependencies.createSession ?? ((settings, tools, registry) => createLiveRestrictedScrapeSession(settings, tools, settings.source, registry));
-  const runPi = dependencies.runPi ?? runBoundedPi;
+  const runPi = dependencies.runPi ?? runBoundedAgent;
   const getGuidance = dependencies.loadGuidance ?? loadGuidance;
   const memoryCompiler = dependencies.compileMemory ?? compileSearchMemory;
   const sourceRegistry = dependencies.sourceRegistry ?? createSourceRegistry();
@@ -566,18 +566,18 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
       tasks.complete("scrape:agent:run", `${result.jobs.length} result(s) selected`);
       return { result: hydrateScrapeResult(result, tools.detailDescriptions), provenance: tools.provenance, evidence: buildScrapeEvidence(tools.state.hits, tools.detailDescriptions), errors: tools.errors, warnings: tools.warnings, funnel };
     } catch (error) {
-      tasks.failActive(error instanceof PiRunCancelledError || context.signal.aborted ? "Run cancelled." : "Adaptive search failed.");
+      tasks.failActive(error instanceof AgentRunCancelledError || context.signal.aborted ? "Run cancelled." : "Adaptive search failed.");
       throw error;
     }
   };
 }
-type SourcePiRunner = (options: {
+type SourceAgentRunner = (options: {
   prompt: string;
   timeoutMs: number;
   signal?: AbortSignal;
-  createSession: () => Promise<PiSessionLike>;
+  createSession: () => Promise<AgentSessionLike>;
   onEvent?: (event: unknown) => void;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
   onAssistantText?: (text: string) => void;
   runId?: string;
   trajectory?: TrajectoryRecorder;
@@ -585,8 +585,8 @@ type SourcePiRunner = (options: {
 
 export type LiveSourceScrapeDependencies = {
   createTools?: SourceToolsFactory;
-  createSession?: (settings: Settings, tools: SourceTools, source: JobSource, sourceRegistry?: SourceRegistry) => Promise<PiSessionLike>;
-  runPi?: SourcePiRunner;
+  createSession?: (settings: Settings, tools: SourceTools, source: JobSource, sourceRegistry?: SourceRegistry) => Promise<AgentSessionLike>;
+  runPi?: SourceAgentRunner;
   loadGuidance?: typeof loadGuidance;
   sourceRegistry?: SourceRegistry;
 };
@@ -604,7 +604,7 @@ function searchToolJson(value: unknown) {
 export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDependencies = {}): SourceScrapeExecutor {
   const makeTools = dependencies.createTools ?? createScrapeTools;
   const makeSession = dependencies.createSession ?? ((settings, tools, source, registry) => createLiveRestrictedScrapeSession(settings, tools, source, registry));
-  const runPi = dependencies.runPi ?? runBoundedPi;
+  const runPi = dependencies.runPi ?? runBoundedAgent;
   const getGuidance = dependencies.loadGuidance ?? loadGuidance;
   const sourceRegistry = dependencies.sourceRegistry ?? createSourceRegistry();
 
@@ -635,14 +635,14 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
       let preflightJson = "";
       let preflightHasJobs = false;
       if (preflightEnabled && fallbackQueries?.[0]) {
-        if (context.signal.aborted) throw new PiRunCancelledError();
+        if (context.signal.aborted) throw new AgentRunCancelledError();
         try {
           const preflight = await sharedTools.searchJobs.execute("preflight", { query: fallbackQueries[0], location: "", limit: Math.min(5, criteria.maxJobsPerRun) }, context.signal, undefined, undefined as never);
           const normalized = searchToolJson(preflight);
           preflightJson = JSON.stringify(normalized);
           preflightHasJobs = normalized.results.length > 0;
         } catch (error) {
-          if (context.signal.aborted) throw new PiRunCancelledError();
+          if (context.signal.aborted) throw new AgentRunCancelledError();
           errors.push(sourceMessage(label, error));
         }
       }
@@ -734,7 +734,7 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
       tasks.complete(validationTaskId, `${structured.jobs.length} result(s) from ${label}`);
       return { result: hydrateScrapeResult(structured, detailDescriptions), provenance, evidence: buildScrapeEvidence([...sharedTools.hits.values()], detailDescriptions), errors, warnings };
     } catch (error) {
-      tasks.failActive(error instanceof PiRunCancelledError || context.signal.aborted ? "Run cancelled." : "Task failed.");
+      tasks.failActive(error instanceof AgentRunCancelledError || context.signal.aborted ? "Run cancelled." : "Task failed.");
       throw error;
     }
   };
@@ -752,7 +752,7 @@ export function createMultiSourceScrapeExecutor(sourceExecutor?: SourceScrapeExe
     const errors: string[] = [];
     const warnings: string[] = [];
     for (const { key, custom } of sources) {
-      if (context.signal.aborted) throw new PiRunCancelledError();
+      if (context.signal.aborted) throw new AgentRunCancelledError();
       const label = jobSourceLabel(key, custom ? [custom] : []);
       const taskId = `scrape:search:${key}`;
       tasks.start({ taskId, label: `Search ${label}`, detail: label });
@@ -777,8 +777,8 @@ export function createMultiSourceScrapeExecutor(sourceExecutor?: SourceScrapeExe
         appendSourceMessages(warnings, label, output.warnings ?? []);
         tasks.complete(taskId, `${eligible.length} result(s) from ${label}`);
       } catch (error) {
-        tasks.fail(taskId, error instanceof PiRunCancelledError || context.signal.aborted ? "Run cancelled." : error instanceof PiRunTimeoutError ? "Source search timed out." : `${label} search failed.`);
-        if (error instanceof PiRunCancelledError || error instanceof PiRunTimeoutError || context.signal.aborted) throw error;
+        tasks.fail(taskId, error instanceof AgentRunCancelledError || context.signal.aborted ? "Run cancelled." : error instanceof AgentRunTimeoutError ? "Source search timed out." : `${label} search failed.`);
+        if (error instanceof AgentRunCancelledError || error instanceof AgentRunTimeoutError || context.signal.aborted) throw error;
         appendSourceMessages(errors, jobSourceLabel(key, custom ? [custom] : []), [error]);
       }
     }
@@ -790,7 +790,7 @@ export function createMultiSourceScrapeExecutor(sourceExecutor?: SourceScrapeExe
 }
 
 export const liveScrapeExecutor: ScrapeExecutor = createAgentSearchExecutor();
-const safeMessage=(error:unknown)=> error instanceof PiRunTimeoutError?"Scrape timed out.":error instanceof PiRunCancelledError||((error as Error)?.name==="AbortError")?"Scrape cancelled.":"Scrape failed. Check provider settings and try again.";
+const safeMessage=(error:unknown)=> error instanceof AgentRunTimeoutError?"Scrape timed out.":error instanceof AgentRunCancelledError||((error as Error)?.name==="AbortError")?"Scrape cancelled.":"Scrape failed. Check provider settings and try again.";
 
 export class RunManager {
   private readonly coordinator: RunCoordinator;
@@ -809,7 +809,7 @@ export class RunManager {
       onError: error => ({
         summary: error instanceof AllSourcesFailedError ? { jobsFound: 0, recommended: 0, discarded: 0, duplicatesSkipped: 0, errors: error.errors, warnings: error.warnings } : null,
         error: safeMessage(error),
-        errorCode: classifyPiError(error),
+        errorCode: classifyAgentError(error),
       }),
     });
   }
@@ -822,13 +822,13 @@ export class RunManager {
     return { ...row, summary: row.summary_json ? JSON.parse(String(row.summary_json)) : null, summary_json: undefined };
   }
 
-  private async work(id: string, signal: AbortSignal, context: Omit<ScrapeContext, "signal">, onUsage: (usage: PiRunUsage) => void) {
+  private async work(id: string, signal: AbortSignal, context: Omit<ScrapeContext, "signal">, onUsage: (usage: AgentRunUsage) => void) {
     const tasks = createTaskReporter(this.trajectory, id);
     tasks.start({ taskId: "scrape:prepare", label: "Prepare scrape context" });
     tasks.complete("scrape:prepare");
     try {
       const output = await this.execute({ ...context, signal, runId: id, trajectory: this.trajectory, onUsage, db: this.db });
-      if (signal.aborted) throw new PiRunCancelledError();
+      if (signal.aborted) throw new AgentRunCancelledError();
       const enabled = configuredSourceKeys(context.settings);
       tasks.start({ taskId: "scrape:validate", label: "Validate and score results" });
       let result: ScrapeResult;
@@ -857,7 +857,7 @@ export class RunManager {
         tasks.fail("scrape:persist", "Jobs could not be persisted.");
         throw error;
       }
-      if (signal.aborted) throw new PiRunCancelledError();
+      if (signal.aborted) throw new AgentRunCancelledError();
       const finalFunnel = output.funnel ? { ...output.funnel, selectedJobs: result.jobs.length } : undefined;
       if (finalFunnel && this.trajectory) {
         try { this.trajectory(id, { kind: "lifecycle", type: "search_funnel", payload: finalFunnel }); } catch {}
@@ -865,7 +865,7 @@ export class RunManager {
       const summary = summarize(result, context.settings.scoreThreshold, counts.updated, output.errors ?? [], output.warnings ?? [], finalFunnel);
       return summary;
     } catch (error) {
-      const status = error instanceof PiRunTimeoutError ? "timed out" : signal.aborted || error instanceof PiRunCancelledError ? "cancelled" : "failed";
+      const status = error instanceof AgentRunTimeoutError ? "timed out" : signal.aborted || error instanceof AgentRunCancelledError ? "cancelled" : "failed";
       tasks.failActive(status === "cancelled" ? "Run cancelled." : status === "timed out" ? "Run timed out." : "Task failed.");
       throw error;
     }
@@ -910,27 +910,27 @@ export class GenerationRunManager {
       execute: ({ runId, signal, onUsage }) => this.work(runId, signal, jobIds, context, allowDrafting, onUsage),
       onError: (error, { signal }) => ({
         summary: error instanceof GenerationRunFailedError ? error.summary : null,
-        error: signal.aborted || error instanceof PiRunCancelledError ? "Generation cancelled." : "Document generation failed.",
-        errorCode: error instanceof GenerationRunFailedError ? error.errorCode : classifyPiError(error),
+        error: signal.aborted || error instanceof AgentRunCancelledError ? "Generation cancelled." : "Document generation failed.",
+        errorCode: error instanceof GenerationRunFailedError ? error.errorCode : classifyAgentError(error),
       }),
     });
   }
 
   cancel(id: string) { return this.coordinator.cancel(id); }
 
-  private async work(id: string, signal: AbortSignal, jobIds: string[], context: { profile: string; settings: Settings }, allowDrafting: boolean, onUsage: (usage: PiRunUsage) => void) {
+  private async work(id: string, signal: AbortSignal, jobIds: string[], context: { profile: string; settings: Settings }, allowDrafting: boolean, onUsage: (usage: AgentRunUsage) => void) {
     const results: Array<{ jobId: string; status: string; error?: string }> = [];
     let failureCode: string | null = null;
     try {
       for (const jobId of jobIds) {
-        if (signal.aborted) throw new PiRunCancelledError();
+        if (signal.aborted) throw new AgentRunCancelledError();
         try {
           await generateJob({ db: this.options.db, dataDir: this.options.dataDir, projectRoot: this.options.projectRoot, jobId, settings: context.settings, profile: context.profile, execute: this.options.execute ?? liveGenerationExecutor, signal, runner: this.options.runner, allowDrafting, runId: id, trajectory: this.options.trajectory, onUsage, strategist: this.options.strategist, writer: this.options.writer, auditor: this.options.auditor, critic: this.options.critic, reviser: this.options.reviser, researcher: this.options.researcher, researchEnabled: this.options.researchEnabled, atsReviewer: this.options.atsReviewer, atsEnabled: this.options.atsEnabled, visualQa: this.options.visualQa, visualEnabled: this.options.visualEnabled });
-          if (signal.aborted) throw new PiRunCancelledError();
+          if (signal.aborted) throw new AgentRunCancelledError();
           results.push({ jobId, status: "succeeded" });
         } catch (error) {
-          if (signal.aborted || error instanceof PiRunCancelledError) throw error;
-          failureCode ??= classifyPiError(error);
+          if (signal.aborted || error instanceof AgentRunCancelledError) throw error;
+          failureCode ??= classifyAgentError(error);
           results.push({ jobId, status: "failed", error: "Document generation failed." });
         }
       }
@@ -939,8 +939,8 @@ export class GenerationRunManager {
       return { results };
     } catch (error) {
       if (error instanceof GenerationRunFailedError) throw error;
-      if (signal.aborted || error instanceof PiRunCancelledError) throw error;
-      failureCode ??= classifyPiError(error);
+      if (signal.aborted || error instanceof AgentRunCancelledError) throw error;
+      failureCode ??= classifyAgentError(error);
       throw new GenerationRunFailedError({ results }, failureCode);
     }
   }

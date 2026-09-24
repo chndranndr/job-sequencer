@@ -16,7 +16,7 @@ import { defaultCriteria, defaultSettings } from "../../src/server/config.js";
 import { createScrapeTools } from "../../src/server/scrape.js";
 import { createAgentSearchExecutor } from "../../src/server/runs.js";
 import { createAgentSearchTools } from "../../src/server/search/tools.js";
-import { runBoundedPi } from "../../src/server/pi.js";
+import { runBoundedAgent } from "../../src/server/agent.js";
 import type { AgentSearchSnapshot } from "../../src/server/search/state.js";
 import { deriveRunTrajectoryObservability } from "../../src/trajectory.js";
 import type { JobSource, RunTrajectoryObservability, SearchBudget, SearchGoal, SearchHit } from "../../src/shared.js";
@@ -566,7 +566,7 @@ async function runScenario(scenario: AgentEvalScenario, mode: "agent" | "baselin
       });
       return created.session;
     },
-    runPi: runBoundedPi,
+    runPi: runBoundedAgent,
   });
   let execution: { result: unknown } | null = null;
   let unexpectedErrors = 0;

@@ -1,6 +1,6 @@
 import type { GenerationDirection, StructuredProfile, TrajectoryRecorder } from "../../shared.js";
 import type { Settings } from "../config.js";
-import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "../pi.js";
+import { createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage } from "../agent.js";
 import type { StructuredRunOptions } from "../structured.js";
 import { validateClaims } from "./claim-validator.js";
 import { buildReviserPrompt } from "./prompts/reviser.js";
@@ -39,7 +39,7 @@ export type RunReviserInput = {
   runId?: string;
   settings?: Settings;
   cvPageEstimate?: number | null;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 };
 
 export type ReviserFn = (input: RunReviserInput) => Promise<CVDocument>;
@@ -49,7 +49,7 @@ function liveExecute(input: RunReviserInput): StructuredRunOptions<CVDocument>["
   if (!settings) throw new Error("runReviser requires execute or settings.");
   return async prompt => {
     let text = "";
-    await runBoundedPi({
+    await runBoundedAgent({
       prompt,
       timeoutMs: 120_000,
       signal: input.signal,

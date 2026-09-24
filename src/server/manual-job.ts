@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { createTaskReporter, normalizeUrl, persistManualJob, type TaskReporter } from "./db.js";
 import type { Settings } from "./config.js";
-import { PiRunCancelledError, PiRunTimeoutError, classifyPiError, createRestrictedGenerationSession, runBoundedPi, type PiRunUsage, type PiSessionLike } from "./pi.js";
+import { AgentRunCancelledError, AgentRunTimeoutError, classifyAgentError, createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage, type AgentSessionLike } from "./agent.js";
 import { runBunCli } from "./scrape.js";
 import type { Criteria, TrajectoryRecorder } from "../shared.js";
 import { RunCoordinator } from "./coordinator.js";
@@ -127,8 +127,8 @@ export type ManualJobImportOptions = {
   signal?: AbortSignal;
   runId?: string;
   trajectory?: TrajectoryRecorder;
-  onUsage?: (usage: PiRunUsage) => void;
-  createSession?: () => Promise<PiSessionLike>;
+  onUsage?: (usage: AgentRunUsage) => void;
+  createSession?: () => Promise<AgentSessionLike>;
   fetch?: ManualFetcher;
   fetchLinkedInDetail?: LinkedInDetailFetcher;
   lookup?: ManualLookup;
@@ -510,7 +510,7 @@ export async function parseManualJobText(value: string, settings: Settings, opti
       trajectory: options.trajectory,
       execute: async (attemptPrompt) => {
         let response = "";
-        await runBoundedPi({
+        await runBoundedAgent({
           prompt: attemptPrompt,
           timeoutMs: 120_000,
           signal: options.signal,
@@ -533,7 +533,7 @@ export async function parseManualJobText(value: string, settings: Settings, opti
       },
     });
   } catch (error) {
-    if (error instanceof PiRunCancelledError || error instanceof PiRunTimeoutError) throw error;
+    if (error instanceof AgentRunCancelledError || error instanceof AgentRunTimeoutError) throw error;
     if (error instanceof ManualJobImportError) throw error;
     if (error instanceof StructuredOutputError) {
       throw new ManualJobImportError("Pi returned job data that could not be validated.", 502);
@@ -588,7 +588,7 @@ async function fetchPosting(start: URL, options: ManualJobImportOptions) {
       if (!response.ok) throw new ManualJobImportError("The posting URL could not be fetched.", 502);
       return await readResponse(response, maxBytes);
     } catch (error) {
-      if (options.signal?.aborted) throw new PiRunCancelledError();
+      if (options.signal?.aborted) throw new AgentRunCancelledError();
       if (error instanceof ManualJobImportError) throw error;
       throw new ManualJobImportError("The posting URL could not be fetched.", 502);
     } finally { clearTimeout(timer); }
@@ -597,9 +597,9 @@ async function fetchPosting(start: URL, options: ManualJobImportOptions) {
 }
 
 async function defaultLinkedInDetail(id: string, signal?: AbortSignal): Promise<LinkedInJobDetail> {
-  if (signal?.aborted) throw new PiRunCancelledError();
+  if (signal?.aborted) throw new AgentRunCancelledError();
   const result = await runBunCli(["detail", id, "--format", "json"], { source: "linkedin", signal });
-  if (signal?.aborted) throw new PiRunCancelledError();
+  if (signal?.aborted) throw new AgentRunCancelledError();
   if (result.code !== 0) throw new Error(result.stderr.trim() || "LinkedIn detail failed");
   const parsed = LinkedInDetailSchema.parse(JSON.parse(result.stdout));
   if (parsed.id && parsed.id !== id) throw new Error("LinkedIn detail provenance mismatch");
@@ -608,14 +608,14 @@ async function defaultLinkedInDetail(id: string, signal?: AbortSignal): Promise<
 
 async function fetchLinkedInJobDetail(id: string, options: ManualJobImportOptions) {
   try {
-    if (options.signal?.aborted) throw new PiRunCancelledError();
+    if (options.signal?.aborted) throw new AgentRunCancelledError();
     const detail = await (options.fetchLinkedInDetail ?? defaultLinkedInDetail)(id, options.signal);
-    if (options.signal?.aborted) throw new PiRunCancelledError();
+    if (options.signal?.aborted) throw new AgentRunCancelledError();
     const parsed = LinkedInDetailSchema.parse(detail);
     if (!parsed.description?.trim()) throw new Error("LinkedIn detail has no description");
     return { title: parsed.title, company: parsed.company ?? "", location: parsed.location ?? "", description: parsed.description.trim() };
   } catch (error) {
-    if (error instanceof PiRunCancelledError || error instanceof PiRunTimeoutError || options.signal?.aborted) throw error;
+    if (error instanceof AgentRunCancelledError || error instanceof AgentRunTimeoutError || options.signal?.aborted) throw error;
     throw new ManualJobImportError(LINKEDIN_DETAIL_ERROR, 502);
   }
 }
@@ -666,8 +666,8 @@ function manualBatchUrl(value: string) {
 }
 
 function manualError(error: unknown) {
-  if (error instanceof PiRunCancelledError) return "Manual import cancelled.";
-  if (error instanceof PiRunTimeoutError) return "Manual import timed out.";
+  if (error instanceof AgentRunCancelledError) return "Manual import cancelled.";
+  if (error instanceof AgentRunTimeoutError) return "Manual import timed out.";
   if (error instanceof ManualJobImportError || (error && typeof error === "object" && (error as { statusCode?: unknown }).statusCode === 409)) return error instanceof Error ? error.message : String(error);
   return "Manual job import failed. Check provider settings and try again.";
 }
@@ -846,40 +846,40 @@ export class ManualJobRunManager {
       execute: ({ runId, signal, onUsage }) => this.workBatch(runId, signal, accepted, context, onUsage, state),
       onError: (error, { signal }) => ({
         summary: state.summary,
-        error: signal.aborted || error instanceof PiRunCancelledError
+        error: signal.aborted || error instanceof AgentRunCancelledError
           ? "Manual batch import cancelled."
           : error instanceof ManualBatchRunFailedError
             ? error.message
             : manualError(error),
-        errorCode: signal.aborted || error instanceof PiRunCancelledError
+        errorCode: signal.aborted || error instanceof AgentRunCancelledError
           ? "cancelled"
           : error instanceof ManualBatchRunFailedError
             ? error.errorCode
-            : classifyPiError(error),
+            : classifyAgentError(error),
       }),
     });
   }
 
   cancel(id: string) { return this.coordinator.cancel(id); }
 
-  private async workBatch(id: string, signal: AbortSignal, accepted: readonly ManualBatchAccepted[], context: { profile: string; criteria: Criteria; settings: Settings }, onUsage: (usage: PiRunUsage) => void, state: ManualBatchExecutionState) {
+  private async workBatch(id: string, signal: AbortSignal, accepted: readonly ManualBatchAccepted[], context: { profile: string; criteria: Criteria; settings: Settings }, onUsage: (usage: AgentRunUsage) => void, state: ManualBatchExecutionState) {
     const tasks = createTaskReporter(this.options.trajectory, id);
     let failureCode: string | null = null;
     try {
       for (const item of accepted) {
         if (signal.aborted) {
           cancelQueuedManualBatchItems(state);
-          throw new PiRunCancelledError();
+          throw new AgentRunCancelledError();
         }
         try {
           const row = await this.workOne(id, signal, item.input, context, onUsage, tasks, `manual_import:link-${item.index}`, `Link ${item.index + 1} · `);
           updateManualBatchItem(state, item.index, "succeeded", row.jobId);
         } catch (error) {
-          if (signal.aborted || error instanceof PiRunCancelledError) {
+          if (signal.aborted || error instanceof AgentRunCancelledError) {
             cancelQueuedManualBatchItems(state);
             throw error;
           }
-          failureCode ??= classifyPiError(error);
+          failureCode ??= classifyAgentError(error);
           updateManualBatchItem(state, item.index, "failed", undefined, manualError(error));
         }
       }
@@ -887,35 +887,35 @@ export class ManualJobRunManager {
       return state.summary;
     } catch (error) {
       if (error instanceof ManualBatchRunFailedError) throw error;
-      if (signal.aborted || error instanceof PiRunCancelledError) {
+      if (signal.aborted || error instanceof AgentRunCancelledError) {
         cancelQueuedManualBatchItems(state);
         throw error;
       }
       failQueuedManualBatchItems(state);
-      throw new ManualBatchRunFailedError(state.summary, failureCode ?? classifyPiError(error));
+      throw new ManualBatchRunFailedError(state.summary, failureCode ?? classifyAgentError(error));
     }
   }
 
-  private async work(id: string, signal: AbortSignal, input: string, context: { profile: string; criteria: Criteria; settings: Settings }, onUsage: (usage: PiRunUsage) => void) {
+  private async work(id: string, signal: AbortSignal, input: string, context: { profile: string; criteria: Criteria; settings: Settings }, onUsage: (usage: AgentRunUsage) => void) {
     const tasks = createTaskReporter(this.options.trajectory, id);
     return this.workOne(id, signal, input, context, onUsage, tasks, "manual_import");
   }
 
-  private async workOne(id: string, signal: AbortSignal, input: string, context: { profile: string; criteria: Criteria; settings: Settings }, onUsage: (usage: PiRunUsage) => void, tasks: TaskReporter, taskPrefix: string, labelPrefix = "") {
+  private async workOne(id: string, signal: AbortSignal, input: string, context: { profile: string; criteria: Criteria; settings: Settings }, onUsage: (usage: AgentRunUsage) => void, tasks: TaskReporter, taskPrefix: string, labelPrefix = "") {
     tasks.start({ taskId: `${taskPrefix}:prepare`, label: `${labelPrefix}Prepare manual import`, detail: "Structured profile and provider ready" });
     try {
       tasks.complete(`${taskPrefix}:prepare`);
       tasks.start({ taskId: `${taskPrefix}:parse-score`, label: `${labelPrefix}Fetch or parse and score job`, detail: "Grounding the score in the supplied profile and posting" });
       const imported = await (this.options.importer ?? importManualJob)(input, context.settings, { profile: context.profile, criteria: context.criteria, signal, runId: id, trajectory: this.options.trajectory, onUsage });
-      if (signal.aborted) throw new PiRunCancelledError();
+      if (signal.aborted) throw new AgentRunCancelledError();
       tasks.complete(`${taskPrefix}:parse-score`, `${imported.job.company} · ${imported.job.role} · score ${imported.job.score}`);
       tasks.start({ taskId: `${taskPrefix}:persist`, label: `${labelPrefix}Persist scored job` });
       const row = persistManualJob(this.options.db, imported, context.settings.scoreThreshold);
       tasks.complete(`${taskPrefix}:persist`, `${row.company} · ${row.stage}`);
-      if (signal.aborted) throw new PiRunCancelledError();
+      if (signal.aborted) throw new AgentRunCancelledError();
       return { jobId: row.id, score: row.score, stage: row.stage, source: row.source };
     } catch (error) {
-      const status = error instanceof PiRunTimeoutError ? "timed out" : signal.aborted || error instanceof PiRunCancelledError ? "cancelled" : "failed";
+      const status = error instanceof AgentRunTimeoutError ? "timed out" : signal.aborted || error instanceof AgentRunCancelledError ? "cancelled" : "failed";
       tasks.failActive(status === "cancelled" ? "Manual import cancelled." : status === "timed out" ? "Manual import timed out." : "Manual import failed.");
       throw error;
     }

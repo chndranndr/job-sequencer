@@ -17,9 +17,9 @@ import type { Settings } from "./config.js";
 import { jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
 import { telemetryAssistantPayload, telemetryPromptPayload, telemetrySystemPromptPayload, telemetryToolPayload } from "./telemetry.js";
 
-export interface PiSessionLike {
+export interface AgentSessionLike {
   subscribe(listener: (event: unknown) => void): () => void;
-  prompt(text: string, options?: PiPromptOptions): Promise<void>;
+  prompt(text: string, options?: AgentPromptOptions): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
   readonly systemPrompt?: string;
@@ -28,23 +28,23 @@ export interface PiSessionLike {
   getAllTools?: () => unknown[];
 }
 
-export type PiPromptOptions = { images?: ImageContent[] };
+export type AgentPromptOptions = { images?: ImageContent[] };
 
-export class PiRunTimeoutError extends Error {
-  constructor(message = "Pi run timed out") {
+export class AgentRunTimeoutError extends Error {
+  constructor(message = "Agent run timed out") {
     super(message);
-    this.name = "PiRunTimeoutError";
+    this.name = "AgentRunTimeoutError";
   }
 }
 
-export class PiRunCancelledError extends Error {
-  constructor(message = "Pi run cancelled") {
+export class AgentRunCancelledError extends Error {
+  constructor(message = "Agent run cancelled") {
     super(message);
-    this.name = "PiRunCancelledError";
+    this.name = "AgentRunCancelledError";
   }
 }
 
-export type PiErrorCode =
+export type AgentErrorCode =
   | "timeout"
   | "cancelled"
   | "rate_limit"
@@ -55,7 +55,7 @@ export type PiErrorCode =
   | "structured_output"
   | "unknown";
 
-export type PiRunUsage = {
+export type AgentRunUsage = {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
@@ -78,16 +78,16 @@ export function selectConfiguredModel<T extends ModelLike>(
   return model;
 }
 
-export type PiModelOption = { id: string; name: string };
+export type AgentModelOption = { id: string; name: string };
 
-export function toPiModelOptions(models: readonly { id: string; name: string }[]): PiModelOption[] {
+export function toAgentModelOptions(models: readonly { id: string; name: string }[]): AgentModelOption[] {
   return models.map(({ id, name }) => ({ id, name }));
 }
 
-export async function getAvailablePiModels(provider: string): Promise<PiModelOption[]> {
+export async function getAvailablePiModels(provider: string): Promise<AgentModelOption[]> {
   const signal = AbortSignal.timeout(10_000);
   const runtime = await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false, signal });
-  return toPiModelOptions(await runtime.getAvailable(provider, { signal }));
+  return toAgentModelOptions(await runtime.getAvailable(provider, { signal }));
 }
 
 // ponytail: trajectory text cap remains 2 MB; raise after measured DB/storage capacity review.
@@ -155,7 +155,7 @@ function finiteNumber(value: unknown) {
 }
 
 // ponytail: estimated cost is used when provider billing metadata is absent; add provider pricing adapters later.
-function messageUsage(message: unknown): PiRunUsage | undefined {
+function messageUsage(message: unknown): AgentRunUsage | undefined {
   if (!isRecord(message) || !isRecord(message.usage)) return undefined;
   const usage = message.usage;
   const cost = isRecord(usage.cost) ? usage.cost : undefined;
@@ -190,9 +190,9 @@ function hashValue(value: unknown) {
   return input === undefined ? null : createHash("sha256").update(input).digest("hex");
 }
 
-export function classifyPiError(error: unknown): PiErrorCode {
-  if (error instanceof PiRunTimeoutError) return "timeout";
-  if (error instanceof PiRunCancelledError) return "cancelled";
+export function classifyAgentError(error: unknown): AgentErrorCode {
+  if (error instanceof AgentRunTimeoutError) return "timeout";
+  if (error instanceof AgentRunCancelledError) return "cancelled";
   const message = error instanceof Error ? `${error.name} ${error.message}` : typeof error === "string" ? error : "";
   if (/rate[\s_-]*limit|\b429\b/i.test(message)) return "rate_limit";
   if (/econnreset|fetch failed|enotfound/i.test(message)) return "network";
@@ -253,31 +253,31 @@ function lifecyclePayload(event: Record<string, unknown>): unknown {
   return null;
 }
 
-export async function runBoundedPi<T = void>(options: {
+export async function runBoundedAgent<T = void>(options: {
   prompt: string;
   images?: ImageContent[];
   timeoutMs: number;
   inactivityTimeoutMs?: number;
   signal?: AbortSignal;
-  createSession: () => Promise<PiSessionLike>;
+  createSession: () => Promise<AgentSessionLike>;
   onEvent?: (event: unknown) => void;
   onAssistantText?: (text: string) => void;
   onActivity?: () => void;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
   guidance?: string;
   settings?: unknown;
   model?: unknown;
   runId?: string;
   trajectory?: TrajectoryRecorder;
 }): Promise<T> {
-  let session: PiSessionLike | undefined;
+  let session: AgentSessionLike | undefined;
   let unsubscribe: (() => void) | undefined;
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
   let inactivityTimer: ReturnType<typeof setTimeout> | undefined;
   let abortState: "idle" | "requested" = "idle";
   let terminalType: "run_completed" | "run_timed_out" | "run_cancelled" | "run_failed" | undefined;
   const sessionStartedAt = isoNow();
-  type AssistantState = { text: string; thinking: string; message: unknown; startedAt: string; usage?: PiRunUsage };
+  type AssistantState = { text: string; thinking: string; message: unknown; startedAt: string; usage?: AgentRunUsage };
   type ToolState = { toolCallId: string; toolName: string; args: unknown; startedAt: string; partialResult?: unknown };
   const assistantStates = new Map<string, AssistantState>();
   const finalizedAssistants = new Set<string>();
@@ -292,7 +292,7 @@ export async function runBoundedPi<T = void>(options: {
   const resetInactivity = () => {
     if (inactivityTimer) clearTimeout(inactivityTimer);
     inactivityTimer = setTimeout(() => {
-      if (session && rejectOutcome) void abortAndReject(session, new PiRunTimeoutError("Pi run timed out due to inactivity"), rejectOutcome);
+      if (session && rejectOutcome) void abortAndReject(session, new AgentRunTimeoutError("Agent run timed out due to inactivity"), rejectOutcome);
     }, options.inactivityTimeoutMs ?? defaultInactivityTimeoutMs);
   };
 
@@ -301,7 +301,7 @@ export async function runBoundedPi<T = void>(options: {
     try { options.onActivity?.(); } catch { /* activity reporting is deliberately non-fatal */ }
   };
 
-  const reportUsage = (key: string, usage: PiRunUsage) => {
+  const reportUsage = (key: string, usage: AgentRunUsage) => {
     if (reportedUsage.has(key)) return;
     reportedUsage.add(key);
     try { options.onUsage?.(usage); } catch { /* usage reporting is deliberately non-fatal */ }
@@ -418,7 +418,7 @@ export async function runBoundedPi<T = void>(options: {
     if (terminalType) return;
     terminalType = type;
     const endedAt = isoNow();
-    const errorCode = error === undefined ? undefined : classifyPiError(error);
+    const errorCode = error === undefined ? undefined : classifyAgentError(error);
     record({
       kind: type === "run_failed" ? "error" : "lifecycle",
       type,
@@ -430,7 +430,7 @@ export async function runBoundedPi<T = void>(options: {
   };
 
   let rejectOutcome: ((reason?: unknown) => void) | undefined;
-  const abortAndReject = async (current: PiSessionLike, error: Error, reject: (reason?: unknown) => void) => {
+  const abortAndReject = async (current: AgentSessionLike, error: Error, reject: (reason?: unknown) => void) => {
     if (abortState !== "idle") return;
     abortState = "requested";
     reject(error);
@@ -466,12 +466,12 @@ export async function runBoundedPi<T = void>(options: {
     record({ kind: "user", type: "user_prompt", payload: telemetryPromptPayload(options.prompt, redactTelemetryText) });
     record({ kind: "lifecycle", type: "prompt_start", startedAt: isoNow(), payload: null });
     const onAbort = () => {
-      if (session && rejectOutcome) void abortAndReject(session, new PiRunCancelledError(), rejectOutcome);
+      if (session && rejectOutcome) void abortAndReject(session, new AgentRunCancelledError(), rejectOutcome);
     };
     const outcome = new Promise<never>((_, reject) => {
       rejectOutcome = reject;
       timeoutTimer = setTimeout(() => {
-        if (session) void abortAndReject(session, new PiRunTimeoutError(), reject);
+        if (session) void abortAndReject(session, new AgentRunTimeoutError(), reject);
       }, options.timeoutMs);
     });
     resetInactivity();
@@ -495,7 +495,7 @@ export async function runBoundedPi<T = void>(options: {
     } catch (error) {
       flushTools();
       flushAssistants();
-      const type = error instanceof PiRunTimeoutError ? "run_timed_out" : error instanceof PiRunCancelledError ? "run_cancelled" : "run_failed";
+      const type = error instanceof AgentRunTimeoutError ? "run_timed_out" : error instanceof AgentRunCancelledError ? "run_cancelled" : "run_failed";
       recordTerminal(type, error);
       throw error;
     } finally {

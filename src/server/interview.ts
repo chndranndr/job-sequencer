@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { type FollowUpContext, type InterviewMessage, type RunWorkflow, type TrajectoryRecorder } from "../shared.js";
 import type { Settings } from "./config.js";
-import { createRestrictedGenerationSession, PiRunCancelledError, PiRunTimeoutError, runBoundedPi, type PiRunUsage } from "./pi.js";
+import { createRestrictedGenerationSession, AgentRunCancelledError, AgentRunTimeoutError, runBoundedAgent, type AgentRunUsage } from "./agent.js";
 import { loadGuidance } from "./guidance.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 import { RunCoordinator } from "./coordinator.js";
@@ -43,7 +43,7 @@ export type InterviewExecutor = (context: {
   runId?: string;
   trajectory?: TrajectoryRecorder;
   onDelta?: (fullText: string) => void;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 }) => Promise<string>;
 
 export type FollowUpExecutor = (context: {
@@ -55,12 +55,12 @@ export type FollowUpExecutor = (context: {
   signal: AbortSignal;
   runId?: string;
   trajectory?: TrajectoryRecorder;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 }) => Promise<string>;
 
-async function runTextSession(prompt: string, settings: Settings, signal: AbortSignal, systemPrompt: string, runId?: string, trajectory?: TrajectoryRecorder, onDelta?: (fullText: string) => void, onUsage?: (usage: PiRunUsage) => void) {
+async function runTextSession(prompt: string, settings: Settings, signal: AbortSignal, systemPrompt: string, runId?: string, trajectory?: TrajectoryRecorder, onDelta?: (fullText: string) => void, onUsage?: (usage: AgentRunUsage) => void) {
   let text = "";
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt,
     timeoutMs: 120_000,
     signal,
@@ -177,7 +177,7 @@ export const liveFollowUpExecutor: FollowUpExecutor = async (context) => runText
   context.onUsage,
 );
 
-export type TaskRunExecutor = (context: { jobId: string; payload: unknown; profile: string; settings: Settings; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void }) => Promise<unknown>;
+export type TaskRunExecutor = (context: { jobId: string; payload: unknown; profile: string; settings: Settings; signal: AbortSignal; runId?: string; trajectory?: TrajectoryRecorder; onUsage?: (usage: AgentRunUsage) => void }) => Promise<unknown>;
 
 /** One compact run wrapper for the two user-triggered text workflows. */
 export class TaskRunManager {
@@ -206,9 +206,9 @@ export class TaskRunManager {
       idempotencyKey,
       execute: ({ runId, signal, onUsage }) => this.work(runId, signal, jobId, payload, context, onUsage),
       onError: (error, { signal }) => ({
-        error: signal.aborted || error instanceof PiRunCancelledError
+        error: signal.aborted || error instanceof AgentRunCancelledError
           ? "Practice cancelled."
-          : error instanceof PiRunTimeoutError
+          : error instanceof AgentRunTimeoutError
             ? "Practice timed out."
             : this.options.workflow === "follow_up"
               ? "Follow-up draft failed. Check provider settings and try again."
@@ -219,10 +219,10 @@ export class TaskRunManager {
 
   cancel(id: string) { return this.coordinator.cancel(id); }
 
-  private async work(id: string, signal: AbortSignal, jobId: string, payload: unknown, context: { profile: string; settings: Settings }, onUsage: (usage: PiRunUsage) => void) {
+  private async work(id: string, signal: AbortSignal, jobId: string, payload: unknown, context: { profile: string; settings: Settings }, onUsage: (usage: AgentRunUsage) => void) {
     try {
       const summary = await this.options.execute({ jobId, payload, ...context, signal, runId: id, trajectory: this.options.trajectory, onUsage });
-      if (signal.aborted) throw new PiRunCancelledError();
+      if (signal.aborted) throw new AgentRunCancelledError();
       return summary;
     } catch (error) {
       throw error;

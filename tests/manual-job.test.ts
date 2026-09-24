@@ -8,7 +8,7 @@ import { openDatabase, persistManualJob } from "../src/server/db.js";
 import { writeSettings, writeStructuredProfile } from "../src/server/config.js";
 import { createEmptyProfile, defaultSourceMaxAgeDays } from "../src/shared.js";
 import { MAX_MANUAL_BATCH_SIZE, MAX_MANUAL_FETCH_BYTES, importManualJob, ManualJobRunManager, parseManualJobText, validateManualUrl, type ManualJobImportResult } from "../src/server/manual-job.js";
-import type { PiSessionLike } from "../src/server/pi.js";
+import type { AgentSessionLike } from "../src/server/agent.js";
 
 const settings = {
   provider: "job-sequencer-faux",
@@ -30,7 +30,7 @@ const profileContext = JSON.stringify({
 });
 const criteriaContext = { roles: ["Backend Engineer"], locations: ["Remote"], remoteOnly: true, keywords: ["TypeScript"], excludeKeywords: [], employmentTypes: ["full-time"], maxJobsPerRun: 20 };
 
-class FakeSession implements PiSessionLike {
+class FakeSession implements AgentSessionLike {
   private listener: ((event: unknown) => void) | null = null;
   constructor(private readonly response: string, private readonly onPrompt?: (prompt: string) => void) {}
   subscribe(listener: (event: unknown) => void) { this.listener = listener; return () => { this.listener = null; }; }

@@ -8,13 +8,13 @@ import { ProfileSchema, type Settings } from "./config.js";
 import { createTaskReporter } from "./db.js";
 import { RunCoordinator } from "./coordinator.js";
 import {
-  PiRunCancelledError,
-  PiRunTimeoutError,
+  AgentRunCancelledError,
+  AgentRunTimeoutError,
   createRestrictedGenerationSession,
-  runBoundedPi,
-  type PiRunUsage,
-  type PiSessionLike,
-} from "./pi.js";
+  runBoundedAgent,
+  type AgentRunUsage,
+  type AgentSessionLike,
+} from "./agent.js";
 import { runStructured, StructuredOutputError } from "./structured.js";
 
 export const MAX_PROFILE_UPLOAD_BYTES = 12 * 1024 * 1024;
@@ -34,13 +34,13 @@ export type ProfileImportResult = {
   source: { fileName: string; format: ProfileImportFormat; textLength: number };
   identity: ProfileIdentityInfo;
 };
-export type ProfilePiSessionFactory = () => Promise<PiSessionLike>;
+export type ProfilePiSessionFactory = () => Promise<AgentSessionLike>;
 export type ProfileImportOptions = {
   currentProfile?: StructuredProfile | null;
   signal?: AbortSignal;
   runId?: string;
   trajectory?: TrajectoryRecorder;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
   createSession?: ProfilePiSessionFactory;
 };
 export type ProfileImporter = (file: ProfileImportFile, settings: Settings, options?: ProfileImportOptions) => Promise<ProfileImportResult>;
@@ -455,7 +455,7 @@ async function runProfilePi(prompt: string, settings: Settings, systemPrompt: st
       trajectory: options.trajectory,
       execute: async (attemptPrompt) => {
         let response = "";
-        await runBoundedPi({
+        await runBoundedAgent({
           prompt: attemptPrompt,
           timeoutMs: 120_000,
           signal: options.signal,
@@ -473,7 +473,7 @@ async function runProfilePi(prompt: string, settings: Settings, systemPrompt: st
       },
     });
   } catch (error) {
-    if (error instanceof PiRunCancelledError || error instanceof PiRunTimeoutError) throw error;
+    if (error instanceof AgentRunCancelledError || error instanceof AgentRunTimeoutError) throw error;
     if (error instanceof ProfileImportError) throw error;
     if (error instanceof StructuredOutputError) {
       throw new ProfileImportError("Pi returned profile data that could not be validated. Try parsing the document again.", 502);
@@ -509,22 +509,22 @@ export async function mergeResumeIntoProfile(
 
 export async function importResumeProfile(file: ProfileImportFile, settings: Settings, options: ProfileImportOptions = {}): Promise<ProfileImportResult> {
   const extracted = await extractProfileText(file);
-  if (options.signal?.aborted) throw new PiRunCancelledError();
+  if (options.signal?.aborted) throw new AgentRunCancelledError();
   const mapped = await parseResumeText(extracted.text, settings, options);
-  if (options.signal?.aborted) throw new PiRunCancelledError();
+  if (options.signal?.aborted) throw new AgentRunCancelledError();
   const source = { fileName: safeFileName(file.filename), format: extracted.format, textLength: extracted.text.length };
   const identity = detectIdentityConflict(options.currentProfile, mapped);
   if (identity.conflict || isEmptyProfileBank(options.currentProfile)) {
     return { profile: mapped, extracted: mapped, source, identity };
   }
   const merged = await mergeResumeIntoProfile(extracted.text, options.currentProfile!, settings, options, mapped);
-  if (options.signal?.aborted) throw new PiRunCancelledError();
+  if (options.signal?.aborted) throw new AgentRunCancelledError();
   return { profile: merged, extracted: mapped, source, identity };
 }
 
 function profileImportError(error: unknown) {
-  if (error instanceof PiRunCancelledError) return "Profile import cancelled.";
-  if (error instanceof PiRunTimeoutError) return "Profile import timed out.";
+  if (error instanceof AgentRunCancelledError) return "Profile import cancelled.";
+  if (error instanceof AgentRunTimeoutError) return "Profile import timed out.";
   if (error instanceof ProfileImportError) return error.message;
   if (error && typeof error === "object" && (error as { statusCode?: unknown }).statusCode === 409) {
     return error instanceof Error ? error.message : String(error);
@@ -577,7 +577,7 @@ export class ProfileImportRunManager {
     file: ProfileImportFile,
     currentProfile: StructuredProfile | null,
     settings: Settings,
-    onUsage: (usage: PiRunUsage) => void,
+    onUsage: (usage: AgentRunUsage) => void,
   ) {
     const tasks = createTaskReporter(this.options.trajectory, id);
     const piOptions: ProfileImportOptions = {
@@ -592,7 +592,7 @@ export class ProfileImportRunManager {
       if (this.options.importer) {
         tasks.start({ taskId: "profile_import:extract", label: "Read resume document", detail: safeFileName(file.filename) });
         const imported = await this.options.importer(file, settings, piOptions);
-        if (signal.aborted) throw new PiRunCancelledError();
+        if (signal.aborted) throw new AgentRunCancelledError();
         tasks.complete("profile_import:extract", `${imported.source.fileName} · ${imported.source.textLength} chars`);
         tasks.start({ taskId: "profile_import:map", label: "Map fields with Pi", detail: modelDetail });
         tasks.complete("profile_import:map", profileDisplayName(imported.extracted) || "Mapped profile");
@@ -608,12 +608,12 @@ export class ProfileImportRunManager {
 
       tasks.start({ taskId: "profile_import:extract", label: "Read resume document", detail: safeFileName(file.filename) });
       const extracted = await extractProfileText(file);
-      if (signal.aborted) throw new PiRunCancelledError();
+      if (signal.aborted) throw new AgentRunCancelledError();
       tasks.complete("profile_import:extract", `${safeFileName(file.filename)} · ${extracted.text.length} chars`);
 
       tasks.start({ taskId: "profile_import:map", label: "Map fields with Pi", detail: modelDetail });
       const mapped = await parseResumeText(extracted.text, settings, piOptions);
-      if (signal.aborted) throw new PiRunCancelledError();
+      if (signal.aborted) throw new AgentRunCancelledError();
       tasks.complete("profile_import:map", profileDisplayName(mapped) || "Mapped profile");
 
       const source = { fileName: safeFileName(file.filename), format: extracted.format, textLength: extracted.text.length };
@@ -628,11 +628,11 @@ export class ProfileImportRunManager {
         return { profile: mapped, extracted: mapped, source, identity };
       }
       const merged = await mergeResumeIntoProfile(extracted.text, currentProfile!, settings, piOptions, mapped);
-      if (signal.aborted) throw new PiRunCancelledError();
+      if (signal.aborted) throw new AgentRunCancelledError();
       tasks.complete("profile_import:merge", profileDisplayName(merged) || "Merged profile");
       return { profile: merged, extracted: mapped, source, identity };
     } catch (error) {
-      const status = error instanceof PiRunTimeoutError ? "timed out" : signal.aborted || error instanceof PiRunCancelledError ? "cancelled" : "failed";
+      const status = error instanceof AgentRunTimeoutError ? "timed out" : signal.aborted || error instanceof AgentRunCancelledError ? "cancelled" : "failed";
       tasks.failActive(status === "cancelled" ? "Profile import cancelled." : status === "timed out" ? "Profile import timed out." : "Profile import failed.");
       throw error;
     }

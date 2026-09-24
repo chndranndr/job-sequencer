@@ -1,6 +1,6 @@
 import type { GenerationDirection, StructuredProfile, TrajectoryRecorder } from "../../shared.js";
 import type { Settings } from "../config.js";
-import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "../pi.js";
+import { createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage } from "../agent.js";
 import type { StructuredRunOptions } from "../structured.js";
 import { validateClaims } from "./claim-validator.js";
 import { buildWriterPrompt } from "./prompts/writer.js";
@@ -22,7 +22,7 @@ export type RunWriterInput = {
   runId?: string;
   settings?: Settings;
   cvPageEstimate?: number | null;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 };
 
 export type WriterFn = (input: RunWriterInput) => Promise<CVDocument>;
@@ -32,7 +32,7 @@ function liveExecute(input: RunWriterInput): StructuredRunOptions<CVDocument>["e
   if (!settings) throw new Error("runWriter requires execute or settings.");
   return async prompt => {
     let text = "";
-    await runBoundedPi({
+    await runBoundedAgent({
       prompt,
       timeoutMs: 120_000,
       signal: input.signal,

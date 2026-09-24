@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRestrictedScrapeSession, resolveLiveScrapeSession } from "../src/server/pi.js";
+import { createRestrictedScrapeSession, resolveLiveScrapeSession } from "../src/server/agent.js";
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createSourceRegistry, type JobSourcePlugin } from "../src/server/source-plugins.js";
 import { createAgentSearchTools } from "../src/server/search/tools.js";

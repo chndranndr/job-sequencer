@@ -1,6 +1,6 @@
 import type { StructuredProfile, TrajectoryRecorder } from "../../shared.js";
 import type { Settings } from "../config.js";
-import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "../pi.js";
+import { createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage } from "../agent.js";
 import type { StructuredRunOptions } from "../structured.js";
 import { normalizeEvidenceRefs } from "./evidence.js";
 import { buildAuditorPrompt } from "./prompts/auditor.js";
@@ -25,7 +25,7 @@ export type RunFactualAuditorInput = {
   trajectory?: TrajectoryRecorder;
   runId?: string;
   settings?: Settings;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 };
 
 export type FactualAuditorFn = (input: RunFactualAuditorInput) => Promise<FactualAudit>;
@@ -35,7 +35,7 @@ function liveExecute(input: RunFactualAuditorInput): StructuredRunOptions<Factua
   if (!settings) throw new Error("runFactualAuditor requires execute or settings.");
   return async prompt => {
     let text = "";
-    await runBoundedPi({
+    await runBoundedAgent({
       prompt,
       timeoutMs: 120_000,
       signal: input.signal,

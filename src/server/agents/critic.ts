@@ -1,6 +1,6 @@
 import type { StructuredProfile, TrajectoryRecorder } from "../../shared.js";
 import type { Settings } from "../config.js";
-import { createRestrictedGenerationSession, runBoundedPi, type PiRunUsage } from "../pi.js";
+import { createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage } from "../agent.js";
 import type { StructuredRunOptions } from "../structured.js";
 import { buildCriticPrompt } from "./prompts/critic.js";
 import { runAgentStructured } from "./runtime.js";
@@ -23,7 +23,7 @@ export type RunCriticInput = {
   trajectory?: TrajectoryRecorder;
   runId?: string;
   settings?: Settings;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 };
 
 export type CriticFn = (input: RunCriticInput) => Promise<Critique>;
@@ -33,7 +33,7 @@ function liveExecute(input: RunCriticInput): StructuredRunOptions<Critique>["exe
   if (!settings) throw new Error("runCritic requires execute or settings.");
   return async prompt => {
     let text = "";
-    await runBoundedPi({
+    await runBoundedAgent({
       prompt,
       timeoutMs: 120_000,
       signal: input.signal,

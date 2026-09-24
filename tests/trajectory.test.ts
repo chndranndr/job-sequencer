@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { buildServer } from "../src/server/app.js";
 import { appendRunTrajectoryEvent, createTaskReporter, createTrajectoryRecorder, finishRun, listRunTrajectoryEvents, openDatabase } from "../src/server/db.js";
-import { runBoundedPi, type PiSessionLike } from "../src/server/pi.js";
+import { runBoundedAgent, type AgentSessionLike } from "../src/server/agent.js";
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createMultiSourceScrapeExecutor, RunManager } from "../src/server/runs.js";
 import { provenanceKey } from "../src/server/scrape.js";
@@ -437,7 +437,7 @@ test("scrape funnel telemetry reports final selected jobs after hard filtering",
 });
 
 
-class TrajectoryFakeSession implements PiSessionLike {
+class TrajectoryFakeSession implements AgentSessionLike {
   private listener: ((event: unknown) => void) | null = null;
   disposed = false;
   promptText = "";
@@ -464,7 +464,7 @@ class TrajectoryFakeSession implements PiSessionLike {
   dispose() { this.disposed = true; }
 }
 
-test("runBoundedPi persists prompts, aggregated assistant/thinking, tools, and terminal events", async () => {
+test("runBoundedAgent persists prompts, aggregated assistant/thinking, tools, and terminal events", async () => {
   const previousMode = process.env.TELEMETRY_MODE;
   process.env.TELEMETRY_MODE = "redacted";
   const db = openDatabase(":memory:");
@@ -472,7 +472,7 @@ test("runBoundedPi persists prompts, aggregated assistant/thinking, tools, and t
   const recorder = createTrajectoryRecorder(db);
   const session = new TrajectoryFakeSession();
   try {
-    await runBoundedPi({
+    await runBoundedAgent({
       runId,
       trajectory: recorder,
       prompt: "Exact user prompt",

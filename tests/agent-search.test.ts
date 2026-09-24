@@ -5,7 +5,7 @@ import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createScrapeTools, type ScrapeTools, type ScrapeToolsOptions } from "../src/server/scrape.js";
 import { createAgentSearchTools, type AgentSearchTools } from "../src/server/search/tools.js";
 import { AgentSearchState, SearchBudgetExceededError, SearchCoverageError, SearchNotFinishedError, includesCriterion, passesHardSearchConstraints, resolveSearchBudget } from "../src/server/search/state.js";
-import type { PiSessionLike } from "../src/server/pi.js";
+import type { AgentSessionLike } from "../src/server/agent.js";
 import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from "@earendil-works/pi-ai";
@@ -498,7 +498,7 @@ test("search tools reject an unconfigured enabled source before adapter executio
 });
 
 test("same goal trajectories choose the next source from inspected state", async () => {
-  class FakeSession implements PiSessionLike {
+  class FakeSession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
     async abort() {}
@@ -588,7 +588,7 @@ test("same goal trajectories choose the next source from inspected state", async
 });
 
 test("agent executor uses one Pi session and rejects a missing finishSearch", async () => {
-  class FakeSession implements PiSessionLike {
+  class FakeSession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
     async abort() {}
@@ -663,7 +663,7 @@ test("agent executor uses one Pi session and rejects a missing finishSearch", as
 
 
 test("profile-led multi-source search scales coverage budget across every enabled source", async () => {
-  class EmptySession implements PiSessionLike {
+  class EmptySession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
     async abort() {}
@@ -816,7 +816,7 @@ test("agent executor follows a faux Pi observation loop", async () => {
 });
 
 test("agent executor treats a clean zero-match finish as success", async () => {
-  class EmptySession implements PiSessionLike {
+  class EmptySession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
     async abort() {}
@@ -846,7 +846,7 @@ test("agent executor treats a clean zero-match finish as success", async () => {
 });
 
 test("agent executor still rejects an empty finish when every search action fails", async () => {
-  class EmptySession implements PiSessionLike {
+  class EmptySession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
     async abort() {}

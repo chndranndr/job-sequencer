@@ -6,7 +6,7 @@ import { createSourceRegistry, type JobSourcePlugin } from "../src/server/source
 import { createScrapeTools, type CliRunner } from "../src/server/scrape.js";
 import { openDatabase } from "../src/server/db.js";
 import { defaultSourceMaxAgeDays, type JobSource } from "../src/shared.js";
-import type { PiSessionLike } from "../src/server/pi.js";
+import type { AgentSessionLike } from "../src/server/agent.js";
 
 test("Japan-board query prompts omit non-Japan locations while LinkedIn uses locations", () => {
   for (const source of ["tokyodev", "japan-dev"] as const) {
@@ -26,7 +26,7 @@ test("Japan-board query prompts omit non-Japan locations while LinkedIn uses loc
   assert.match(linkedinRule, /profile-derived or optional preference location/i);
 });
 
-class FauxSourceSession implements PiSessionLike {
+class FauxSourceSession implements AgentSessionLike {
   private listener?: (event: unknown) => void;
 
   constructor(private readonly output: string, private readonly onPrompt: (prompt: string) => void | Promise<void>) {}

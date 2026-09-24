@@ -11,12 +11,12 @@ import {
   ProfileImportError,
   profileDisplayName,
 } from "../src/server/profile-import.js";
-import type { PiSessionLike } from "../src/server/pi.js";
+import type { AgentSessionLike } from "../src/server/agent.js";
 import { createEmptyProfile, type StructuredProfile } from "../src/shared.js";
 
 const settings = { provider: "job-sequencer-faux", model: "phase0", source: "freehire" as const, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
 
-class FakeSession implements PiSessionLike {
+class FakeSession implements AgentSessionLike {
   constructor(private readonly payload: unknown) {}
   private listener: ((event: unknown) => void) | null = null;
   subscribe(listener: (event: unknown) => void) { this.listener = listener; return () => { this.listener = null; }; }

@@ -13,7 +13,7 @@ import {
   cloneProfile,
   type RepeatableSectionId,
 } from "../profile-editor.js";
-import { api, getAvailableModels, getCriteria, getProfile, getSettings, importProfile, type PiModelOption, type ProfileImportSummary } from "../api.js";
+import { api, getAvailableModels, getCriteria, getProfile, getSettings, importProfile, type AgentModelOption, type ProfileImportSummary } from "../api.js";
 import { isNarrowLayout, NARROW_LAYOUT_MQ } from "./narrow.js";
 import {
   CustomSourceEditor,
@@ -141,7 +141,7 @@ export function DiskView({
   const [settings, setSettings] = useState<Settings | null>(null);
   const [savedSettings, setSavedSettings] = useState<Settings | null>(null);
   const [status, setStatus] = useState<DocumentStatus | null>(null);
-  const [models, setModels] = useState<PiModelOption[]>([]);
+  const [models, setModels] = useState<AgentModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState("");
   const [criteriaError, setCriteriaError] = useState("");

@@ -2,13 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { defaultSettings } from "../src/server/config.js";
 import type { InterviewMessage } from "../src/shared.js";
-import type { PiSessionLike } from "../src/server/pi.js";
-import { PiRunCancelledError } from "../src/server/pi.js";
+import type { AgentSessionLike } from "../src/server/agent.js";
+import { AgentRunCancelledError } from "../src/server/agent.js";
 import { InterviewSessionPool, type InterviewSessionRun } from "../src/server/interview-sessions.js";
 
 type FakeBehavior = "ok" | "fail" | "hang";
 
-class FakeSession implements PiSessionLike {
+class FakeSession implements AgentSessionLike {
   readonly promptTexts: string[] = [];
   disposed = false;
   abortCalls = 0;
@@ -251,7 +251,7 @@ test("LRU eviction removes the oldest idle job and never the active job", async 
     assert.equal(sessions.get("job-c")?.disposed, false);
 
     controller.abort();
-    await assert.rejects(active, PiRunCancelledError);
+    await assert.rejects(active, AgentRunCancelledError);
   } finally {
     await pool.close();
   }
@@ -308,7 +308,7 @@ test("cancellation disposes the session and releases its pool entry", async () =
     }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     controller.abort();
-    await assert.rejects(run, PiRunCancelledError);
+    await assert.rejects(run, AgentRunCancelledError);
     assert.equal(session.abortCalls, 1);
     assert.equal(session.disposed, true);
     assert.equal(pool.has("job-a"), false);

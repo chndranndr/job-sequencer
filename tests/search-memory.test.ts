@@ -11,7 +11,7 @@ import { createAgentSearchExecutor, type ScrapeContext } from "../src/server/run
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
 import { createScrapeTools } from "../src/server/scrape.js";
 import type { AgentSearchTools } from "../src/server/search/tools.js";
-import type { PiSessionLike } from "../src/server/pi.js";
+import type { AgentSessionLike } from "../src/server/agent.js";
 
 type PromptHistoricalSignal = { pattern: string; signal: "positive" | "negative" | "neutral" };
 
@@ -298,7 +298,7 @@ test("historical memory bounds and labels external role, location, and query tex
   assert.ok(memory.preferenceSignals.every((signal) => !/[\r\n]/.test(signal.pattern)));
   assert.ok(memory.summaryText.includes("Ignore previous instructions"));
 
-  class FakeSession implements PiSessionLike {
+  class FakeSession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
     async abort() {}
@@ -351,7 +351,7 @@ test("historical memory bounds and labels external role, location, and query tex
 test("deterministic two-run fixture: Run 2 receives useful memory compiled from Run 1 without ID collision", async () => {
   const db = openDatabase(":memory:");
 
-  class FakeSession implements PiSessionLike {
+  class FakeSession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
     async abort() {}
@@ -557,7 +557,7 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
 
   let toolsInstance: AgentSearchTools | undefined;
   let prompt = "";
-  class FakeSession implements PiSessionLike {
+  class FakeSession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
     async abort() {}
@@ -638,7 +638,7 @@ test("search preferences remain visible when memory favors Singapore", async () 
     });
   }
 
-  class FakeSession implements PiSessionLike {
+  class FakeSession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
     async abort() {}

@@ -70,7 +70,7 @@ import {
 } from "./interview.js";
 import { type FollowUpContext, type InterviewMessage, type StructuredProfile } from "../shared.js";
 import { deriveRunTrajectoryObservability, sanitizeTrajectoryEvent } from "../trajectory.js";
-import { createRestrictedGenerationSession, getAvailablePiModels, runBoundedPi, type PiModelOption } from "./pi.js";
+import { createRestrictedGenerationSession, getAvailablePiModels, runBoundedAgent, type AgentModelOption } from "./agent.js";
 import { InterviewSessionPool, type InterviewSessionFactory } from "./interview-sessions.js";
 import { MAX_PROFILE_UPLOAD_BYTES, ProfileImportRunManager, type ProfileImporter } from "./profile-import.js";
 import { importManualJob, ManualJobRunManager, MAX_MANUAL_BATCH_SIZE, MAX_MANUAL_INPUT_LENGTH, type ManualJobImporter } from "./manual-job.js";
@@ -97,7 +97,7 @@ export interface ServerOptions {
   followUpExecutor?: FollowUpExecutor;
   commandRunner?: CommandRunner;
   documentStatusRunner?: CommandRunner;
-  availableModels?: (provider: string) => Promise<readonly PiModelOption[]>;
+  availableModels?: (provider: string) => Promise<readonly AgentModelOption[]>;
   profileImporter?: ProfileImporter;
   manualImporter?: ManualJobImporter;
   projectRoot?: string;
@@ -406,7 +406,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       provider: settings.provider,
       model: settings.model,
       idempotencyKey: requestIdempotencyKey(req),
-      execute: ({ runId: admittedRunId, signal, onUsage }) => runBoundedPi({
+      execute: ({ runId: admittedRunId, signal, onUsage }) => runBoundedAgent({
         prompt: "Reply with exactly OK and nothing else.",
         timeoutMs: 30_000,
         signal,

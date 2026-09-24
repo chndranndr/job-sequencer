@@ -10,7 +10,7 @@ import { compileAndVerify, containedPath, type CommandRunner } from "../src/serv
 import { defaultSettings } from "../src/server/config.js";
 import { generateJob, buildGenerationPrompt, validateGenerationOutput } from "../src/server/generation.js";
 import { loadTemplateMetadata, selectCvTemplate, TemplateMetadataSchema } from "../src/server/templates.js";
-import { createFauxRestrictedGenerationSession } from "../src/server/pi.js";
+import { createFauxRestrictedGenerationSession } from "../src/server/agent.js";
 import { defaultGenerationDirection, createEmptyProfile } from "../src/shared.js";
 import type { ApplicationStrategy, CVDocument } from "../src/server/agents/types.js";
 import { splitDescriptionIntoBullets } from "../src/server/agents/evidence.js";

@@ -10,7 +10,7 @@ import {
   updateRunUsage,
   type RunUsage,
 } from "./db.js";
-import { classifyPiError, PiRunCancelledError, PiRunTimeoutError, type PiRunUsage } from "./pi.js";
+import { classifyAgentError, AgentRunCancelledError, AgentRunTimeoutError, type AgentRunUsage } from "./agent.js";
 import type { RunStatus, RunWorkflow, TrajectoryEventInput, TrajectoryRecorder } from "../shared.js";
 
 export type TerminalRunStatus = Exclude<RunStatus, "queued" | "running">;
@@ -18,7 +18,7 @@ export type TerminalRunStatus = Exclude<RunStatus, "queued" | "running">;
 export type RunExecutionContext = {
   runId: string;
   signal: AbortSignal;
-  onUsage: (usage: PiRunUsage) => void;
+  onUsage: (usage: AgentRunUsage) => void;
 };
 
 export type RunFailure = {
@@ -98,22 +98,22 @@ function errorMessage(error: unknown) {
 }
 
 function inferredStatus(error: unknown, signal: AbortSignal): TerminalRunStatus {
-  if (signal.aborted || error instanceof RunCoordinatorCancelledError || error instanceof PiRunCancelledError) return "cancelled";
-  if (error instanceof PiRunTimeoutError || classifyPiError(error) === "timeout") return "timed_out";
+  if (signal.aborted || error instanceof RunCoordinatorCancelledError || error instanceof AgentRunCancelledError) return "cancelled";
+  if (error instanceof AgentRunTimeoutError || classifyAgentError(error) === "timeout") return "timed_out";
   return "failed";
 }
 
 function inferredErrorCode(status: TerminalRunStatus, error: unknown) {
   if (status === "cancelled") return "cancelled";
   if (status === "timed_out") return "timeout";
-  return classifyPiError(error);
+  return classifyAgentError(error);
 }
 
 function usageValue(value: number | null) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function addUsage(current: RunUsage, next: PiRunUsage): RunUsage {
+function addUsage(current: RunUsage, next: AgentRunUsage): RunUsage {
   const add = (left: number | null, right: number | null) => {
     const value = usageValue(right);
     return value === null ? left : (left ?? 0) + value;
@@ -324,7 +324,7 @@ export class RunCoordinator {
 
   private async execute(entry: QueueEntry) {
     let usage: RunUsage = { inputTokens: null, outputTokens: null, totalTokens: null, estimatedCost: null };
-    const onUsage = (next: PiRunUsage) => {
+    const onUsage = (next: AgentRunUsage) => {
       usage = addUsage(usage, next);
       try { updateRunUsage(this.db, entry.id, usage); } catch {}
     };

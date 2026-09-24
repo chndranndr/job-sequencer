@@ -1,7 +1,7 @@
 import type { GenerationDirection, TrajectoryRecorder } from "../../shared.js";
 import type { Settings } from "../config.js";
 import { createResearchTool } from "../research-tools.js";
-import { createRestrictedResearchSession, runBoundedPi, type PiRunUsage } from "../pi.js";
+import { createRestrictedResearchSession, runBoundedAgent, type AgentRunUsage } from "../agent.js";
 import type { StructuredRunOptions } from "../structured.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "../context.js";
 import { runAgentStructured } from "./runtime.js";
@@ -25,7 +25,7 @@ export type RunCompanyResearchInput = {
   trajectory?: TrajectoryRecorder;
   runId?: string;
   settings?: Settings;
-  onUsage?: (usage: PiRunUsage) => void;
+  onUsage?: (usage: AgentRunUsage) => void;
 };
 
 export type ResearcherFn = (input: RunCompanyResearchInput) => Promise<CompanyResearch>;
@@ -48,7 +48,7 @@ function liveExecute(input: RunCompanyResearchInput): StructuredRunOptions<Compa
   if (!input.settings) throw new Error("runCompanyResearch requires execute or settings.");
   return async prompt => {
     let text = "";
-    await runBoundedPi({
+    await runBoundedAgent({
       prompt,
       timeoutMs: 120_000,
       signal: input.signal,

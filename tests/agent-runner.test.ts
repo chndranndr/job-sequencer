@@ -2,14 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
-  classifyPiError,
-  PiRunCancelledError,
-  PiRunTimeoutError,
-  runBoundedPi,
+  classifyAgentError,
+  AgentRunCancelledError,
+  AgentRunTimeoutError,
+  runBoundedAgent,
   selectConfiguredModel,
-  type PiSessionLike,
-  type PiPromptOptions,
-} from "../src/server/pi.js";
+  type AgentSessionLike,
+  type AgentPromptOptions,
+} from "../src/server/agent.js";
 
 const priorTelemetryMode = process.env.TELEMETRY_MODE;
 process.env.TELEMETRY_MODE = "redacted";
@@ -28,12 +28,12 @@ test("configured OpenAI Codex provider is passed to the Pi model registry", () =
   assert.deepEqual(calls, [["openai-codex", "gpt-5.6-luna"]]);
 });
 
-class FakeSession implements PiSessionLike {
+class FakeSession implements AgentSessionLike {
   disposed = false;
   unsubscribed = false;
   abortCalls = 0;
   promptText = "";
-  promptOptions: PiPromptOptions | undefined;
+  promptOptions: AgentPromptOptions | undefined;
   private readonly listeners = new Set<(event: unknown) => void>();
   private lateReject: ((reason: Error) => void) | undefined;
   constructor(
@@ -48,7 +48,7 @@ class FakeSession implements PiSessionLike {
       this.listeners.delete(listener);
     };
   }
-  async prompt(text: string, options?: PiPromptOptions): Promise<void> {
+  async prompt(text: string, options?: AgentPromptOptions): Promise<void> {
     this.promptText = text;
     this.promptOptions = options;
     for (const event of this.events) {
@@ -75,12 +75,12 @@ class FakeSession implements PiSessionLike {
 test("Pi timeout aborts, unsubscribes, and disposes", async () => {
   let session!: FakeSession;
   await assert.rejects(
-    runBoundedPi({
+    runBoundedAgent({
       prompt: "hang",
       timeoutMs: 20,
       createSession: async () => (session = new FakeSession("hang")),
     }),
-    PiRunTimeoutError,
+    AgentRunTimeoutError,
   );
   assert.equal(session.abortCalls, 1);
   assert.equal(session.unsubscribed, true);
@@ -90,14 +90,14 @@ test("Pi timeout aborts, unsubscribes, and disposes", async () => {
 test("Pi cancellation aborts, unsubscribes, and disposes", async () => {
   let session!: FakeSession;
   const controller = new AbortController();
-  const run = runBoundedPi({
+  const run = runBoundedAgent({
     prompt: "cancel",
     timeoutMs: 1000,
     signal: controller.signal,
     createSession: async () => (session = new FakeSession("hang")),
   });
   controller.abort();
-  await assert.rejects(run, PiRunCancelledError);
+  await assert.rejects(run, AgentRunCancelledError);
   assert.equal(session.abortCalls, 1);
   assert.equal(session.unsubscribed, true);
   assert.equal(session.disposed, true);
@@ -106,19 +106,19 @@ test("Pi cancellation aborts, unsubscribes, and disposes", async () => {
 test("Pi prompt errors still unsubscribe and dispose", async () => {
   let unsubscribed = false;
   let disposed = false;
-  const failingSession: PiSessionLike = {
+  const failingSession: AgentSessionLike = {
     subscribe: () => () => { unsubscribed = true; },
     prompt: async () => { throw new Error("provider failed"); },
     abort: async () => {},
     dispose: () => { disposed = true; },
   };
   await assert.rejects(
-    runBoundedPi({ prompt: "error", timeoutMs: 1000, createSession: async () => failingSession }),
+    runBoundedAgent({ prompt: "error", timeoutMs: 1000, createSession: async () => failingSession }),
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.equal(error.message, "provider failed");
-      assert.equal(error instanceof PiRunCancelledError, false);
-      assert.equal(error instanceof PiRunTimeoutError, false);
+      assert.equal(error instanceof AgentRunCancelledError, false);
+      assert.equal(error instanceof AgentRunTimeoutError, false);
       return true;
     },
   );
@@ -128,7 +128,7 @@ test("Pi prompt errors still unsubscribe and dispose", async () => {
 
 test("Pi session.prompt receives the expected prompt string", async () => {
   let session!: FakeSession;
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "expected prompt",
     timeoutMs: 1000,
     createSession: async () => (session = new FakeSession("ok")),
@@ -139,7 +139,7 @@ test("Pi session.prompt receives the expected prompt string", async () => {
 test("Pi forwards image attachments to session.prompt", async () => {
   let session!: FakeSession;
   const images = [{ type: "image" as const, data: "cG5n", mimeType: "image/png" }];
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "inspect these pages",
     images,
     timeoutMs: 1000,
@@ -161,7 +161,7 @@ test("text_delta events are forwarded via onEvent and accumulated", async () => 
   };
   const forwarded: unknown[] = [];
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "hello",
     timeoutMs: 1000,
     runId: "text-delta",
@@ -182,7 +182,7 @@ test("thinking_delta events are recorded via onEvent", async () => {
     assistantMessageEvent: { type: "thinking_delta", delta: "hmm" },
   };
   const forwarded: unknown[] = [];
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "think",
     timeoutMs: 1000,
     onEvent: (event) => { forwarded.push(event); },
@@ -193,7 +193,7 @@ test("thinking_delta events are recorded via onEvent", async () => {
 
 test("Pi successful prompt still unsubscribes and disposes", async () => {
   let session!: FakeSession;
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "ok",
     timeoutMs: 1000,
     createSession: async () => (session = new FakeSession("ok")),
@@ -210,7 +210,7 @@ test("unknown or malformed events do not crash the run", async () => {
     { no: "type" },
     { type: "message_update", message: "weird", assistantMessageEvent: { nested: { type: "text_delta" } } },
   ];
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "malformed",
     timeoutMs: 1000,
     createSession: async () => new FakeSession("ok", malformed),
@@ -224,12 +224,12 @@ test("losing prompt rejection after timeout is not unhandled", async () => {
   process.once("unhandledRejection", onUnhandled);
   try {
     await assert.rejects(
-      runBoundedPi({
+      runBoundedAgent({
         prompt: "hang",
         timeoutMs: 20,
         createSession: async () => (session = new FakeSession("late-reject")),
       }),
-      PiRunTimeoutError,
+      AgentRunTimeoutError,
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(unhandled, undefined);
@@ -244,14 +244,14 @@ test("Pi heartbeat calls onActivity and aborts an inactive session", async () =>
   let session!: FakeSession;
   let activityCount = 0;
   await assert.rejects(
-    runBoundedPi({
+    runBoundedAgent({
       prompt: "heartbeat",
       timeoutMs: 1_000,
       inactivityTimeoutMs: 30,
       onActivity: () => { activityCount += 1; },
       createSession: async () => (session = new FakeSession("hang", [{ type: "agent_start" }])),
     }),
-    PiRunTimeoutError,
+    AgentRunTimeoutError,
   );
   assert.equal(session.abortCalls, 1);
   assert.ok(activityCount >= 1);
@@ -260,7 +260,7 @@ test("Pi heartbeat calls onActivity and aborts an inactive session", async () =>
 test("Pi timeout records exactly one terminal lifecycle event", async () => {
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
   await assert.rejects(
-    runBoundedPi({
+    runBoundedAgent({
       prompt: "timeout lifecycle",
       timeoutMs: 1_000,
       inactivityTimeoutMs: 30,
@@ -268,7 +268,7 @@ test("Pi timeout records exactly one terminal lifecycle event", async () => {
       trajectory: (_runId, event) => { trajectory.push(event); },
       createSession: async () => new FakeSession("hang", [{ type: "agent_start" }]),
     }),
-    PiRunTimeoutError,
+    AgentRunTimeoutError,
   );
   const terminal = trajectory.filter(({ type }) => ["run_timed_out", "run_cancelled", "run_failed", "run_completed"].includes(type));
   assert.deepEqual(terminal.map(({ type }) => type), ["run_timed_out"]);
@@ -279,13 +279,13 @@ test("Pi flushes open tool state on success, failure, timeout, and cancellation"
   const cases = [
     { behavior: "ok" as const, expectedError: undefined },
     { behavior: "fail" as const, expectedError: new Error("provider failed") },
-    { behavior: "hang" as const, expectedError: new PiRunTimeoutError() },
-    { behavior: "hang" as const, expectedError: new PiRunCancelledError() },
+    { behavior: "hang" as const, expectedError: new AgentRunTimeoutError() },
+    { behavior: "hang" as const, expectedError: new AgentRunCancelledError() },
   ];
   for (const [index, current] of cases.entries()) {
     const trajectory: Array<{ type: string; payload?: unknown }> = [];
     const controller = new AbortController();
-    const run = runBoundedPi({
+    const run = runBoundedAgent({
       prompt: `tool ${index}`,
       timeoutMs: 1_000,
       inactivityTimeoutMs: current.behavior === "hang" ? 30 : 1_000,
@@ -312,14 +312,14 @@ test("Pi flushes assistant state on message_end, agent_end, and failure", async 
   for (const [index, current] of cases.entries()) {
     const trajectory: Array<{ type: string; payload?: unknown }> = [];
     await (current.behavior === "fail"
-      ? assert.rejects(runBoundedPi({
+      ? assert.rejects(runBoundedAgent({
         prompt: `assistant ${index}`,
         timeoutMs: 1_000,
         runId: `assistant-${index}`,
         trajectory: (_runId, event) => { trajectory.push(event); },
         createSession: async () => new FakeSession(current.behavior, current.events),
       }))
-      : runBoundedPi({
+      : runBoundedAgent({
         prompt: `assistant ${index}`,
         timeoutMs: 1_000,
         runId: `assistant-${index}`,
@@ -334,7 +334,7 @@ test("Pi flushes assistant state on message_end, agent_end, and failure", async 
 test("Pi exposes the final assistant text when only message_end has content", async () => {
   let text = "";
   const message = { role: "assistant", timestamp: 8, content: [{ type: "text", text: "{\"value\":\"ok\"}" }] };
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "structured",
     timeoutMs: 1_000,
     onAssistantText: value => { text = value; },
@@ -353,7 +353,7 @@ test("Pi extracts provider usage and leaves missing usage null", async () => {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.3 },
   };
   const received: unknown[] = [];
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "usage",
     timeoutMs: 1_000,
     onUsage: value => { received.push(value); },
@@ -366,7 +366,7 @@ test("Pi extracts provider usage and leaves missing usage null", async () => {
 
   const missingTrajectory: Array<{ type: string; payload?: unknown }> = [];
   const missingUsage: unknown[] = [];
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "missing usage",
     timeoutMs: 1_000,
     onUsage: value => { missingUsage.push(value); },
@@ -388,7 +388,7 @@ test("Pi records assistant usage once when text and thinking share a message", a
     totalTokens: 8,
     cost: { total: 0.3 },
   };
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "mixed assistant message",
     timeoutMs: 1_000,
     runId: "mixed-assistant-message",
@@ -411,26 +411,26 @@ test("Pi records assistant usage once when text and thinking share a message", a
 
 
 test("Pi classifies bounded and provider errors without confusing rejection with cancellation", () => {
-  assert.equal(classifyPiError(new PiRunTimeoutError()), "timeout");
-  assert.equal(classifyPiError(new PiRunCancelledError()), "cancelled");
-  assert.equal(classifyPiError(new Error("rate limit exceeded")), "rate_limit");
-  assert.equal(classifyPiError(new Error("HTTP 429")), "rate_limit");
-  assert.equal(classifyPiError(new Error("ECONNRESET while requesting provider")), "network");
-  assert.equal(classifyPiError(new Error("fetch failed")), "network");
-  assert.equal(classifyPiError(new Error("ENOTFOUND api.example.test")), "network");
-  assert.equal(classifyPiError(new Error("context length overflow")), "context_overflow");
-  assert.equal(classifyPiError(new Error("empty response")), "empty_response");
+  assert.equal(classifyAgentError(new AgentRunTimeoutError()), "timeout");
+  assert.equal(classifyAgentError(new AgentRunCancelledError()), "cancelled");
+  assert.equal(classifyAgentError(new Error("rate limit exceeded")), "rate_limit");
+  assert.equal(classifyAgentError(new Error("HTTP 429")), "rate_limit");
+  assert.equal(classifyAgentError(new Error("ECONNRESET while requesting provider")), "network");
+  assert.equal(classifyAgentError(new Error("fetch failed")), "network");
+  assert.equal(classifyAgentError(new Error("ENOTFOUND api.example.test")), "network");
+  assert.equal(classifyAgentError(new Error("context length overflow")), "context_overflow");
+  assert.equal(classifyAgentError(new Error("empty response")), "empty_response");
   const structured = new Error("Structured output failed after 2 attempts.");
   structured.name = "StructuredOutputError";
-  assert.equal(classifyPiError(structured), "structured_output");
-  assert.equal(classifyPiError(new Error("provider rejected request")), "provider");
-  assert.equal(classifyPiError("not an Error"), "unknown");
+  assert.equal(classifyAgentError(structured), "structured_output");
+  assert.equal(classifyAgentError(new Error("provider rejected request")), "provider");
+  assert.equal(classifyAgentError("not an Error"), "unknown");
 });
 
 test("Pi records context hashes while keeping secrets out of trajectory payloads", async () => {
   const prompt = "Use this token sk-testsecret only as untrusted text.";
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt,
     guidance: "Use grounded facts.",
     settings: { provider: "fixture", model: "test" },
@@ -455,7 +455,7 @@ test("Pi records context hashes while keeping secrets out of trajectory payloads
 
 test("Pi keeps telemetry text capped", async () => {
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
-  await runBoundedPi({
+  await runBoundedAgent({
     prompt: "x".repeat(2_000_010),
     timeoutMs: 1_000,
     runId: "telemetry-cap",
