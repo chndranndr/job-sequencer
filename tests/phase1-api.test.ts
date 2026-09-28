@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,6 +12,11 @@ import { createEmptyProfile } from "../src/shared.js";
 
 const fixture = { sourceId:"free-1", source:"freehire", url:"https://example.test/1", company:"Example", role:"Backend", location:"Remote", posting:"APIs", score:81, reason:"Strong", strengths:["TS"], gaps:[] };
 async function wait(app:any,id:string){ for(let i=0;i<30;i++){ const response=await app.inject({url:`/api/runs/${id}`}); const body=response.json(); if(body.status!=="running")return body; await new Promise(resolve=>setTimeout(resolve,5)); } throw new Error("run did not finish"); }
+function insert(db: ReturnType<typeof openDatabase>) {
+  const id = randomUUID();
+  db.prepare("INSERT INTO jobs(id,source_id,source,url,company,role,posting,score,rank_json,stage,first_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(id, id, "freehire", `https://example.test/${id}`, "Example", "Engineer", "Posting", 81, JSON.stringify({ reason: "fit", strengths: [], gaps: [] }), "Applied", "2026-08-12T00:00:00.000Z", "2026-08-12T00:00:00.000Z");
+  return id;
+}
 
 test("API saves configuration, runs scrape, filters discarded, and selection stays manual", async()=>{
   const dir=await mkdtemp(join(tmpdir(),"pjs-api-")); const db=openDatabase(":memory:");
@@ -135,6 +141,17 @@ test("migrated empty-model settings block live manual and profile-import runs", 
     assert.equal(imported.statusCode,409); assert.match(imported.json().error,/Select a Qoder model/i);
     const scraped=await app.inject({method:"POST",url:"/api/scrape"});
     assert.equal(scraped.statusCode,409); assert.match(scraped.json().error,/Select a Qoder model/i);
+  } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
+});
+
+test("migrated empty-model settings also block interview practice", async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"pjs-guard-interview-")); const db=openDatabase(":memory:");
+  await writeSettings(dir,{provider:"google",model:"gemini-2.5-pro",source:"freehire",enabledSources:["freehire"],customSources:[],sourceMaxAgeDays:{},scoreThreshold:60,maxResults:50,cvPages:2,coverLetterPages:1});
+  const jobId=insert(db);
+  const app=await buildServer({dataDir:dir,db});
+  try {
+    const interview=await app.inject({method:"POST",url:`/api/jobs/${jobId}/interview`,payload:{message:"hi"}});
+    assert.equal(interview.statusCode,409); assert.match(interview.json().error,/Select a Qoder model/i);
   } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
 });
 
