@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDatabase } from "../src/server/db.js";
 import { buildServer } from "../src/server/app.js";
 import { AgentRunTimeoutError } from "../src/server/agent.js";
-import { writeSettings, writeStructuredProfile } from "../src/server/config.js";
+import { readSettings, writeSettings, writeStructuredProfile } from "../src/server/config.js";
 import { createEmptyProfile } from "../src/shared.js";
 
 const fixture = { sourceId:"free-1", source:"freehire", url:"https://example.test/1", company:"Example", role:"Backend", location:"Remote", posting:"APIs", score:81, reason:"Strong", strengths:["TS"], gaps:[] };
@@ -146,7 +146,7 @@ test("migrated empty-model settings block live manual and profile-import runs", 
 
 test("migrated empty-model settings also block interview practice", async()=>{
   const dir=await mkdtemp(join(tmpdir(),"pjs-guard-interview-")); const db=openDatabase(":memory:");
-  await writeSettings(dir,{provider:"google",model:"gemini-2.5-pro",source:"freehire",enabledSources:["freehire"],customSources:[],sourceMaxAgeDays:{},scoreThreshold:60,maxResults:50,cvPages:2,coverLetterPages:1});
+  await writeFile(join(dir,"settings.json"),JSON.stringify({...(await readSettings(dir)),provider:"google",model:"gemini-2.5-pro"}));
   const jobId=insert(db);
   const app=await buildServer({dataDir:dir,db});
   try {
