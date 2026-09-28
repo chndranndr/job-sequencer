@@ -147,18 +147,6 @@ export function createLiveInterviewExecutor(pool: InterviewSessionPool): Intervi
   });
 }
 
-// Kept for callers that still import the one-shot executor; buildServer uses the pooled factory.
-export const liveInterviewExecutor: InterviewExecutor = async (context) => runTextSession(
-  [await interviewSystemPrompt(context), interviewRebuildPrompt(context)].join("\n"),
-  context.settings,
-  context.signal,
-  "You are a bounded mock interviewer. Do not invent candidate facts or job requirements.",
-  context.runId,
-  context.trajectory,
-  context.onDelta,
-  context.onUsage,
-);
-
 export const liveFollowUpExecutor: FollowUpExecutor = async (context) => runTextSession(
   [
     trustedSection("INSTRUCTIONS", "Draft one editable professional follow-up message. Return only the message body."),
