@@ -347,3 +347,35 @@ test("close clears pooled sessions and a new pool rebuilds from supplied history
     await restartedPool.close();
   }
 });
+
+test("pool defaults cap entries at 8 and expire sessions after 15 minutes", async () => {
+  let clock = 0;
+  const sessions: FakeSession[] = [];
+  const pool = new InterviewSessionPool({
+    now: () => clock,
+    createSession: async ({ systemPrompt }) => {
+      const session = new FakeSession(systemPrompt, "answer");
+      sessions.push(session);
+      return session;
+    },
+  });
+
+  try {
+    for (let index = 0; index < 8; index++) {
+      const jobId = `job-${index}`;
+      await pool.run(runInput({ jobId, systemPrompt: "context", prompt: "turn", rebuildPrompt: "rebuild" }));
+    }
+    assert.equal(pool.size(), 8);
+
+    await pool.run(runInput({ jobId: "job-8", systemPrompt: "context", prompt: "turn", rebuildPrompt: "rebuild" }));
+    assert.equal(pool.size(), 8);
+    assert.equal(sessions.length, 9);
+    assert.equal(sessions[0]?.disposed, true, "the oldest idle entry is evicted when the default cap is reached");
+
+    clock += 15 * 60 * 1000 + 1;
+    await pool.run(runInput({ jobId: "job-1", systemPrompt: "context", prompt: "turn", rebuildPrompt: "rebuild" }));
+    assert.equal(sessions.length, 10, "the default TTL expired the pooled entry and the next turn rebuilds");
+  } finally {
+    await pool.close();
+  }
+});

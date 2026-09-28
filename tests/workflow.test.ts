@@ -18,7 +18,7 @@ function insert(db: ReturnType<typeof openDatabase>, stage: "Applied" | "Intervi
 
 async function waitForRun(app: Awaited<ReturnType<typeof buildServer>>, id: string) {
   for (let attempt = 0; attempt < 100; attempt++) {
-    const run = (await app.inject({ url: `/api/runs/${id}` })).json() as { status: string };
+    const run = (await app.inject({ url: `/api/runs/${id}` })).json() as { status: string; error?: string };
     if (run.status !== "running" && run.status !== "queued") return run;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
@@ -212,6 +212,88 @@ test("pooled live interview keeps native sessions and SSE deltas across turns", 
     db.close();
     await rm(dir, { recursive: true, force: true });
     assert.equal(sessions[0]?.disposed, true);
+  }
+});
+
+test("cancel route disposes the pooled interview session and keeps saved messages", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-interview-cancel-"));
+  const db = openDatabase(":memory:");
+  const id = insert(db, "Applied");
+  const sessions: Array<{ promptTexts: string[]; disposed: boolean }> = [];
+  let hang = false;
+  const turn2Started = deferred();
+  let hangGate = deferred();
+  const app = await buildServer({
+    dataDir: dir,
+    db,
+    interviewSessionFactory: async ({ systemPrompt }) => {
+      const state = { promptTexts: [] as string[], disposed: false };
+      const listeners = new Set<(event: unknown) => void>();
+      const session: AgentSessionLike = {
+        systemPrompt,
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => { listeners.delete(listener); };
+        },
+        async prompt(text) {
+          state.promptTexts.push(text);
+          if (hang) {
+            turn2Started.resolve();
+            await hangGate.promise;
+            return;
+          }
+          const message = { role: "assistant", timestamp: state.promptTexts.length, content: [] };
+          for (const listener of listeners) listener({
+            type: "message_update",
+            message,
+            assistantMessageEvent: { type: "text_delta", delta: "Pooled response" },
+          });
+        },
+        async abort() {},
+        dispose() { state.disposed = true; },
+      };
+      sessions.push(state);
+      return session;
+    },
+  });
+  try {
+    const first = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "First answer." } });
+    assert.equal(first.statusCode, 202);
+    assert.equal((await waitForRun(app, first.json().runId)).status, "succeeded");
+    assert.equal(sessions.length, 1);
+    assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().interview_messages.length, 2);
+
+    hang = true;
+    const second = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "Second answer." } });
+    assert.equal(second.statusCode, 202);
+    const cancelledRunId = second.json().runId;
+    await turn2Started.promise;
+    const cancel = await app.inject({ method: "POST", url: `/api/runs/${cancelledRunId}/cancel` });
+    assert.deepEqual(cancel.json(), { ok: true });
+    const cancelledRun = await waitForRun(app, cancelledRunId);
+    assert.equal(cancelledRun.status, "cancelled");
+    assert.equal(cancelledRun.error, "Practice cancelled.");
+    assert.equal(sessions.length, 1, "the cancelled turn reuses the pooled session from the first turn");
+    assert.equal(sessions[0]?.disposed, true);
+    assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().interview_messages.length, 2);
+    const drainedStream = await app.inject({ url: `/api/jobs/${id}/interview/stream?runId=${encodeURIComponent(cancelledRunId)}` });
+    assert.equal(drainedStream.statusCode, 200);
+    assert.match(drainedStream.body, /event: done/);
+    const streamAfterDrain = await app.inject({ url: `/api/jobs/${id}/interview/stream?runId=${encodeURIComponent(cancelledRunId)}` });
+    assert.equal(streamAfterDrain.statusCode, 404);
+
+    hang = false;
+    hangGate.resolve();
+    const third = await app.inject({ method: "POST", url: `/api/jobs/${id}/interview`, payload: { message: "Third answer." } });
+    assert.equal(third.statusCode, 202);
+    assert.equal((await waitForRun(app, third.json().runId)).status, "succeeded");
+    assert.equal(sessions.length, 2, "the discarded session is rebuilt for the next turn");
+    assert.equal(sessions[1]?.disposed, false);
+    assert.equal((await app.inject({ url: `/api/jobs/${id}` })).json().interview_messages.length, 4);
+  } finally {
+    await app.close();
+    db.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
