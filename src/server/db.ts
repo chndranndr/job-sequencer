@@ -4,7 +4,6 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { advancedStages, jobStages, type JobStage } from "./stages.js";
 import { assertStageTransition, defaultGenerationDirection, type FollowUpContext, type GenerationDirection, type InterviewMessage, type Job, type Rank, type Run, type RunStatus, type TaskEventPayload, type TrajectoryEvent, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
-import { redactTelemetryText } from "../trajectory.js";
 import type { ScrapeResult } from "./scrape.js";
 
 const schema = `PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
@@ -504,33 +503,13 @@ export function markFollowUpSent(db: DatabaseSync, id: string, now = new Date().
   return getJobDetail(db, id);
 }
 
-const trajectoryPayloadLimits = {
-  system: 2_000_000,
-  user: 2_000_000,
-  assistant: 2_000_000,
-  thinking: 2_000_000,
-  tool_call: 250_000,
-  tool_update: 250_000,
-  tool_result: 250_000,
-  lifecycle: 50_000,
-  error: 50_000,
-} as const;
 
-const trajectorySecretKey = /(?:^|_)(?:api_key|apikey|token|secret|password|authorization|credential|credentials|cookie|private_key|access_token|bearer|auth|client_secret|refresh_token)(?:_|$)/;
-function isTrajectorySecretKey(key: string) {
-  const normalized = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_").toLowerCase();
-  return trajectorySecretKey.test(normalized);
-}
-
-function serializeTrajectoryPayload(value: unknown, limit: number) {
+function serializeTrajectoryPayload(value: unknown) {
   const seen = new WeakSet<object>();
-  let serialized: string;
   try {
-    serialized = JSON.stringify(value, (key, current: unknown) => {
-      if (key && isTrajectorySecretKey(key)) return "[redacted]";
+    return JSON.stringify(value, (_key, current: unknown) => {
       if (typeof current === "bigint") return `${current}n`;
-      if (current instanceof Error) return { name: current.name, message: redactTelemetryText(current.message) };
-      if (typeof current === "string") return redactTelemetryText(current);
+      if (current instanceof Error) return { name: current.name, message: current.message };
       if (current && typeof current === "object") {
         if (seen.has(current)) return "[Circular]";
         seen.add(current);
@@ -538,10 +517,8 @@ function serializeTrajectoryPayload(value: unknown, limit: number) {
       return current;
     }) ?? "null";
   } catch {
-    serialized = JSON.stringify({ unserializable: true });
+    return JSON.stringify({ unserializable: true });
   }
-  if (serialized.length <= limit) return serialized;
-  return JSON.stringify({ truncated: true, preview: serialized.slice(0, limit), originalChars: serialized.length });
 }
 
 export function appendRunTrajectoryEvent(db: DatabaseSync, runId: string, input: TrajectoryEventInput): TrajectoryEvent {
@@ -550,7 +527,7 @@ export function appendRunTrajectoryEvent(db: DatabaseSync, runId: string, input:
   const endedAt = input.endedAt ?? null;
   const durationMs = input.durationMs !== undefined && input.durationMs !== null && Number.isFinite(input.durationMs) ? input.durationMs : null;
   const sequence = Number((db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM run_trajectory_events WHERE run_id=?").get(runId) as { next: number }).next);
-  db.prepare("INSERT INTO run_trajectory_events(run_id,sequence,kind,event_type,timestamp,started_at,ended_at,duration_ms,payload_json) VALUES(?,?,?,?,?,?,?,?,?)").run(runId, sequence, input.kind, input.type, timestamp, startedAt, endedAt, durationMs, serializeTrajectoryPayload(input.payload ?? null, trajectoryPayloadLimits[input.kind]));
+  db.prepare("INSERT INTO run_trajectory_events(run_id,sequence,kind,event_type,timestamp,started_at,ended_at,duration_ms,payload_json) VALUES(?,?,?,?,?,?,?,?,?)").run(runId, sequence, input.kind, input.type, timestamp, startedAt, endedAt, durationMs, serializeTrajectoryPayload(input.payload ?? null));
   const row = db.prepare("SELECT payload_json FROM run_trajectory_events WHERE run_id=? AND sequence=?").get(runId, sequence) as { payload_json?: string } | undefined;
   return { runId, sequence, kind: input.kind, type: input.type, timestamp, startedAt, endedAt, durationMs, payload: jsonValue(row?.payload_json, null) } as TrajectoryEvent;
 }

@@ -10,12 +10,6 @@ import {
   type AgentPromptOptions,
 } from "../src/server/agent.js";
 
-const priorTelemetryMode = process.env.TELEMETRY_MODE;
-process.env.TELEMETRY_MODE = "redacted";
-test.after(() => {
-  if (priorTelemetryMode === undefined) delete process.env.TELEMETRY_MODE;
-  else process.env.TELEMETRY_MODE = priorTelemetryMode;
-});
 
 
 class FakeSession implements AgentSessionLike {
@@ -417,7 +411,7 @@ test("runner classifies bounded and provider errors without confusing rejection 
   assert.equal(classifyAgentError("not an Error"), "unknown");
 });
 
-test("runner records context hashes while keeping secrets out of trajectory payloads", async () => {
+test("runner records context hashes and the full prompt text in trajectory payloads", async () => {
   const prompt = "Use this token sk-testsecret only as untrusted text.";
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
   await runBoundedAgent({
@@ -440,10 +434,10 @@ test("runner records context hashes while keeping secrets out of trajectory payl
   assert.match(context?.guidanceHash ?? "", /^[0-9a-f]{64}$/);
   assert.match(context?.settingsHash ?? "", /^[0-9a-f]{64}$/);
   assert.match(context?.modelHash ?? "", /^[0-9a-f]{64}$/);
-  assert.doesNotMatch(JSON.stringify(trajectory), /sk-testsecret/);
+  assert.match(JSON.stringify(trajectory), /sk-testsecret/);
 });
 
-test("runner keeps telemetry text capped", async () => {
+test("runner records the full uncapped prompt text in trajectory payloads", async () => {
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
   await runBoundedAgent({
     prompt: "x".repeat(2_000_010),
@@ -453,5 +447,5 @@ test("runner keeps telemetry text capped", async () => {
     createSession: async () => new FakeSession("ok"),
   });
   const text = (trajectory.find(({ type }) => type === "user_prompt")?.payload as { text?: string } | undefined)?.text;
-  assert.equal(text?.length, 2_000_000);
+  assert.equal(text?.length, 2_000_010);
 });

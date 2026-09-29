@@ -4,7 +4,6 @@ import { createScrapeTools, type ScrapeTools } from "./scrape.js";
 import { createSourceRegistry, type SourceRegistry } from "./source-plugins.js";
 import type { Settings } from "./config.js";
 import { jobSourceLabel, type CustomJobSource, type JobSource, type TrajectoryEventInput, type TrajectoryRecorder } from "../shared.js";
-import { telemetryAssistantPayload, telemetryPromptPayload, telemetrySystemPromptPayload, telemetryToolPayload } from "./telemetry.js";
 import { QoderSession, createQoderSession, type QoderSessionOptions } from "./qoder.js";
 import { createAgentMcpServer, type AgentToolDefinition } from "./tools.js";
 import {
@@ -85,8 +84,10 @@ export async function getAvailableAgentModels(): Promise<AgentModelOption[]> {
   }
 }
 
-// ponytail: trajectory text cap remains 2 MB; raise after measured DB/storage capacity review.
-const trajectoryTextLimit = 2_000_000;
+function telemetryErrorText(error: unknown) {
+  const value = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return value.slice(0, 2_000);
+}
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
@@ -94,23 +95,6 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 function textValue(value: unknown) {
   return typeof value === "string" ? value : "";
-}
-
-export function redactTelemetryText(value: string, limit = trajectoryTextLimit) {
-  const safeLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : trajectoryTextLimit;
-  return value
-    .replace(/(https?:\/\/)([^/\s:@]+)(?::[^/\s@]*)?@/gi, "$1[redacted]@")
-    .replace(/\b(bearer|basic)\s+[^\s,}]+/gi, "$1 [redacted]")
-    .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|access_token|credential(?:s)?|client[_-]?secret|private[_-]?key|refresh[_-]?token)=)[^&#\s]*/gi, "$1[redacted]")
-    .replace(/([\"']?(?:credentials?|auth(?:orization)?|api[_-]?key|client[_-]?secret|private[_-]?key)[\"']?\s*[:=]\s*)\{[^{}]*\}/gi, "$1[redacted]")
-    .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|bearer|credential(?:s)?|client[_-]?secret|private[_-]?key|refresh[_-]?token)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]")
-    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, "[redacted]")
-    .slice(0, safeLimit);
-}
-
-function safeTelemetryError(error: unknown) {
-  const value = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-  return redactTelemetryText(value, 2_000);
 }
 
 function isoNow() { return new Date().toISOString(); }
@@ -240,8 +224,8 @@ function lifecyclePayload(event: Record<string, unknown>): unknown {
   if (type === "turn_start" || type === "turn_end") return { turnIndex: event.turnIndex };
   if (type === "agent_end") return { messageCount: Array.isArray(event.messages) ? event.messages.length : 0, willRetry: event.willRetry === true };
   if (type === "message_start" || type === "message_end") return { role: messageRole(event.message), timestamp: messageTimestamp(event.message) ?? null };
-  if (type === "auto_retry_start" || type === "auto_retry_end" || type === "summarization_retry_scheduled") return { attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, success: event.success === true, error: event.errorMessage ? safeTelemetryError(event.errorMessage) : undefined };
-  if (type === "compaction_start" || type === "compaction_end") return { reason: event.reason, aborted: event.aborted === true, willRetry: event.willRetry === true, error: event.errorMessage ? safeTelemetryError(event.errorMessage) : undefined };
+  if (type === "auto_retry_start" || type === "auto_retry_end" || type === "summarization_retry_scheduled") return { attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, success: event.success === true, error: event.errorMessage ? telemetryErrorText(event.errorMessage) : undefined };
+  if (type === "compaction_start" || type === "compaction_end") return { reason: event.reason, aborted: event.aborted === true, willRetry: event.willRetry === true, error: event.errorMessage ? telemetryErrorText(event.errorMessage) : undefined };
   if (type === "entry_appended") return { entryType: isRecord(event.entry) ? event.entry.type : undefined };
   if (type === "thinking_level_changed") return { level: event.level };
   if (type === "session_info_changed") return { name: typeof event.name === "string" ? event.name : undefined };
@@ -328,15 +312,15 @@ export async function runBoundedAgent<T = void>(options: {
       provider: textValue(state.message.provider) || undefined,
       model: textValue(state.message.model) || undefined,
       stopReason: textValue(state.message.stopReason) || undefined,
-      error: state.message.errorMessage ? safeTelemetryError(state.message.errorMessage) : undefined,
+      error: state.message.errorMessage ? telemetryErrorText(state.message.errorMessage) : undefined,
     } : {};
     const usage = state.usage ?? null;
     if (state.usage) reportUsage(key, state.usage);
     if (state.text) {
       try { options.onAssistantText?.(state.text); } catch { /* output capture is deliberately non-fatal */ }
     }
-    if (state.text) record({ kind: "assistant", type: "assistant_message", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.text), ...metadata, usage }, redactTelemetryText) });
-    if (state.thinking) record({ kind: "thinking", type: "assistant_thinking", startedAt: state.startedAt, endedAt, durationMs, payload: telemetryAssistantPayload({ text: redactTelemetryText(state.thinking), ...metadata, usage: state.text ? null : usage }, redactTelemetryText) });
+    if (state.text) record({ kind: "assistant", type: "assistant_message", startedAt: state.startedAt, endedAt, durationMs, payload: { text: state.text, ...metadata, usage } });
+    if (state.thinking) record({ kind: "thinking", type: "assistant_thinking", startedAt: state.startedAt, endedAt, durationMs, payload: { text: state.thinking, ...metadata, usage: state.text ? null : usage } });
     assistantStates.delete(key);
     finalizedAssistants.add(key);
   };
@@ -348,8 +332,8 @@ export async function runBoundedAgent<T = void>(options: {
   const flushTools = () => {
     for (const state of toolStates.values()) {
       const endedAt = isoNow();
-      if (state.partialResult !== undefined) record({ kind: "tool_update", type: "tool_execution_update", startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: telemetryToolPayload({ toolCallId: state.toolCallId, toolName: state.toolName, partialResult: state.partialResult }, redactTelemetryText) });
-      record({ kind: "tool_result", type: "tool_execution_end", startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: telemetryToolPayload({ toolCallId: state.toolCallId, toolName: state.toolName, result: state.partialResult ?? null, isError: true, interrupted: true }, redactTelemetryText) });
+      if (state.partialResult !== undefined) record({ kind: "tool_update", type: "tool_execution_update", startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: { toolCallId: state.toolCallId, toolName: state.toolName, partialResult: state.partialResult } });
+      record({ kind: "tool_result", type: "tool_execution_end", startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: { toolCallId: state.toolCallId, toolName: state.toolName, result: state.partialResult ?? null, isError: true, interrupted: true } });
     }
     toolStates.clear();
   };
@@ -375,7 +359,7 @@ export async function runBoundedAgent<T = void>(options: {
           if (parts.text.length >= state.text.length) state.text = parts.text;
           if (parts.thinking.length >= state.thinking.length) state.thinking = parts.thinking;
           assistantStates.set(key, state);
-          if (assistantEvent?.type === "error") record({ kind: "error", type: "assistant_stream_error", payload: { reason: assistantEvent.reason, error: isRecord(assistantEvent.error) && assistantEvent.error.errorMessage ? safeTelemetryError(assistantEvent.error.errorMessage) : "Assistant stream failed." } });
+          if (assistantEvent?.type === "error") record({ kind: "error", type: "assistant_stream_error", payload: { reason: assistantEvent.reason, error: isRecord(assistantEvent.error) && assistantEvent.error.errorMessage ? telemetryErrorText(assistantEvent.error.errorMessage) : "Assistant stream failed." } });
         }
       }
     } else if (type === "message_end" && messageRole(event.message) === "assistant") {
@@ -386,7 +370,7 @@ export async function runBoundedAgent<T = void>(options: {
       const toolCallId = textValue(event.toolCallId) || `tool-${toolStates.size + 1}`;
       const startedAt = isoNow();
       toolStates.set(toolCallId, { toolCallId, toolName: textValue(event.toolName), args: event.args, startedAt });
-      record({ kind: "tool_call", type, startedAt, payload: telemetryToolPayload({ toolCallId, toolName: textValue(event.toolName), args: event.args }, redactTelemetryText) });
+      record({ kind: "tool_call", type, startedAt, payload: { toolCallId, toolName: textValue(event.toolName), args: event.args } });
     } else if (type === "tool_execution_update") {
       const toolCallId = textValue(event.toolCallId) || `tool-${toolStates.size + 1}`;
       const state = toolStates.get(toolCallId) ?? { toolCallId, toolName: textValue(event.toolName), args: event.args, startedAt: isoNow() };
@@ -397,10 +381,10 @@ export async function runBoundedAgent<T = void>(options: {
       const state = toolStates.get(toolCallId) ?? { toolCallId, toolName: textValue(event.toolName), args: undefined, startedAt: isoNow() };
       if (state.partialResult !== undefined) {
         const updateEndedAt = isoNow();
-        record({ kind: "tool_update", type: "tool_execution_update", startedAt: state.startedAt, endedAt: updateEndedAt, durationMs: durationBetween(state.startedAt, updateEndedAt), payload: telemetryToolPayload({ toolCallId, toolName: state.toolName, partialResult: state.partialResult }, redactTelemetryText) });
+        record({ kind: "tool_update", type: "tool_execution_update", startedAt: state.startedAt, endedAt: updateEndedAt, durationMs: durationBetween(state.startedAt, updateEndedAt), payload: { toolCallId, toolName: state.toolName, partialResult: state.partialResult } });
       }
       const endedAt = isoNow();
-      record({ kind: "tool_result", type, startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: telemetryToolPayload({ toolCallId, toolName: textValue(event.toolName) || state.toolName, result: event.result, isError: event.isError === true }, redactTelemetryText) });
+      record({ kind: "tool_result", type, startedAt: state.startedAt, endedAt, durationMs: durationBetween(state.startedAt, endedAt), payload: { toolCallId, toolName: textValue(event.toolName) || state.toolName, result: event.result, isError: event.isError === true } });
       toolStates.delete(toolCallId);
     }
     if (type && !type.startsWith("tool_execution_") && type !== "message_update") {
@@ -420,7 +404,7 @@ export async function runBoundedAgent<T = void>(options: {
       startedAt: sessionStartedAt,
       endedAt,
       durationMs: durationBetween(sessionStartedAt, endedAt),
-      payload: error === undefined ? null : { error: safeTelemetryError(error), errorCode },
+      payload: error === undefined ? null : { error: telemetryErrorText(error), errorCode },
     });
   };
 
@@ -439,14 +423,14 @@ export async function runBoundedAgent<T = void>(options: {
     let activeToolNames: string[] = [];
     let tools: unknown[] = [];
     let sessionModel = options.model;
-    try { systemPrompt = textValue(session.systemPrompt); } catch (error) { record({ kind: "error", type: "system_prompt_read_error", payload: { error: safeTelemetryError(error) } }); }
-    try { activeToolNames = session.getActiveToolNames?.() ?? []; } catch (error) { record({ kind: "error", type: "active_tools_read_error", payload: { error: safeTelemetryError(error) } }); }
-    try { tools = session.getAllTools?.() ?? []; } catch (error) { record({ kind: "error", type: "tool_catalog_read_error", payload: { error: safeTelemetryError(error) } }); }
+    try { systemPrompt = textValue(session.systemPrompt); } catch (error) { record({ kind: "error", type: "system_prompt_read_error", payload: { error: telemetryErrorText(error) } }); }
+    try { activeToolNames = session.getActiveToolNames?.() ?? []; } catch (error) { record({ kind: "error", type: "active_tools_read_error", payload: { error: telemetryErrorText(error) } }); }
+    try { tools = session.getAllTools?.() ?? []; } catch (error) { record({ kind: "error", type: "tool_catalog_read_error", payload: { error: telemetryErrorText(error) } }); }
     if (sessionModel === undefined) {
-      try { sessionModel = session.model; } catch (error) { record({ kind: "error", type: "model_read_error", payload: { error: safeTelemetryError(error) } }); }
+      try { sessionModel = session.model; } catch (error) { record({ kind: "error", type: "model_read_error", payload: { error: telemetryErrorText(error) } }); }
     }
-    record({ kind: "system", type: "system_prompt", payload: telemetrySystemPromptPayload(systemPrompt, redactTelemetryText) });
-    record({ kind: "system", type: "tool_catalog", payload: telemetryToolPayload({ activeToolNames, tools }, redactTelemetryText) });
+    record({ kind: "system", type: "system_prompt", payload: { text: systemPrompt } });
+    record({ kind: "system", type: "tool_catalog", payload: { activeToolNames, tools } });
     record({
       kind: "system",
       type: "run_context",
@@ -458,7 +442,7 @@ export async function runBoundedAgent<T = void>(options: {
       },
     });
     unsubscribe = session.subscribe((event) => { handleEvent(event); options.onEvent?.(event); });
-    record({ kind: "user", type: "user_prompt", payload: telemetryPromptPayload(options.prompt, redactTelemetryText) });
+    record({ kind: "user", type: "user_prompt", payload: { text: options.prompt } });
     record({ kind: "lifecycle", type: "prompt_start", startedAt: isoNow(), payload: null });
     const onAbort = () => {
       if (session && rejectOutcome) void abortAndReject(session, new AgentRunCancelledError(), rejectOutcome);

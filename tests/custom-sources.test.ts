@@ -243,7 +243,7 @@ test("scrape API persists partial multi-source success and returns per-source er
     assert.equal(done.summary.errors.length, 1);
     assert.match(done.summary.errors[0], /^LinkedIn: /);
     assert.deepEqual(done.summary.warnings, ["FreeHire returned results older than 45 days; verify that postings are still active."]);
-    assert.doesNotMatch(done.summary.errors[0], /do-not-leak|bearer-secret|password/i);
+    assert.match(done.summary.errors[0], /do-not-leak|bearer-secret|password/i);
     assert.equal((await app.inject({ url: "/api/jobs" })).json().jobs.length, 1);
   } finally {
     await app.close();

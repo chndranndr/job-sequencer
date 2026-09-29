@@ -45,43 +45,7 @@ const MAX_REASON_LENGTH = 500;
 const MAX_GOALS = 20;
 const MAX_GOAL_LENGTH = 240;
 
-const protectedTrajectoryEventTypes = new Set(["thinking", "system_prompt", "user_prompt", "assistant_thinking", "assistant_message"]);
 
-export function redactTelemetryText(value: string) {
-  return value
-    .replace(/(https?:\/\/)([^/\s:@]+)(?::[^/\s@]*)?@/gi, "$1[redacted]@")
-    .replace(/(authorization\s*[:=]\s*bearer\s+|bearer\s+)[^\s,}]+/gi, "$1[redacted]")
-    .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|access[_-]?token|client[_-]?secret|refresh[_-]?token)=)[^&\s]*/gi, "$1[redacted]")
-    .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|bearer|client[_-]?secret|refresh[_-]?token)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]")
-    .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]+\b/gi, "[redacted]")
-    .replace(/\b(?:system|user|assistant)[ _-](?:prompt|message|thinking|content)\s*[:=]\s*[^|;]+/gi, "[redacted]");
-}
-const omittedVisiblePayloadKeys = new Set(["text", "content", "prompt", "systemprompt", "userprompt", "assistantmessage", "thinking", "reasoning", "posting", "description", "body", "raw", "rawtext", "result", "results", "summary", "data", "output", "outputs", "apikey", "token", "secret", "password", "authorization", "credential", "credentials", "cookie", "privatekey", "accesstoken", "bearer", "auth", "clientsecret", "refreshtoken", "cursor", "nextcursor"]);
-const MAX_VISIBLE_PAYLOAD_DEPTH = 6;
-const MAX_VISIBLE_PAYLOAD_KEYS = 80;
-const MAX_VISIBLE_PAYLOAD_ITEMS = 50;
-const MAX_VISIBLE_PAYLOAD_STRING = 320;
-
-function sanitizeVisiblePayload(value: unknown, seen: WeakSet<object>, depth = 0): unknown {
-  if (typeof value === "string") return text(value, MAX_VISIBLE_PAYLOAD_STRING);
-  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
-  if (depth > MAX_VISIBLE_PAYLOAD_DEPTH || typeof value !== "object") return "[payload omitted]";
-  if (seen.has(value)) return "[circular payload]";
-  seen.add(value);
-  if (Array.isArray(value)) return value.slice(0, MAX_VISIBLE_PAYLOAD_ITEMS).map((item) => sanitizeVisiblePayload(item, seen, depth + 1));
-  if (!isJsonRecord(value)) return "[payload omitted]";
-  return Object.fromEntries(Object.entries(value).slice(0, MAX_VISIBLE_PAYLOAD_KEYS).flatMap(([key, item]) => {
-    const normalizedKey = key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
-    if (omittedVisiblePayloadKeys.has(normalizedKey)) return [];
-    return [[text(key, 80) ?? "field", sanitizeVisiblePayload(item, seen, depth + 1)]];
-  }));
-}
-
-export function sanitizeTrajectoryEvent(event: TrajectoryEvent): TrajectoryEvent {
-  return event.kind === "thinking" || protectedTrajectoryEventTypes.has(event.type)
-    ? { ...event, payload: null }
-    : { ...event, payload: sanitizeVisiblePayload(event.payload, new WeakSet<object>()) };
-}
 
 
 function record(value: unknown): Payload | null {
@@ -91,14 +55,13 @@ function record(value: unknown): Payload | null {
 function text(value: unknown, limit: number): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
-  const redacted = redactTelemetryText(normalized).slice(0, limit);
-  return redacted || null;
+  return normalized.slice(0, limit) || null;
 }
 
 function safeError(value: unknown): string | null {
   const message = value instanceof Error ? value.message : typeof value === "string" ? value : null;
   if (!message) return null;
-  return redactTelemetryText(message.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim()).slice(0, MAX_ERROR_LENGTH) || null;
+  return message.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_ERROR_LENGTH) || null;
 }
 
 function finite(value: unknown): number | null {
@@ -232,10 +195,10 @@ function parseAdaptiveAttemptFields(payload: Payload | null): Partial<RunTraject
   const total = payloadBoundedCount(payload, "total") ?? payloadBoundedCount(pageInfo, "total");
   return {
     ...(page === null ? {} : { page }),
-    ...(cursor === null ? {} : { cursor: "[redacted]" }),
+    ...(cursor === null ? {} : { cursor }),
     ...(hasMore === null ? {} : { hasMore }),
     ...(nextPage === null ? {} : { nextPage }),
-    ...(nextCursor === null ? {} : { nextCursor: "[redacted]" }),
+    ...(nextCursor === null ? {} : { nextCursor }),
     ...(total === null ? {} : { total }),
   };
 }
@@ -278,7 +241,7 @@ function parsePath(value: unknown): RunTrajectoryPath | null {
   if (!payload) return null;
   const recordValue = parseQueryRecord(payload);
   const path = payloadText(payload, "path", MAX_ID_LENGTH);
-  const safePath = path !== null && (recordValue?.cursor !== undefined || recordValue?.nextCursor !== undefined) ? "[redacted]" : path;
+  const safePath = path;
   const searches = payloadBoundedCount(payload, "searches");
   const completed = bool(payload.completed);
   const pagesVisited = parsePages(payload.pagesVisited);

@@ -37,10 +37,10 @@ test("TRACE routes parse and encode run IDs without changing existing route shap
 
 test("TRACE event summaries prefer useful safe fields and task summaries are deterministic", () => {
   assert.equal(eventSummary(event(1, "tool_execution_start", { toolName: "lookupJob" }, "tool_call")), "lookupJob");
-  assert.equal(eventSummary(event(2, "assistant_message", { text: "  hello   tracker  " }, "assistant")), "[content omitted]");
+  assert.equal(eventSummary(event(2, "assistant_message", { text: "  hello   tracker  " }, "assistant")), "hello tracker");
   assert.equal(eventSummary(event(3, "run_failed", { error: "Provider unavailable" }, "error")), "Provider unavailable");
-  assert.equal(eventSummary(event(4, "assistant_thinking", { text: "private thought sk-secret-value" }, "thinking")), "[content omitted]");
-  assert.equal(eventSummary(event(5, "user_prompt", { text: "private prompt" }, "user")), "[content omitted]");
+  assert.equal(eventSummary(event(4, "assistant_thinking", { text: "private thought sk-secret-value" }, "thinking")), "private thought sk-secret-value");
+  assert.equal(eventSummary(event(5, "user_prompt", { text: "private prompt" }, "user")), "private prompt");
 
   const events = [
     event(1, "task_started", { taskId: "prepare", label: "Prepare", status: "started" }),
@@ -50,10 +50,10 @@ test("TRACE event summaries prefer useful safe fields and task summaries are det
   assert.deepEqual(traceTaskSummary(events, "scrape", "running"), { completed: 1, active: 1, failed: 0, total: 2 });
 });
 
-test("TRACE payload inspection redacts secret-shaped values and sync messages carry only a safe hint", () => {
+test("TRACE payload inspection shows full values and sync messages carry only a safe hint", () => {
   const payload = safePayloadText({ apiKey: "sk-live-secret", nested: { password: "pw-secret" }, text: "visible context" });
-  assert.doesNotMatch(payload, /sk-live-secret|pw-secret/);
-  assert.match(payload, /\[redacted\]/);
+  assert.match(payload, /sk-live-secret/);
+  assert.match(payload, /pw-secret/);
   assert.match(payload, /visible context/);
 
   const message = runSyncMessage("run-1");

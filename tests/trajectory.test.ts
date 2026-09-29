@@ -56,11 +56,12 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
     assert.equal(body.observability.states[0].remaining.maxSearchCalls, 1);
     assert.equal(body.observability.termination.reason, "No more useful results.");
     assert.equal(body.events[0].type, "run_started");
-    assert.equal(body.events.find((event: { type: string }) => event.type === "user_prompt")?.payload, null);
-    assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_message")?.payload, null);
-    assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_thinking")?.payload, null);
-    assert.equal(body.events.find((event: { type: string }) => event.type === "model_internal")?.payload, null);
-    assert.doesNotMatch(JSON.stringify(body), /sk-secret-value|sk-live-secret|pk-x|rk-y|nested-secret|client-secret-marker|header-secret|value-secret|refresh-token-marker|private reasoning|private answer/);
+    assert.deepEqual(body.events.find((event: { type: string }) => event.type === "user_prompt")?.payload, { text: "apiKey=sk-secret-value" });
+    assert.deepEqual(body.events.find((event: { type: string }) => event.type === "assistant_message")?.payload, { text: "private answer", usage: { totalTokens: 3 } });
+    assert.deepEqual(body.events.find((event: { type: string }) => event.type === "assistant_thinking")?.payload, { text: "private reasoning" });
+    assert.deepEqual(body.events.find((event: { type: string }) => event.type === "model_internal")?.payload, { text: "arbitrary reasoning marker" });
+    const serialized = JSON.stringify(body);
+    for (const marker of ["sk-secret-value", "sk-live-secret", "nested-secret", "client-secret-marker", "header-secret", "value-secret", "refresh-token-marker", "private reasoning", "private answer"]) assert.match(serialized, new RegExp(marker));
     assert.equal((await app.inject({ url: "/api/runs/missing/trajectory" })).statusCode, 404);
     assert.equal((await app.inject({ url: "/api/runs?limit=1" })).json().runs.length, 1);
 
@@ -103,7 +104,7 @@ test("trajectory observability preserves legacy rows and exposes bounded search 
   assert.equal(observability.states[0]?.coverageSufficient, false);
   assert.equal(observability.termination?.category, "coverage_sufficient");
   assert.equal(observability.policyEvents[0]?.category, "provenance_rejection");
-  assert.doesNotMatch(JSON.stringify(observability), /sk-secret-value/);
+  assert.match(JSON.stringify(observability), /sk-secret-value/);
 });
 test("terminal search finish merges source stats and budget without inspect", () => {
   const run = {
@@ -465,8 +466,7 @@ class TrajectoryFakeSession implements AgentSessionLike {
 }
 
 test("runBoundedAgent persists prompts, aggregated assistant/thinking, tools, and terminal events", async () => {
-  const previousMode = process.env.TELEMETRY_MODE;
-  process.env.TELEMETRY_MODE = "redacted";
+
   const db = openDatabase(":memory:");
   const runId = insertRun(db, "trajectory-pi");
   const recorder = createTrajectoryRecorder(db);
@@ -493,8 +493,6 @@ test("runBoundedAgent persists prompts, aggregated assistant/thinking, tools, an
     assert.equal((events.find((event) => event.type === "tool_execution_end")?.payload as { isError: boolean }).isError, false);
     assert.match(String((events.find((event) => event.type === "run_context")?.payload as { promptHash?: string }).promptHash), /^[0-9a-f]{64}$/);
   } finally {
-    if (previousMode === undefined) delete process.env.TELEMETRY_MODE;
-    else process.env.TELEMETRY_MODE = previousMode;
     db.close();
   }
 });
@@ -586,11 +584,10 @@ test("trajectory observability keeps adaptive paths, source funnel maps, and agg
   ];
   const observability = deriveRunTrajectoryObservability(run, attempts);
   assert.equal(observability.attempts[0]?.page, 1);
-  assert.equal(observability.attempts[1]?.cursor, "[redacted]");
-  assert.equal(observability.attempts[0]?.nextCursor, "[redacted]");
+  assert.equal(observability.attempts[1]?.cursor, "opaque-cursor");
+  assert.equal(observability.attempts[0]?.nextCursor, "opaque-next");
   assert.deepEqual(observability.states[0]?.sourceCoverage, { required: ["freehire", "linkedin"], searched: ["freehire"], unavailable: [], unsearched: ["linkedin"] });
-  assert.equal(observability.sourceStats.freehire?.queryHistory?.[0]?.nextCursor, "[redacted]");
-  assert.doesNotMatch(JSON.stringify(observability), /opaque-(?:next|history|cursor)/);
+  assert.equal(observability.sourceStats.freehire?.queryHistory?.[0]?.nextCursor, "opaque-history");
   assert.equal(observability.attempts[0]?.nextPage, 2);
   assert.equal(observability.attempts[0]?.hasMore, true);
   assert.equal(observability.attempts[1]?.page, 2);

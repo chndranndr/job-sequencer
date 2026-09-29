@@ -276,7 +276,7 @@ try {
   await expect(page.locator(".trace-observability")).toContainText("platform engineer");
   await expect(page.locator(".trace-observability")).toContainText("Coverage sufficient");
   await expect(page.locator(".trace-observability")).toContainText("budget");
-  await expect(page.locator(".trace-observability")).not.toContainText("smoke-secret-value");
+  await expect(page.locator(".trace-event-body").filter({ hasText: "smoke-secret-value" })).toHaveCount(1);
   await assertNoOverflow(page, "desktop #/trace/adaptive");
 
   await openTracker(page, base, "#/pattern");

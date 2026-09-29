@@ -358,43 +358,7 @@ function isRemoteLocation(value: unknown) {
 }
 
 function safeError(value: unknown) {
-  return text(value instanceof Error ? value.message : value, 320)
-    .replace(/(https?:\/\/)([^/\s:@]+)(?::[^/\s@]*)?@/gi, "$1[redacted]@")
-    .replace(/(authorization\s*[:=]\s*bearer\s+|bearer\s+)[^\s,}]+/gi, "$1[redacted]")
-    .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|access_token)=)[^&\s]*/gi, "$1[redacted]")
-    .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|bearer)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]");
-}
-function telemetryPageInfo(value: SearchPageInfo | undefined) {
-  if (!value) return null;
-  return { ...value, ...(value.nextCursor === undefined ? {} : { nextCursor: "[redacted]" }) };
-}
-
-function telemetryQuery(value: SearchQueryTelemetry) {
-  return {
-    ...value,
-    ...(value.cursor === undefined ? {} : { cursor: "[redacted]" }),
-    ...(value.nextCursor === undefined ? {} : { nextCursor: "[redacted]" }),
-  };
-}
-
-function telemetryPath(value: SearchPathTelemetry) {
-  return {
-    ...value,
-    ...(value.cursor === undefined ? {} : { path: "[redacted]", cursor: "[redacted]" }),
-    ...(value.nextCursor === undefined ? {} : { nextCursor: "[redacted]" }),
-  };
-}
-
-function telemetryRecommendation(value: SearchRecommendation | null) {
-  if (!value) return null;
-  return {
-    ...value,
-    ...(value.cursor === undefined ? {} : { cursor: "[redacted]" }),
-  };
-}
-
-function telemetrySourceStats(value: SearchSourceStats) {
-  return { ...value, queryHistory: value.queryHistory.map(telemetryQuery) };
+  return text(value instanceof Error ? value.message : value, 320);
 }
 
 function copyHit(hit: SearchHit): SearchHit {
@@ -592,8 +556,8 @@ export class AgentSearchState {
       location: attempt.location ? text(attempt.location, 120) : null,
       intent: attempt.intent ? text(attempt.intent, 200) : null,
       page: attempt.page ?? null,
-      cursor: attempt.cursor ? "[redacted]" : null,
-      pageInfo: telemetryPageInfo(attempt.pageInfo),
+      cursor: attempt.cursor ?? null,
+      pageInfo: attempt.pageInfo ?? null,
       repeatCount: attempt.repeatCount ?? null,
       requestedLimit: attempt.requestedLimit ?? null,
       resultCount: attempt.resultCount ?? null,
@@ -1311,7 +1275,7 @@ export class AgentSearchState {
     const coverageState = this.coverageDetails();
     if (this.adaptive && decision.nextSearch) {
       const error = new Error("Adaptive search still has viable work.");
-      this.record("search_finish_rejected", { reason: normalizedReason, reasonCategory: terminationReasonCategory, nextSearch: telemetryRecommendation(decision.nextSearch), plannerStop: decision.plannerStop, error: error.message }, "error");
+      this.record("search_finish_rejected", { reason: normalizedReason, reasonCategory: terminationReasonCategory, nextSearch: decision.nextSearch, plannerStop: decision.plannerStop, error: error.message }, "error");
       throw error;
     }
     if (terminationReasonCategory === "budget_exhausted" && !anyBudgetExhausted) {
@@ -1327,14 +1291,14 @@ export class AgentSearchState {
     this.terminationValue = { reason: normalizedReason, reasonCategory: terminationReasonCategory, unresolvedGoals: goals, finishedAt: isoTime(this.now()) };
     const { coverage, coverageSufficient } = coverageState;
     const marginalUtility = this.marginalUtility();
-    const sourceStats = Object.fromEntries([...this.sourceStatsByKey.entries()].map(([source, stats]) => [source, telemetrySourceStats(stats)]));
+    const sourceStats = Object.fromEntries([...this.sourceStatsByKey.entries()].map(([source, stats]) => [source, stats]));
     this.record("search_finished", {
       attemptId: null, operation: null, status: null, source: null, query: null, location: null, intent: null, repeatCount: null,
       requestedLimit: null, resultCount: null, uniqueResultCount: null, duplicateCount: null, promisingResultCount: null, latencyMs: null,
       sourceId: null, resultId: null, resultIdLength: null, error: null, errorCategory: null, reason: normalizedReason,
       reasonCategory: this.terminationValue.reasonCategory, unresolvedGoals: goals, termination: { ...this.terminationValue, unresolvedGoals: [...goals] },
       counts: { unique: this.uniqueCountValue, discovered: this.discoveredCountValue, enriched: this.enrichedKeys.size }, coverage, coverageSufficient,
-      sourceCoverage, marginalUtility, sourceStats, remaining, budget: this.budget, nextSearch: telemetryRecommendation(decision.nextSearch), plannerStop: decision.plannerStop,
+      sourceCoverage, marginalUtility, sourceStats, remaining, budget: this.budget, nextSearch: decision.nextSearch, plannerStop: decision.plannerStop,
     });
     return this.termination;
   }
@@ -1370,15 +1334,15 @@ export class AgentSearchState {
       counts: snapshot.counts,
       remaining: snapshot.remaining,
       budget: this.budget,
-      sourceStats: Object.fromEntries(Object.entries(snapshot.sourceStats).map(([source, stats]) => [source, telemetrySourceStats(stats)])),
+      sourceStats: snapshot.sourceStats,
       sourceCoverage: snapshot.sourceCoverage,
       coverage: snapshot.coverage,
       marginalUtility: snapshot.marginalUtility,
       coverageSufficient: snapshot.coverageSufficient,
-      nextSearch: telemetryRecommendation(snapshot.nextSearch),
+      nextSearch: snapshot.nextSearch,
       plannerStop: snapshot.plannerStop,
       queryHistory: snapshot.queryHistory,
-      paths: snapshot.paths.map(telemetryPath),
+      paths: snapshot.paths,
       termination: snapshot.termination ? {
         ...snapshot.termination,
         unresolvedGoals: [...snapshot.termination.unresolvedGoals],

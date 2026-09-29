@@ -73,15 +73,7 @@ function normalizedFunnelQuery(value: string) {
   return value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
 }
 
-function redactFunnelContinuation(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const record = value as Record<string, unknown>;
-  return {
-    ...record,
-    ...(record.cursor === undefined ? {} : { cursor: "[redacted]" }),
-    ...(record.nextCursor === undefined ? {} : { nextCursor: "[redacted]" }),
-  };
-}
+
 function buildScrapeFunnel(tools: AgentSearchTools, criteria: Criteria, selectedJobs: number): ScrapeFunnel {
   const snapshot = tools.state.snapshot();
   const enabledSources = [...snapshot.goal.enabledSources];
@@ -133,7 +125,7 @@ function buildScrapeFunnel(tools: AgentSearchTools, criteria: Criteria, selected
       duplicateRate: sourceStats.duplicateRate,
       averageYield: sourceStats.averageYield,
       lastYield: sourceStats.lastYield,
-      queryHistory: sourceStats.queryHistory.map(redactFunnelContinuation),
+      queryHistory: [...sourceStats.queryHistory],
     };
   }
   const detailFetches = snapshot.attempts.filter(attempt => attempt.operation === "detail" && attempt.status !== "rejected").length;
@@ -167,11 +159,6 @@ const maxSourceMessageLength = 240;
 function sanitizeSourceReason(error: unknown) {
   let reason = error instanceof Error ? error.message : String(error);
   reason = reason.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
-  reason = reason
-    .replace(/(https?:\/\/)([^/\s:@]+)(?::[^/\s@]*)?@/gi, "$1[redacted]@")
-    .replace(/(authorization\s*[:=]\s*bearer\s+|bearer\s+)[^\s,}]+/gi, "$1[redacted]")
-    .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|access_token)=)[^&\s]*/gi, "$1[redacted]")
-    .replace(/(["']?(?:api[_-]?key|apikey|token|secret|password|authorization|bearer)["']?\s*[:=]\s*["']?)[^"'\s,}]+/gi, "$1[redacted]");
   return (reason || "unknown source error").slice(0, maxSourceMessageLength);
 }
 
