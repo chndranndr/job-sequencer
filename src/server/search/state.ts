@@ -9,6 +9,8 @@ export function searchProvenanceKey(source: JobSource, sourceId: string) {
   return `${source}${provenanceSeparator}${sourceId}`;
 }
 
+// Measurement mode: run-duration budget raised to 999 minutes so scrape can
+// complete for latency measurement. Restore max(3_600_000) and default 120_000 after.
 export const SearchBudgetSchema = z.object({
   targetUniqueJobs: z.number().int().min(0).max(500),
   maxSearchCalls: z.number().int().min(0).max(100),
@@ -18,7 +20,7 @@ export const SearchBudgetSchema = z.object({
   maxSearchesPerSource: z.number().int().min(1).max(100),
   maxPagesPerQuery: z.number().int().min(1).max(100),
   maxQueryVariantsPerSource: z.number().int().min(1).max(100),
-  maxRunDurationMs: z.number().int().min(0).max(3_600_000),
+  maxRunDurationMs: z.number().int().min(0).max(999 * 60_000),
 }).strict().superRefine((value, context) => {
   if (value.minSearchesPerSource > value.maxSearchesPerSource) {
     context.addIssue({ code: "custom", path: ["minSearchesPerSource"], message: "minSearchesPerSource cannot exceed maxSearchesPerSource." });
@@ -34,7 +36,7 @@ export const defaultSearchBudget: SearchBudget = Object.freeze({
   maxSearchesPerSource: 12,
   maxPagesPerQuery: 3,
   maxQueryVariantsPerSource: 6,
-  maxRunDurationMs: 120_000,
+  maxRunDurationMs: 999 * 60_000,
 });
 
 
