@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Removed all trace masking and omission: prompts, assistant messages, thinking, and tool payloads are recorded, persisted, and shown in TRACE in full for this local single-user app.
 - Made validated `data/profile.json` the canonical structured profile.
 - Preserved `data/profile.md` unchanged as a legacy backup/import source; the dashboard never edits both profiles independently.
 - Added allowlisted runtime reuse of the six mapped vendored Markdown guidance files.

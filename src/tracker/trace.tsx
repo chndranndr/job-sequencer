@@ -27,14 +27,7 @@ export function safePayloadText(value: unknown) {
 function summaryText(value: string) {
   return value.replace(/\s+/g, " ").trim().slice(0, 150);
 }
-
-
-
 export function eventSummary(event: TrajectoryEvent) {
-  if (event.kind === "thinking" || event.type === "system_prompt" || event.type === "user_prompt" || event.type === "assistant_thinking" || event.type === "assistant_message") {
-    const payload = record(event.payload);
-    if (typeof payload?.text === "string" && summaryText(payload.text)) return summaryText(payload.text);
-  }
   const payload = record(event.payload);
   if (typeof payload?.text === "string" && summaryText(payload.text)) return summaryText(payload.text);
   if (typeof payload?.toolName === "string") return summaryText(payload.toolName);
