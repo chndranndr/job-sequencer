@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { createTaskReporter, normalizeUrl, persistManualJob, type TaskReporter } from "./db.js";
 import type { Settings } from "./config.js";
-import { AgentRunCancelledError, AgentRunTimeoutError, classifyAgentError, createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage, type AgentSessionLike } from "./agent.js";
+import { AGENT_TURN_TIMEOUT_MS, AgentRunCancelledError, AgentRunTimeoutError, classifyAgentError, createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage, type AgentSessionLike } from "./agent.js";
 import { runBunCli } from "./scrape.js";
 import type { Criteria, TrajectoryRecorder } from "../shared.js";
 import { RunCoordinator } from "./coordinator.js";
@@ -512,7 +512,7 @@ export async function parseManualJobText(value: string, settings: Settings, opti
         let response = "";
         await runBoundedAgent({
           prompt: attemptPrompt,
-          timeoutMs: 120_000,
+          timeoutMs: AGENT_TURN_TIMEOUT_MS,
           signal: options.signal,
           createSession: options.createSession ?? (() => createRestrictedGenerationSession(settings, MANUAL_SYSTEM_PROMPT)),
           runId: options.runId,

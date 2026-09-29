@@ -181,8 +181,10 @@ export function classifyAgentError(error: unknown): AgentErrorCode {
   return error instanceof Error ? "provider" : "unknown";
 }
 
-// ponytail: heartbeat starts at 120 seconds; tune per workflow after latency metrics exist.
-const defaultInactivityTimeoutMs = 120_000;
+// Measurement mode: user wants full workflow latency without a timeout ceiling.
+// Restore 120_000 at every use once per-workflow timing is recorded.
+export const AGENT_TURN_TIMEOUT_MS = 999 * 60_000;
+const defaultInactivityTimeoutMs = AGENT_TURN_TIMEOUT_MS;
 const meaningfulEventTypes = new Set([
   "agent_start",
   "agent_end",

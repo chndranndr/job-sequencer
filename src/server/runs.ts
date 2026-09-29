@@ -5,7 +5,7 @@ import { createTaskReporter, insertSearchAttempt, persistScrape } from "./db.js"
 import { createScrapeTools, hydrateScrapeResult, provenanceKey, ScrapeResultSchema, validateScrapeResult, type ScrapeResult, type ScrapeTools, type ScrapeToolsOptions } from "./scrape.js";
 import { runRankVerifier } from "./verifier.js";
 import type { Criteria, Settings } from "./config.js";
-import { createLiveRestrictedScrapeSession, runBoundedAgent, type AgentSessionLike } from "./agent.js";
+import { AGENT_TURN_TIMEOUT_MS, createLiveRestrictedScrapeSession, runBoundedAgent, type AgentSessionLike } from "./agent.js";
 import { projectPromptContext, projectPromptText, untrustedSection } from "./context.js";
 import { loadGuidance } from "./guidance.js";
 import { generateJob, liveGenerationExecutor, type GenerationExecutor } from "./generation.js";
@@ -680,7 +680,7 @@ export function createLiveSourceScrapeExecutor(dependencies: LiveSourceScrapeDep
           try {
             await runAgent({
               prompt: attemptPrompt,
-              timeoutMs: 120_000,
+              timeoutMs: AGENT_TURN_TIMEOUT_MS,
               signal: context.signal,
               createSession: () => makeSession(context.settings, tools, source, sourceRegistry),
               runId: context.runId,

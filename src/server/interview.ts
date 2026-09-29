@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { type FollowUpContext, type InterviewMessage, type RunWorkflow, type TrajectoryRecorder } from "../shared.js";
 import type { Settings } from "./config.js";
-import { createRestrictedGenerationSession, AgentRunCancelledError, AgentRunTimeoutError, runBoundedAgent, type AgentRunUsage } from "./agent.js";
+import { AGENT_TURN_TIMEOUT_MS, createRestrictedGenerationSession, AgentRunCancelledError, AgentRunTimeoutError, runBoundedAgent, type AgentRunUsage } from "./agent.js";
 import { loadGuidance } from "./guidance.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 import { RunCoordinator } from "./coordinator.js";
@@ -62,7 +62,7 @@ async function runTextSession(prompt: string, settings: Settings, signal: AbortS
   let text = "";
   await runBoundedAgent({
     prompt,
-    timeoutMs: 120_000,
+    timeoutMs: AGENT_TURN_TIMEOUT_MS,
     signal,
     createSession: () => createRestrictedGenerationSession(settings, systemPrompt),
     runId,

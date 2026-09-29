@@ -8,6 +8,7 @@ import { ProfileSchema, type Settings } from "./config.js";
 import { createTaskReporter } from "./db.js";
 import { RunCoordinator } from "./coordinator.js";
 import {
+  AGENT_TURN_TIMEOUT_MS,
   AgentRunCancelledError,
   AgentRunTimeoutError,
   createRestrictedGenerationSession,
@@ -457,7 +458,7 @@ async function runProfileAgent(prompt: string, settings: Settings, systemPrompt:
         let response = "";
         await runBoundedAgent({
           prompt: attemptPrompt,
-          timeoutMs: 120_000,
+          timeoutMs: AGENT_TURN_TIMEOUT_MS,
           signal: options.signal,
           runId: options.runId,
           trajectory: options.trajectory,

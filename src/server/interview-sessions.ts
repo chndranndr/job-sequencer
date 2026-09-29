@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Settings } from "./config.js";
 import {
+  AGENT_TURN_TIMEOUT_MS,
   AgentRunCancelledError,
   runBoundedAgent,
   type AgentRunUsage,
@@ -12,8 +13,8 @@ import type { TrajectoryRecorder } from "../shared.js";
 const defaultMaxEntries = 8;
 const defaultTtlMs = 15 * 60 * 1000;
 const defaultSweepIntervalMs = 60 * 1000;
-const defaultTimeoutMs = 120 * 1000;
-const defaultInactivityTimeoutMs = 120 * 1000;
+const defaultTimeoutMs = AGENT_TURN_TIMEOUT_MS;
+const defaultInactivityTimeoutMs = AGENT_TURN_TIMEOUT_MS;
 
 export type InterviewSessionFactory = (input: {
   jobId: string;

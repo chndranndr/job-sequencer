@@ -1,7 +1,7 @@
 import type { GenerationDirection, TrajectoryRecorder } from "../../shared.js";
 import type { Settings } from "../config.js";
 import { createResearchTool } from "../research-tools.js";
-import { createRestrictedResearchSession, runBoundedAgent, type AgentRunUsage } from "../agent.js";
+import { AGENT_TURN_TIMEOUT_MS, createRestrictedResearchSession, runBoundedAgent, type AgentRunUsage } from "../agent.js";
 import type { StructuredRunOptions } from "../structured.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "../context.js";
 import { runAgentStructured } from "./runtime.js";
@@ -50,7 +50,7 @@ function liveExecute(input: RunCompanyResearchInput): StructuredRunOptions<Compa
     let text = "";
     await runBoundedAgent({
       prompt,
-      timeoutMs: 120_000,
+      timeoutMs: AGENT_TURN_TIMEOUT_MS,
       signal: input.signal,
       createSession: () => createRestrictedResearchSession(input.settings!, createResearchTool()),
       runId: input.runId,

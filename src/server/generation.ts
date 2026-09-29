@@ -8,7 +8,7 @@ import { compileAndVerify, containedPath, type CommandRunner } from "./documents
 import { createTaskReporter, getJobDetail, updateJobDirection } from "./db.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 import { loadGuidance } from "./guidance.js";
-import { createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage } from "./agent.js";
+import { AGENT_TURN_TIMEOUT_MS, createRestrictedGenerationSession, runBoundedAgent, type AgentRunUsage } from "./agent.js";
 import { buildAgentCandidateContext } from "./agents/context.js";
 import { validateClaims } from "./agents/claim-validator.js";
 import { splitDescriptionIntoBullets, validateApplicationStrategy } from "./agents/evidence.js";
@@ -112,7 +112,7 @@ export const liveGenerationExecutor: GenerationExecutor = async context => {
       let text = "";
       await runBoundedAgent({
         prompt: attemptPrompt,
-        timeoutMs: 120_000,
+        timeoutMs: AGENT_TURN_TIMEOUT_MS,
         signal: context.signal,
         createSession: () => createRestrictedGenerationSession(context.settings),
         runId: context.runId,
