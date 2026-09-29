@@ -70,7 +70,7 @@ test("resume education normalization emits month, year fallback, and GPA fields"
   assert.equal("expectedGraduation" in profile.education[0]!, false);
 });
 
-test("Pi resume parsing accepts JSON deltas and returns a structured draft", async () => {
+test("resume parsing accepts JSON deltas and returns a structured draft", async () => {
   const profile = await parseResumeText("Candidate Engineer TypeScript", settings, async () => new FakeSession({
     identity: { firstName: "Candidate", email: "candidate@example.test" },
     experience: [{ title: "Engineer", company: "Example", startMonth: "2023-7", currentRole: true, description: "Built APIs" }],
@@ -110,7 +110,7 @@ test("disagreeing name or email marks an identity conflict", () => {
   assert.match(emailClash.reason, /email/);
 });
 
-test("Pi merge keeps omitted facts and can add a new role", async () => {
+test("merge keeps omitted facts and can add a new role", async () => {
   const current = namedProfile("Ada", "Lovelace", "ada@example.test");
   current.identity.summary = "Kept summary";
   current.experience = [{
@@ -200,7 +200,7 @@ test("completeMergedFromMapped fills dates and upgrades summarized descriptions 
   assert.equal(merged.experience[0]?.description.split("\n").length, 7);
 });
 
-test("Pi merge fills empty dates and replaces summarized descriptions with resume bullets", async () => {
+test("merge fills empty dates and replaces summarized descriptions with resume bullets", async () => {
   const current = namedProfile("Chandra", "Anindra", "chandra@example.test");
   current.experience = [{
     id: "exp-alex",
@@ -289,7 +289,7 @@ test("empty bank import stays extract-only", async () => {
   assert.equal(profileDisplayName(mapped), "Candidate");
 });
 
-test("invalid Pi JSON is repaired on a second attempt", async () => {
+test("invalid JSON is repaired on a second attempt", async () => {
   let calls = 0;
   const profile = await parseResumeText("Candidate Engineer", settings, async () => {
     calls += 1;

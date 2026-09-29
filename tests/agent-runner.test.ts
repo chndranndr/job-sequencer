@@ -62,7 +62,7 @@ class FakeSession implements AgentSessionLike {
   dispose(): void { this.disposed = true; }
 }
 
-test("Pi timeout aborts, unsubscribes, and disposes", async () => {
+test("runner timeout aborts, unsubscribes, and disposes", async () => {
   let session!: FakeSession;
   await assert.rejects(
     runBoundedAgent({
@@ -77,7 +77,7 @@ test("Pi timeout aborts, unsubscribes, and disposes", async () => {
   assert.equal(session.disposed, true);
 });
 
-test("Pi cancellation aborts, unsubscribes, and disposes", async () => {
+test("runner cancellation aborts, unsubscribes, and disposes", async () => {
   let session!: FakeSession;
   const controller = new AbortController();
   const run = runBoundedAgent({
@@ -93,7 +93,7 @@ test("Pi cancellation aborts, unsubscribes, and disposes", async () => {
   assert.equal(session.disposed, true);
 });
 
-test("Pi prompt errors still unsubscribe and dispose", async () => {
+test("runner prompt errors still unsubscribe and dispose", async () => {
   let unsubscribed = false;
   let disposed = false;
   const failingSession: AgentSessionLike = {
@@ -116,7 +116,7 @@ test("Pi prompt errors still unsubscribe and dispose", async () => {
   assert.equal(disposed, true);
 });
 
-test("Pi session.prompt receives the expected prompt string", async () => {
+test("session.prompt receives the expected prompt string", async () => {
   let session!: FakeSession;
   await runBoundedAgent({
     prompt: "expected prompt",
@@ -126,7 +126,7 @@ test("Pi session.prompt receives the expected prompt string", async () => {
   assert.equal(session.promptText, "expected prompt");
 });
 
-test("Pi forwards image attachments to session.prompt", async () => {
+test("runner forwards image attachments to session.prompt", async () => {
   let session!: FakeSession;
   const images = [{ type: "image" as const, data: "cG5n", mimeType: "image/png" }];
   await runBoundedAgent({
@@ -181,7 +181,7 @@ test("thinking_delta events are recorded via onEvent", async () => {
   assert.deepEqual(forwarded, [thinking]);
 });
 
-test("Pi successful prompt still unsubscribes and disposes", async () => {
+test("successful prompt still unsubscribes and disposes", async () => {
   let session!: FakeSession;
   await runBoundedAgent({
     prompt: "ok",
@@ -230,7 +230,7 @@ test("losing prompt rejection after timeout is not unhandled", async () => {
   }
 });
 
-test("Pi heartbeat calls onActivity and aborts an inactive session", async () => {
+test("heartbeat calls onActivity and aborts an inactive session", async () => {
   let session!: FakeSession;
   let activityCount = 0;
   await assert.rejects(
@@ -247,7 +247,7 @@ test("Pi heartbeat calls onActivity and aborts an inactive session", async () =>
   assert.ok(activityCount >= 1);
 });
 
-test("Pi timeout records exactly one terminal lifecycle event", async () => {
+test("timeout records exactly one terminal lifecycle event", async () => {
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
   await assert.rejects(
     runBoundedAgent({
@@ -264,7 +264,7 @@ test("Pi timeout records exactly one terminal lifecycle event", async () => {
   assert.deepEqual(terminal.map(({ type }) => type), ["run_timed_out"]);
 });
 
-test("Pi flushes open tool state on success, failure, timeout, and cancellation", async () => {
+test("runner flushes open tool state on success, failure, timeout, and cancellation", async () => {
   const toolStart = { type: "tool_execution_start", toolCallId: "call-1", toolName: "lookupJob", args: { id: "job-1" } };
   const cases = [
     { behavior: "ok" as const, expectedError: undefined },
@@ -292,7 +292,7 @@ test("Pi flushes open tool state on success, failure, timeout, and cancellation"
   }
 });
 
-test("Pi flushes assistant state on message_end, agent_end, and failure", async () => {
+test("runner flushes assistant state on message_end, agent_end, and failure", async () => {
   const message = { role: "assistant", timestamp: 7, content: [{ type: "text", text: "Answer" }] };
   const cases = [
     { behavior: "ok" as const, events: [{ type: "message_end", message }] },
@@ -321,7 +321,7 @@ test("Pi flushes assistant state on message_end, agent_end, and failure", async 
   }
 });
 
-test("Pi exposes the final assistant text when only message_end has content", async () => {
+test("runner exposes the final assistant text when only message_end has content", async () => {
   let text = "";
   const message = { role: "assistant", timestamp: 8, content: [{ type: "text", text: "{\"value\":\"ok\"}" }] };
   await runBoundedAgent({
@@ -333,7 +333,7 @@ test("Pi exposes the final assistant text when only message_end has content", as
   assert.equal(text, '{"value":"ok"}');
 });
 
-test("Pi extracts provider usage and leaves missing usage null", async () => {
+test("runner extracts provider usage and leaves missing usage null", async () => {
   const usage = {
     input: 3,
     output: 5,
@@ -370,7 +370,7 @@ test("Pi extracts provider usage and leaves missing usage null", async () => {
   assert.deepEqual(missingUsage, []);
   assert.deepEqual((missingTrajectory.find(({ type }) => type === "assistant_message")?.payload as { usage?: unknown } | undefined)?.usage, null);
 });
-test("Pi records assistant usage once when text and thinking share a message", async () => {
+test("runner records assistant usage once when text and thinking share a message", async () => {
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
   const usage = {
     input: 3,
@@ -400,7 +400,7 @@ test("Pi records assistant usage once when text and thinking share a message", a
 });
 
 
-test("Pi classifies bounded and provider errors without confusing rejection with cancellation", () => {
+test("runner classifies bounded and provider errors without confusing rejection with cancellation", () => {
   assert.equal(classifyAgentError(new AgentRunTimeoutError()), "timeout");
   assert.equal(classifyAgentError(new AgentRunCancelledError()), "cancelled");
   assert.equal(classifyAgentError(new Error("rate limit exceeded")), "rate_limit");
@@ -417,7 +417,7 @@ test("Pi classifies bounded and provider errors without confusing rejection with
   assert.equal(classifyAgentError("not an Error"), "unknown");
 });
 
-test("Pi records context hashes while keeping secrets out of trajectory payloads", async () => {
+test("runner records context hashes while keeping secrets out of trajectory payloads", async () => {
   const prompt = "Use this token sk-testsecret only as untrusted text.";
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
   await runBoundedAgent({
@@ -443,7 +443,7 @@ test("Pi records context hashes while keeping secrets out of trajectory payloads
   assert.doesNotMatch(JSON.stringify(trajectory), /sk-testsecret/);
 });
 
-test("Pi keeps telemetry text capped", async () => {
+test("runner keeps telemetry text capped", async () => {
   const trajectory: Array<{ type: string; payload?: unknown }> = [];
   await runBoundedAgent({
     prompt: "x".repeat(2_000_010),

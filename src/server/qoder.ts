@@ -322,12 +322,12 @@ export class QoderSession implements AgentSessionLike {
     const usage = isRecord(inner.usage) ? inner.usage : undefined;
     const input = finiteOr(usage?.input_tokens);
     const output = finiteOr(usage?.output_tokens);
-    const piContent: Array<Record<string, unknown>> = [];
+    const blocks: Array<Record<string, unknown>> = [];
     for (const block of content) {
       if (!isRecord(block)) continue;
       const blockType = textOf(block.type);
       if (blockType === "text") {
-        piContent.push({ type: "text", text: textOf(block.text) });
+        blocks.push({ type: "text", text: textOf(block.text) });
       } else if (blockType === "tool_use") {
         const toolCallId = textOf(block.id);
         const toolName = textOf(block.name);
@@ -335,18 +335,18 @@ export class QoderSession implements AgentSessionLike {
         this.emit({ type: "tool_execution_start", toolCallId, toolName, args: block.input });
       }
     }
-    const piMessage: Record<string, unknown> = {
+    const translated: Record<string, unknown> = {
       role: "assistant",
       timestamp: this.stamp(),
-      content: piContent,
+      content: blocks,
       provider: "qoder",
       model: textOf(inner.model) || undefined,
       stopReason: inner.stop_reason === undefined || inner.stop_reason === null ? undefined : textOf(inner.stop_reason),
       usage: { input, output, totalTokens: input !== null && output !== null ? input + output : null, cost: null },
     };
-    if (usage?.credits !== undefined) piMessage.credits = finiteOr(usage.credits);
+    if (usage?.credits !== undefined) translated.credits = finiteOr(usage.credits);
     if (message.error !== undefined) this.emit({ type: "error", error: textOf(message.error) });
-    this.emit({ type: "message_end", message: piMessage });
+    this.emit({ type: "message_end", message: translated });
     this.currentTimestamp = undefined;
     this.blockText = "";
     this.blockThinking = "";

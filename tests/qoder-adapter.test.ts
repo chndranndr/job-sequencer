@@ -276,3 +276,17 @@ test("14: abort while a tool handler is active aborts the handler signal and clo
   assert.equal(t.closed, true, "transport closed after mid-handler abort");
   session.dispose();
 });
+
+test("15: assistant frames without usage metadata keep usage fields and cost null", async () => {
+  const { session, recorder, events } = startSession();
+  const t = await transportOf(recorder);
+  const prompt = session.prompt("synthetic");
+  t.push(fauxInitFrame());
+  t.push(fauxAssistantFrame({ text: "no usage metadata" }));
+  t.push(fauxResultFrame());
+  await prompt;
+  const messageEnd = events.find((e) => e.type === "message_end");
+  const usage = (messageEnd?.message as Record<string, unknown>).usage as Record<string, unknown>;
+  assert.deepEqual(usage, { input: null, output: null, totalTokens: null, cost: null }, "missing usage never fabricates numbers or cost");
+  session.dispose();
+});

@@ -58,7 +58,7 @@ export type RecordingTransportOptions = {
   /**
    * Called when the SDK writes a `user` line, returning frames the CLI would
    * emit in response (assistant/result). Lets the offline smoke and generation
-   * factories drive scripted turns without Pi's fauxProvider.
+   * factories drive scripted turns without a live provider.
    */
   onUserMessage?: (message: WireFrame) => WireFrame[];
   /** When set, emitted as a system/init stream frame right after the handshake. */

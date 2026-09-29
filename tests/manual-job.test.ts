@@ -58,7 +58,7 @@ async function waitForRun(app: Awaited<ReturnType<typeof buildServer>>, id: stri
   throw new Error("manual run did not finish");
 }
 
-test("manual Pi parsing is strict, profile-grounded, scored, and preserves the full posting", async () => {
+test("manual parsing is strict, profile-grounded, scored, and preserves the full posting", async () => {
   const promptParts: string[] = [];
   const result = await parseManualJobText("Example Co\nBackend Engineer\nBuild reliable APIs.", settings, {
     profile: profileContext,
@@ -81,7 +81,7 @@ test("manual Pi parsing is strict, profile-grounded, scored, and preserves the f
   }), /could not be validated/i);
 });
 
-test("manual Pi parsing repairs invalid JSON on a second attempt", async () => {
+test("manual parsing repairs invalid JSON on a second attempt", async () => {
   const prompts: string[] = [];
   let calls = 0;
   const result = await parseManualJobText("Example Co\nBackend Engineer\nBuild reliable APIs.", settings, {
@@ -179,7 +179,7 @@ test("manual Workday URL import uses bounded structured metadata when the body i
   assert.match(prompt, /enterprise software & services/);
 });
 
-test("manual URL import strips oversized HTML noise before sending visible job text to Pi", async () => {
+test("manual URL import strips oversized HTML noise before sending visible job text to the agent", async () => {
   const hiddenScript = "hidden-script-marker ".repeat(7_000);
   const hiddenStyle = "hidden-style-marker ".repeat(2_000);
   const html = `<!--hidden-comment-marker--><html><head><style>${hiddenStyle}</style></head><body><noscript>hidden-noscript-marker</noscript><template>hidden-template-marker</template><svg>hidden-svg-marker</svg><script>${hiddenScript}</script><main><h1>Senior Java Developer</h1><p>Avenga &amp; Co&#x2D;Europe</p><p>Build and operate WildFly enterprise applications.</p><ul><li>Work with Java and Spring.</li></ul></main></body></html>`;
@@ -203,7 +203,7 @@ test("manual URL import strips oversized HTML noise before sending visible job t
   assert.doesNotMatch(prompt, /hidden-style-marker/);
 });
 
-test("manual LinkedIn collection and view URLs use canonical guest details before Pi scoring", async () => {
+test("manual LinkedIn collection and view URLs use canonical guest details before agent scoring", async () => {
   const canonicalUrl = "https://www.linkedin.com/jobs/view/4457070333";
   const description = "Build the product surface and backend services.\n\nWork with TypeScript and React.";
   const ids: string[] = [];
@@ -273,16 +273,16 @@ test("manual LinkedIn import returns an actionable error when detail is unavaila
   await assert.rejects(importManualJob(input, settings, {
     profile: profileContext,
     fetchLinkedInDetail: async () => ({ title: "Full-Stack Developer (Remote)", company: "Example Co", location: "Remote", description: "" }),
-    createSession: async () => { throw new Error("Pi must not receive an empty detail"); },
+    createSession: async () => { throw new Error("the agent must not receive an empty detail"); },
   }), safeError);
   await assert.rejects(importManualJob(input, settings, {
     profile: profileContext,
     fetchLinkedInDetail: async () => { throw new Error("guest fetch failed"); },
-    createSession: async () => { throw new Error("Pi must not receive a failed detail"); },
+    createSession: async () => { throw new Error("the agent must not receive a failed detail"); },
   }), safeError);
   await assert.rejects(importManualJob("https://www.linkedin.com/jobs/collections/recommended?currentJobId=not-a-number", settings, {
     profile: profileContext,
-    createSession: async () => { throw new Error("Pi must not receive an invalid LinkedIn URL"); },
+    createSession: async () => { throw new Error("the agent must not receive an invalid LinkedIn URL"); },
   }), safeError);
 });
 
@@ -304,7 +304,7 @@ test("manual persistence uses score threshold, rank fields, Manual source, and r
   } finally { db.close(); }
 });
 
-test("manual API starts an async scored run and persists Pi trajectory", async () => {
+test("manual API starts an async scored run and persists agent trajectory", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pjs-manual-api-"));
   const db = openDatabase(":memory:");
   await writeSettings(dir, settings);

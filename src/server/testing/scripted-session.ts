@@ -3,15 +3,15 @@ import type { AgentToolDefinition } from "../tools.js";
 
 /**
  * ScriptedAgentSession: offline test seam implementing AgentSessionLike.
- * Replaces the Pi fauxProvider fixtures (plan §3.1): a script observes the
+ * Replaces the former fauxProvider fixtures (migration plan §3.1): a script observes the
  * transcript (user prompts + real tool results) and returns the next action;
  * tool actions EXECUTE the real domain tools, so budget, provenance, and
  * finishSearch enforcement are genuinely exercised without any provider,
  * CLI binary, or protocol emulation.
  *
  * Emitted events match the shapes runBoundedAgent and callers consume:
- * message_update/assistantMessageEvent text_delta, message_end with Pi-shaped
- * usage, tool_execution_start/end, agent_start/agent_end.
+ * message_update/assistantMessageEvent text_delta, message_end with usage,
+ * tool_execution_start/end, agent_start/agent_end.
  */
 
 export type ScriptToolResult = {

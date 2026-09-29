@@ -469,7 +469,7 @@ test("cvEdits never attach another employer's bullets or planning instructions t
   assert.doesNotMatch(rendered, /Prioritize overlapping|Retain every employer|Order core skills/);
 });
 
-test("instruction-shaped cvEdits fail generation validation so Pi can repair", () => {
+test("instruction-shaped cvEdits fail generation validation so the agent can repair", () => {
   const profile = JSON.stringify({ identity: { summary: "Java engineer at Example." } });
   assert.throws(() => validateGenerationOutput({
     cvTemplate: "backend_java_spring",

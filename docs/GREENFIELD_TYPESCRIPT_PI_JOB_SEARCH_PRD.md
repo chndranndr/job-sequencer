@@ -53,7 +53,7 @@ This is a personal tool on a trusted computer, not a SaaS product.
 | Frontend | React + Vite |
 | Database | Built-in `node:sqlite` if Phase 0 passes; otherwise `better-sqlite3` |
 | Validation | Zod |
-| AI runtime | `@earendil-works/pi-coding-agent` in-process |
+| AI runtime | `@qoder-ai/qoder-agent-sdk` (migrated from the original Pi choice; see CHANGELOG) |
 | Package layout | One package |
 | Deployment | `127.0.0.1` only |
 | Ranking threshold | Strictly `score > 60` passes; `score <= 60` is Discarded |

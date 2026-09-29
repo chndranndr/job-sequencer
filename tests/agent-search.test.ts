@@ -585,7 +585,7 @@ test("same goal trajectories choose the next source from inspected state", async
   ]);
 });
 
-test("agent executor uses one Pi session and rejects a missing finishSearch", async () => {
+test("agent executor uses one session and rejects a missing finishSearch", async () => {
   class FakeSession implements AgentSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}

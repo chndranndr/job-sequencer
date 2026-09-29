@@ -24,10 +24,10 @@ Workflow tidak berjalan otomatis dari awal sampai akhir. Setiap tahap berhenti d
 ## Prinsip produk
 
 - Personal, local-first, dan hanya berjalan di `127.0.0.1`.
-- Pi mencari dan memberi fit score berdasarkan profil serta kriteria user.
+- Agent mencari dan memberi fit score berdasarkan profil serta kriteria user.
 - Job di bawah threshold disimpan sebagai Discarded, bukan dihapus.
 - User selalu memilih sendiri job yang ingin dilanjutkan.
-- Pi membuat CV dan cover letter dari fakta yang sudah diverifikasi.
+- Agent membuat CV dan cover letter dari fakta yang sudah diverifikasi.
 - Human approval wajib sebelum dokumen digunakan.
 - Apply dan pengiriman follow-up selalu dilakukan manual oleh user.
 - Interview chat memakai konteks job, profil, CV, dan cover letter terkait.
@@ -38,9 +38,9 @@ Workflow tidak berjalan otomatis dari awal sampai akhir. Setiap tahap berhenti d
 - React + Vite
 - Fastify
 - SQLite
-- `@earendil-works/pi-coding-agent`
+- `@qoder-ai/qoder-agent-sdk`
 - Existing skills dari `vendor/ai-job-search-skills` direuse, bukan diimplementasikan ulang
-- Existing job-search CLIs dibungkus sebagai restricted Pi tools tanpa memberi Pi akses shell umum
+- Existing job-search CLIs dibungkus sebagai restricted agent tools tanpa memberi agent akses shell umum
 
 Project ini bukan SaaS dan tidak membutuhkan akun, multi-user, billing, cloud deployment, generic workflow engine, atau autonomous job submission.
 
