@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
+import type { Page } from "playwright";
 import { expect } from "playwright/test";
 import { buildServer } from "../src/server/app.js";
 import { writeSettings, writeStructuredProfile } from "../src/server/config.js";
@@ -106,12 +107,12 @@ async function waitForFrontend(port: number) {
   throw new Error("Tracker smoke frontend did not start.");
 }
 
-async function openTracker(page: import("playwright").Page, base: string, hash = "") {
+async function openTracker(page: Page, base: string, hash = "") {
   await page.goto(`${base}/${hash}`);
   await page.locator(".studio").waitFor();
 }
 
-async function assertNoOverflow(page: import("playwright").Page, label: string) {
+async function assertNoOverflow(page: Page, label: string) {
   const geometry = await page.evaluate(() => ({
     documentWidth: document.documentElement.clientWidth,
     pageWidth: document.documentElement.scrollWidth,
@@ -119,6 +120,19 @@ async function assertNoOverflow(page: import("playwright").Page, label: string) 
   }));
   if (geometry.pageWidth > geometry.documentWidth + 1 || geometry.bodyWidth > geometry.documentWidth + 1) {
     throw new Error(`Tracker horizontal overflow at ${label}: ${JSON.stringify(geometry)}`);
+  }
+}
+async function assertFailedAdaptiveFunnel(page: Page) {
+  const funnel = page.locator('[aria-label="Discovery funnel"]');
+  await expect(funnel.locator(".trace-meta-item").filter({ hasText: /^Duplicates removed/ }).locator("strong")).toHaveText("3");
+  for (const [label, sources] of [
+    ["Required sources", "freehire, linkedin, tokyodev"],
+    ["Searched sources", "freehire, linkedin"],
+    ["Unavailable sources", "freehire"],
+    ["Unsearched sources", "tokyodev"],
+  ]) {
+    const valuePattern = new RegExp(`^${label}`);
+    await expect(funnel.locator(".trace-meta-item").filter({ hasText: valuePattern }).locator("strong")).toHaveText(sources);
   }
 }
 
@@ -161,8 +175,42 @@ appendRunTrajectoryEvent(db, traceRunId, { kind: "error", type: "detail_provenan
 appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_funnel", timestamp: "2026-08-20T00:00:09.500Z", payload: { enabledSources: ["freehire"], sourceAttempts: { freehire: 2 }, queriesBySource: { freehire: ["backend broad", "platform engineer"] }, pagesBySource: { freehire: [1] }, rawHits: 4, uniqueHits: 3, promisingHits: 2, duplicatesRemoved: 1, candidatesAfterCheapFiltering: 3, detailFetches: 1, selectedJobs: 2, stopReason: "budget_exhausted", sources: { freehire: { searches: 2, queries: ["backend broad", "platform engineer"], pages: [1], rawHits: 4, uniqueHits: 3, promisingHits: 2, duplicatesRemoved: 1, duplicateRate: 0.25, averageYield: 1.5, lastYield: 2, queryHistory: [] } } } });
 appendRunTrajectoryEvent(db, traceRunId, { kind: "lifecycle", type: "search_finished", timestamp: "2026-08-20T00:00:10.000Z", payload: { reason: "Coverage sufficient after adaptive query.", reasonCategory: "coverage_sufficient", unresolvedGoals: [], counts: { discovered: 4, unique: 3, enriched: 1 }, remaining: { maxSearchCalls: 2, maxDetailCalls: 2, maxTotalResults: 1, maxRunDurationMs: 2000 } } });
 finishRun(db, traceRunId, "succeeded", null, null, null, "2026-08-20T00:00:12.000Z");
+const failedTraceRunId = "tracker-browser-adaptive-failed";
+const failedTraceFunnel = {
+  enabledSources: ["freehire", "linkedin", "tokyodev"],
+  sourceAttempts: { freehire: 1, linkedin: 1, tokyodev: 0 },
+  queriesBySource: { freehire: ["backend"], linkedin: ["platform engineer"], tokyodev: [] },
+  pagesBySource: { freehire: [1], linkedin: [1], tokyodev: [] },
+  rawHits: 5,
+  uniqueHits: 2,
+  promisingHits: 1,
+  duplicatesRemoved: 3,
+  candidatesAfterCheapFiltering: 2,
+  detailFetches: 0,
+  selectedJobs: 0,
+  stopReason: "all_sources_failed",
+  sourceCoverage: {
+    required: ["freehire", "linkedin", "tokyodev"],
+    searched: ["freehire", "linkedin"],
+    unavailable: ["freehire"],
+    unsearched: ["tokyodev"],
+  },
+  sources: {},
+};
+insertRun(db, { id: failedTraceRunId, workflow: "scrape", status: "running", provider: "fixture", model: "adaptive", startedAt: "2026-08-20T00:01:00.000Z" });
+appendRunTrajectoryEvent(db, failedTraceRunId, { kind: "lifecycle", type: "run_started", timestamp: "2026-08-20T00:01:00.000Z", payload: { workflow: "scrape" } });
+appendRunTrajectoryEvent(db, failedTraceRunId, { kind: "lifecycle", type: "search_funnel", timestamp: "2026-08-20T00:01:05.000Z", payload: failedTraceFunnel });
+finishRun(db, failedTraceRunId, "failed", { jobsFound: 0, recommended: 0, discarded: 0, duplicatesSkipped: 3, errors: ["Adaptive source search failed."], warnings: [], funnel: failedTraceFunnel }, "Adaptive source search failed.", "all_sources_failed", "2026-08-20T00:01:06.000Z");
 const lifecycleJob = listJobs(db).find((job) => job.source_id === fixtures[2].sourceId);
 if (!lifecycleJob) throw new Error("Tracker smoke lifecycle fixture job was not persisted");
+let modelCatalog = [
+  { provider: smokeSettings.provider, id: "fixture", name: "Fixture" },
+  { provider: "smoke-arbitrary-provider", id: "fixture", name: "Fixture from another provider" },
+  { provider: "smoke-arbitrary-provider", id: "other", name: "Other fixture" },
+];
+let holdModelCatalog = false;
+let modelCatalogFails = false;
+let releaseModelCatalog: (() => void)[] = [];
 
 const app = await buildServer({
   dataDir,
@@ -185,7 +233,11 @@ const app = await buildServer({
     return response;
   },
   followUpExecutor: async () => "Thanks for the interview. I appreciated the discussion about reliability and backend systems.",
-  availableModels: async () => [{ id: "fixture", name: "Fixture" }],
+  availableModels: async () => {
+    if (holdModelCatalog) await new Promise<void>((resolve) => { releaseModelCatalog.push(resolve); });
+    if (modelCatalogFails) throw new Error("fixture catalog failure");
+    return modelCatalog;
+  },
   manualImporter: async (input) => {
     const url = input.trim();
     if (!/^https?:\/\/\S+$/i.test(url)) return manualImportFixture;
@@ -200,6 +252,7 @@ const app = await buildServer({
   projectRoot: process.cwd(),
 });
 let frontend: ChildProcess | undefined;
+const releaseHeldSettingsResponses: (() => void)[] = [];
 const browser = await chromium.launch({ headless: true });
 try {
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -215,10 +268,9 @@ try {
   const requestFailures: string[] = [];
   page.on("console", (message) => {
     if (message.type() !== "error") return;
-    // The preference-load gate deliberately serves a 500 from /api/criteria; that resource
-    // error is the fixture working as intended, not a regression.
-    if (message.location()?.url?.includes("/api/criteria")) return;
-    consoleErrors.push(message.text());
+    // The preference-load gate and the model-catalog error fixture deliberately serve 500s.
+    if (message.location()?.url?.includes("/api/criteria") || (modelCatalogFails && message.location()?.url?.includes("/api/ai/models"))) return;
+    consoleErrors.push(`${message.text()} (${message.location()?.url ?? "unknown URL"})`);
   });
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("requestfailed", (request) => {
@@ -244,6 +296,68 @@ try {
   await page.request.put(`${base}/api/profile`, { data: { profile: createEmptyProfile() } });
   await page.goto(`${base}/#/disk`);
   await page.locator(".disk-main").waitFor();
+  const providerSelect = page.getByRole("combobox", { name: "Provider", exact: true });
+  const modelSelect = page.getByLabel("Model");
+  await expect(providerSelect.locator("option")).toHaveCount(2);
+  await expect(providerSelect).toHaveValue(smokeSettings.provider);
+  await expect(providerSelect.locator('option[value="smoke-arbitrary-provider"]')).toHaveCount(1);
+  await expect(modelSelect.locator("option")).toHaveCount(2);
+  await expect(modelSelect.locator("option").nth(1)).toHaveText("Fixture · fixture");
+  await providerSelect.selectOption("smoke-arbitrary-provider");
+  await expect(providerSelect).toHaveValue("smoke-arbitrary-provider");
+  await expect(modelSelect.locator("option")).toHaveCount(3);
+  await expect(modelSelect.locator("option").nth(1)).toHaveText("Fixture from another provider · fixture");
+  await expect(modelSelect.locator("option").nth(2)).toHaveText("Other fixture · other");
+  await providerSelect.selectOption(smokeSettings.provider);
+  await expect(modelSelect.locator("option")).toHaveCount(2);
+  await modelSelect.selectOption(smokeSettings.model);
+  await expect(modelSelect).toHaveValue(smokeSettings.model);
+
+  holdModelCatalog = true;
+  await page.reload();
+  await expect.poll(() => releaseModelCatalog.length).toBeGreaterThan(0);
+  await expect(providerSelect.locator("option")).toHaveCount(1);
+  await expect(providerSelect).toBeDisabled();
+  await expect(providerSelect.locator("option").first()).toContainText("checking availability");
+  await expect(modelSelect).toBeDisabled();
+  await expect(modelSelect.locator("option").nth(1)).toContainText("checking availability");
+  const releases = releaseModelCatalog;
+  releaseModelCatalog = [];
+  holdModelCatalog = false;
+  for (const release of releases) release();
+  await expect(providerSelect.locator("option")).toHaveCount(2);
+  modelCatalog = [];
+  await page.reload();
+  await expect(providerSelect.locator("option")).toHaveCount(1);
+  await expect(providerSelect).toBeDisabled();
+  await expect(providerSelect).toHaveValue(smokeSettings.provider);
+  await expect(providerSelect.locator("option").first()).toContainText("not authenticated");
+  await expect(modelSelect).toBeDisabled();
+  await expect(modelSelect).toHaveValue(smokeSettings.model);
+  await expect(modelSelect.locator("option").nth(1)).toContainText("unavailable");
+  await expect(page.getByRole("button", { name: "Test link" })).toBeDisabled();
+  await page.getByLabel("Scrape mode").selectOption("web-discovery");
+  await expect(page.getByRole("button", { name: "Write settings" })).toBeDisabled();
+
+  modelCatalogFails = true;
+  await page.reload();
+  await expect(providerSelect.locator("option")).toHaveCount(1);
+  await expect(providerSelect).toBeDisabled();
+  await expect(providerSelect.locator("option").first()).toContainText("availability unknown");
+  await expect(modelSelect).toBeDisabled();
+  await expect(modelSelect).toHaveValue(smokeSettings.model);
+  await expect(modelSelect.locator("option").nth(1)).toContainText("availability unknown");
+
+  modelCatalogFails = false;
+  modelCatalog = [
+    { provider: smokeSettings.provider, id: "fixture", name: "Fixture" },
+    { provider: "smoke-arbitrary-provider", id: "fixture", name: "Fixture from another provider" },
+    { provider: "smoke-arbitrary-provider", id: "other", name: "Other fixture" },
+  ];
+  await page.reload();
+  await expect(providerSelect.locator("option")).toHaveCount(2);
+  await expect(modelSelect.locator("option")).toHaveCount(2);
+
   await page.getByLabel("Remote-work preference").fill("Remote preferred");
   await page.getByRole("button", { name: "Write to disk", exact: true }).click();
   await expect(page.getByText("Profile written to disk.", { exact: true })).toBeVisible();
@@ -278,6 +392,10 @@ try {
   await expect(page.locator(".trace-observability")).toContainText("budget");
   await expect(page.locator(".trace-observability")).not.toContainText("smoke-secret-value");
   await assertNoOverflow(page, "desktop #/trace/adaptive");
+  await openTracker(page, base, `#/trace/${failedTraceRunId}`);
+  await expect(page.locator(".trace-observability")).toBeVisible();
+  await assertFailedAdaptiveFunnel(page);
+  await assertNoOverflow(page, "desktop #/trace/adaptive-failed");
 
   await openTracker(page, base, "#/pattern");
   await page.getByRole("button", { name: "Collapse workflow rack" }).click();
@@ -502,10 +620,46 @@ try {
 
   // Play scrape exposes the search-preference editor and writes it to disk.
   await openTracker(page, base, "#/pattern");
+  const sidebarMode = page.getByRole("complementary", { name: "Agent panel" }).getByLabel("Scrape mode");
+  await expect(sidebarMode).toBeEnabled();
+  await sidebarMode.selectOption("web-discovery");
   await page.getByRole("button", { name: "Play scrape" }).click();
   await expect(page.locator(".ask").getByRole("heading", { name: "Start scrape?" })).toBeVisible();
   const prefs = page.locator(".agent-prefs");
   await expect(prefs).toBeVisible();
+  await expect(prefs.getByLabel("Scrape mode")).toBeEnabled();
+  await expect(prefs.getByLabel("Scrape mode")).toHaveValue("web-discovery");
+  const mode = prefs.getByLabel("Scrape mode");
+  const linkedinSource = prefs.locator(".disk-source", { hasText: "LinkedIn" }).locator("input");
+  await expect(linkedinSource).toBeDisabled();
+  let resolveFirstSettingsWrite!: () => void;
+  const firstSettingsWrite = new Promise<void>((resolve) => { resolveFirstSettingsWrite = resolve; });
+  let holdFirstSettingsResponse = true;
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() !== "PUT" || !holdFirstSettingsResponse) {
+      await route.continue();
+      return;
+    }
+    holdFirstSettingsResponse = false;
+    const response = await route.fetch();
+    resolveFirstSettingsWrite();
+    await new Promise<void>((resolve) => { releaseHeldSettingsResponses.push(resolve); });
+    await route.fulfill({ response });
+  });
+  await prefs.getByRole("button", { name: "Write to disk", exact: true }).click();
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/settings`)).json()).scrapeMode).toBe("web-discovery");
+  await firstSettingsWrite;
+  await mode.selectOption("job-boards");
+  await expect(mode).toHaveValue("job-boards");
+  await expect(linkedinSource).toBeEnabled();
+  const releaseSettingsResponse = releaseHeldSettingsResponses.pop();
+  if (!releaseSettingsResponse) throw new Error("The first search-preference save response was not held");
+  releaseSettingsResponse();
+  await expect(page.getByRole("status")).toHaveText("Search preferences written to disk.");
+  await page.unroute("**/api/settings");
+  await expect(mode).toHaveValue("job-boards");
+  await expect(linkedinSource).toBeEnabled();
+  await expect(prefs.getByRole("button", { name: "Write to disk", exact: true })).toBeEnabled();
   for (const label of ["Preferred roles (optional)", "Preferred locations (optional)", "Excluded keywords (hard stop)", "Maximum jobs per scrape", "Remote-only hard constraint"]) {
     await expect(prefs.getByText(label, { exact: true })).toBeVisible();
   }
@@ -515,7 +669,11 @@ try {
   await rolesInput.fill("Platform Engineer, SRE");
   // CriteriaFields splits comma lists on blur only; without this the PUT could send the raw string.
   await rolesInput.blur();
+  const settingsPut = page.waitForRequest((request) => request.url().endsWith("/api/settings") && request.method() === "PUT", { timeout: 5_000 });
   await prefs.getByRole("button", { name: "Write to disk", exact: true }).click();
+  const settingsRequest = await settingsPut;
+  if (!settingsRequest.postData()?.includes('"scrapeMode":"job-boards"')) throw new Error("Search preferences did not submit job-boards mode.");
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/settings`)).json()).scrapeMode).toBe("job-boards");
   await expect.poll(async () => (await (await page.request.get(`${base}/api/criteria`)).json()).roles, { timeout: 30_000 })
     .toEqual(["Platform Engineer", "SRE"]);
   await prefs.locator(".disk-source", { hasText: "LinkedIn" }).click();
@@ -651,6 +809,10 @@ try {
   await openTracker(page, base, `#/trace/${traceRunId}`);
   await expect(page.locator(".trace-observability")).toBeVisible();
   await assertNoOverflow(page, "mobile #/trace/adaptive");
+  await openTracker(page, base, `#/trace/${failedTraceRunId}`);
+  await expect(page.locator(".trace-observability")).toBeVisible();
+  await assertFailedAdaptiveFunnel(page);
+  await assertNoOverflow(page, "mobile #/trace/adaptive-failed");
   await openTracker(page, base, "#/order");
   await page.locator(".order-board").waitFor();
   const mobileBoard = await page.locator(".order-list").evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
@@ -674,6 +836,7 @@ try {
   }
   console.log(JSON.stringify({ ok: true, root: "/", routes: routes.map((route) => route.hash), consoleErrors: 0, pageErrors: 0, requestFailures: 0, responsive: { desktop: "checked", mobile: "checked" } }));
 } finally {
+  releaseHeldSettingsResponses.pop()?.();
   await browser.close();
   if (frontend) { frontend.kill(); await delay(50); }
   await app.close();

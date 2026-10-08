@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { defaultGenerationDirection, effectiveCvPages, type GenerationDirection, type Rank, type StructuredProfile, type TrajectoryRecorder } from "../shared.js";
 import { ProfileSchema, type Settings } from "./config.js";
-import { compileAndVerify, containedPath, type CommandRunner } from "./documents.js";
+import { compileAndVerify, containedPath, exportGeneratedPdfs, type CommandRunner } from "./documents.js";
 import { createTaskReporter, getJobDetail, updateJobDirection } from "./db.js";
 import { projectPromptContext, trustedSection, untrustedSection } from "./context.js";
 import { loadGuidance } from "./guidance.js";
@@ -112,7 +112,7 @@ export const liveGenerationExecutor: GenerationExecutor = async context => {
       let text = "";
       await runBoundedPi({
         prompt: attemptPrompt,
-        timeoutMs: 120_000,
+        timeoutMs: 300_000,
         signal: context.signal,
         createSession: () => createRestrictedGenerationSession(context.settings),
         runId: context.runId,
@@ -1120,7 +1120,13 @@ export async function generateJob(options: { db: DatabaseSync; dataDir: string; 
     }
   }
   await writeJson(containedPath(revisionDir, "visual.json"), visualArtifact);
-  await promoteRevision(appDir, currentDir, revisionDir, now, runId);
+  const exportedDir = await exportGeneratedPdfs(options.dataDir, revisionDir, company, role, now);
+  try {
+    await promoteRevision(appDir, currentDir, revisionDir, now, runId);
+  } catch (error) {
+    await rm(exportedDir, { recursive: true, force: true });
+    throw error;
+  }
   tasks.complete(`generate:${options.jobId}:documents`, verification.success ? jobDetail : "Document verification needs review.");
   tasks.start({ taskId: `generate:${options.jobId}:finalize`, label: "Finalize job", detail: jobDetail });
   options.db.prepare("UPDATE applications SET cv_template=?,cv_source=?,cv_pdf=?,cover_letter_source=?,cover_letter_pdf=?,verification_json=?,approved_at=NULL,updated_at=? WHERE job_id=?").run(output.cvTemplate, "cv.tex", "cv.pdf", "cover-letter.tex", "cover-letter.pdf", JSON.stringify(verification), now, options.jobId);

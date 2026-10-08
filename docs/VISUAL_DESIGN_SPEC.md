@@ -769,7 +769,7 @@ Use danger-soft panel with:
 - Retry when safe;
 - Settings link when provider-related.
 
-Never show prompts, credentials, raw provider bodies, compiler logs, or stack traces.
+TRACE may show prompts and model messages for local diagnosis, formatted with credential values redacted. Web-discovery candidate profiles are omitted from TRACE while remaining in the model prompt. Keep raw provider bodies, compiler logs, and stack traces hidden.
 
 ### Unsaved
 

@@ -187,19 +187,12 @@ export function DiskView({
       .catch((caught) => setError(caught instanceof Error ? caught.message : "DISK could not load."));
   }, []);
 
-  const provider = settings?.provider ?? "";
   useEffect(() => {
     let cancelled = false;
-    if (!provider) {
-      setModels([]);
-      setModelsError("");
-      setModelsLoading(false);
-      return () => { cancelled = true; };
-    }
     setModelsLoading(true);
     setModelsError("");
     setModels([]);
-    void getAvailableModels(provider).then((result) => {
+    void getAvailableModels().then((result) => {
       if (!cancelled) setModels(result.models);
     }).catch((caught) => {
       if (!cancelled) {
@@ -208,13 +201,21 @@ export function DiskView({
       }
     }).finally(() => { if (!cancelled) setModelsLoading(false); });
     return () => { cancelled = true; };
-  }, [provider]);
+  }, []);
+
+  const provider = settings?.provider ?? "";
+  const providers = [...new Set(models.map((model) => model.provider))];
+  const providerModels = models.filter((model) => model.provider === provider);
+  const providerAvailable = providers.includes(provider);
+  const modelAvailable = providerModels.some((model) => model.id === settings?.model);
+  const modelUnavailableStatus = modelsLoading ? "checking availability" : modelsError ? "availability unknown" : "unavailable";
 
   const profileDirty = Boolean(profile && savedProfile && JSON.stringify(profile) !== JSON.stringify(savedProfile));
   const criteriaDirty = Boolean(criteria && savedCriteria && JSON.stringify(criteria) !== JSON.stringify(savedCriteria));
   const settingsDirty = settingsAreDirty(settings, savedSettings);
-  const modelValid = Boolean(settings && hasValidProviderModel(settings, models));
+  const modelValid = Boolean(settings && !modelsLoading && !modelsError && hasValidProviderModel(settings, providerModels));
   const enabled = settings ? enabledSources(settings) : [];
+
   useUnsavedNavigationGuard(settingsDirty);
 
   useEffect(() => {
@@ -532,19 +533,18 @@ export function DiskView({
           <div className="pe-section-head"><h2>PROVIDER</h2><span className="pe-eyebrow">MODEL</span></div>
           <div className="pe-section-body">
             <label className="field">Provider
-              <select value={settings.provider} onChange={(event) => { setSettings({ ...settings, provider: event.target.value, model: "" }); setSettingsError(""); }}>
-                <option value="google">Google</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="openai">OpenAI API key</option>
-                <option value="openai-codex">OpenAI Codex</option>
+              <select value={settings.provider} disabled={modelsLoading || Boolean(modelsError) || !providers.length} onChange={(event) => { setSettings({ ...settings, provider: event.target.value, model: "" }); setSettingsError(""); }}>
+                {provider && !providerAvailable && <option value={provider} disabled>{provider} · {modelsLoading ? "checking availability" : modelsError ? "availability unknown" : "not authenticated"}</option>}
+                {providers.map((providerId) => <option key={providerId} value={providerId}>{providerId}</option>)}
               </select>
             </label>
             <label className="field">Model
-              <select value={settings.model} disabled={modelsLoading || Boolean(modelsError) || !models.length} onChange={(event) => { setSettings({ ...settings, model: event.target.value }); setSettingsError(""); }}>
-                <option value="">{modelsLoading ? "Loading authenticated models..." : modelsError ? "Models unavailable" : models.length ? "Select a model" : "No authenticated models"}</option>
-                {models.map((model) => <option key={model.id} value={model.id}>{model.name === model.id ? model.id : `${model.name} · ${model.id}`}</option>)}
+              <select value={settings.model} disabled={modelsLoading || Boolean(modelsError) || !providerModels.length} onChange={(event) => { setSettings({ ...settings, model: event.target.value }); setSettingsError(""); }}>
+                <option value="">{modelsLoading ? "Loading authenticated models..." : modelsError ? "Models unavailable" : providerModels.length ? "Select a model" : models.length ? "No authenticated models for this provider" : "No authenticated models"}</option>
+                {settings.model && !modelAvailable && <option value={settings.model} disabled>{settings.model} · {modelUnavailableStatus}</option>}
+                {providerModels.map((model) => <option key={model.id} value={model.id}>{model.name === model.id ? model.id : `${model.name} · ${model.id}`}</option>)}
               </select>
-              <small>{modelsLoading ? "Loading authenticated models..." : modelsError || (models.length ? `${models.length} authenticated model${models.length === 1 ? "" : "s"} available.` : "No authenticated models. Run Pi /login or configure provider credentials.")}</small>
+              <small>{modelsLoading ? "Loading authenticated providers and models..." : modelsError || (providerModels.length ? `${providerModels.length} authenticated model${providerModels.length === 1 ? "" : "s"} available for ${provider}.` : models.length ? `No authenticated models for ${provider}. Choose an available provider.` : "No authenticated providers or models. Run Pi /login or configure provider credentials.")}</small>
             </label>
             {settingsError && <p className="disk-settings-error" role="alert">{settingsError}</p>}
           </div>
@@ -552,6 +552,13 @@ export function DiskView({
         <section className="pe-section pe-theme-tracker">
           <div className="pe-section-head"><h2>SEARCH KNOBS</h2><span className="pe-eyebrow">FIT</span></div>
           <div className="pe-section-body">
+            <label className="field">Scrape mode
+              <select value={settings.scrapeMode ?? "job-boards"} onChange={(event) => { setSettings({ ...settings, scrapeMode: event.target.value as Settings["scrapeMode"] }); setSettingsError(""); setCustomError(""); }}>
+                <option value="job-boards">Job boards</option>
+                <option value="web-discovery">Web discovery</option>
+              </select>
+              {settings.scrapeMode === "web-discovery" && <small>Requires the BrowserSkill bsk CLI and browser extension. Reads public company career and ATS pages; never applies automatically. Job-board selections are saved for Job boards mode and do not limit discovery.</small>}
+            </label>
             <div className="slats">
               <div className="slat"><span>FIT</span><input type="range" min={1} max={99} value={settings.scoreThreshold} onChange={(event) => setSettings({ ...settings, scoreThreshold: Number(event.target.value) })} /><span>{settings.scoreThreshold}</span></div>
             </div>
@@ -564,7 +571,7 @@ export function DiskView({
               {jobSourceKeys.map((source) => {
                 const armed = enabled.includes(source);
                 return <label className={`disk-source ${armed ? "armed" : ""}`} key={source}>
-                  <input type="checkbox" checked={armed} onChange={(event) => setEnabledSource(source, event.target.checked)} />
+                  <input type="checkbox" disabled={settings.scrapeMode === "web-discovery"} checked={armed} onChange={(event) => setEnabledSource(source, event.target.checked)} />
                   <span className="disk-source__led" aria-hidden="true" />
                   <span className="disk-source__name">{jobSourceLabel(source)}</span>
                   <span className="disk-source__age">MAX <input aria-label={`${jobSourceLabel(source)} max age in days`} type="number" min={1} max={9999} step={1} value={sourceMaxAge(settings, source)} onChange={(event) => setSourceMaxAge(source, Number(event.target.value))} /></span>
@@ -573,7 +580,7 @@ export function DiskView({
               {(settings.customSources ?? []).map((custom) => {
                 const armed = enabled.includes(custom.key);
                 return <label className={`disk-source disk-source--custom ${armed ? "armed" : ""}`} key={custom.key}>
-                  <input type="checkbox" checked={armed} onChange={(event) => setEnabledSource(custom.key, event.target.checked)} />
+                  <input type="checkbox" disabled={settings.scrapeMode === "web-discovery"} checked={armed} onChange={(event) => setEnabledSource(custom.key, event.target.checked)} />
                   <span className="disk-source__led" aria-hidden="true" />
                   <span className="disk-source__name">{custom.label} <small>({custom.key})</small></span>
                 </label>;

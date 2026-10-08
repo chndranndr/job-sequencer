@@ -103,7 +103,7 @@ On failure, show:
 - a **Retry** action when retrying is safe;
 - a link to Settings when provider configuration caused the error.
 
-Do not display credentials, full prompts, or raw stack traces in the browser.
+In the loopback-only TRACE, show system/user prompts and model messages in readable blocks with credential values redacted. For web-discovery runs, omit the candidate profile from TRACE while retaining it in the model prompt. Do not display raw provider bodies or stack traces.
 
 ### 4.3 Unsaved changes
 
@@ -255,6 +255,8 @@ Show:
 - **Cancel run**.
 
 Do not show results as persisted jobs until the run succeeds. A failed or cancelled scrape does not leave a partially imported result set.
+
+When an adaptive search finishes with no jobs and no completed search, TRACE retains its funnel: attempts, raw/unique/duplicate totals, and required, searched, unavailable, and unsearched source coverage. This telemetry does not mean partial jobs were imported.
 
 ### After success
 

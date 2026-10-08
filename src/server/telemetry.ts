@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 
-export type TelemetryMode = "metadata" | "redacted" | "debug";
+export type TelemetryMode = "metadata" | "trace" | "redacted" | "debug";
 
-// ponytail: default telemetry stores metadata and bounded excerpts; full payload requires explicit local debug mode.
+// Trace mode keeps prompts and model text after credential redaction, while tool results stay metadata-only.
 export function getTelemetryMode(): TelemetryMode {
   const raw = process.env.TELEMETRY_MODE?.trim().toLowerCase();
+  if (!raw) return "trace";
   if (raw === "debug") return "debug";
   if (raw === "redacted") return "redacted";
+  if (raw === "trace") return "trace";
   return "metadata";
 }
 
@@ -17,7 +19,12 @@ function sha256(value: string) {
 const maxTelemetryEntries = 100;
 const maxTelemetryDepth = 8;
 const maxTelemetryTextLength = 2_000_000;
-const sensitiveFieldPattern = /(?:api[_-]?key|apikey|token|secret|password|authorization|credential|private[_-]?key|refresh[_-]?token)/i;
+const sensitiveFieldPattern = /(?:^|_)(?:api_key|apikey|token|secret|password|authorization|credential|credentials|cookie|private_key|access_token|bearer|auth|client_secret|refresh_token)(?:_|$)/;
+
+function isSensitiveField(name: string) {
+  const normalized = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_").toLowerCase();
+  return sensitiveFieldPattern.test(normalized);
+}
 
 function redactedText(value: string, redact: (value: string) => string) {
   return redact(value).slice(0, maxTelemetryTextLength);
@@ -32,7 +39,7 @@ function metadataValue(value: unknown): unknown {
 }
 
 function redactValue(value: unknown, redact: (value: string) => string, seen = new WeakSet<object>(), depth = 0, fieldName = ""): unknown {
-  if (sensitiveFieldPattern.test(fieldName)) return "[redacted]";
+  if (isSensitiveField(fieldName)) return "[redacted]";
   if (typeof value === "string") return redactedText(value, redact);
   if (typeof value === "bigint") return `${value}n`;
   if (!value || typeof value !== "object") return value;
@@ -48,14 +55,13 @@ function redactValue(value: unknown, redact: (value: string) => string, seen = n
 
 export function telemetryPromptPayload(text: string, redact: (value: string) => string) {
   const mode = getTelemetryMode();
-  if (mode === "debug") return { text: redactedText(text, redact) };
-  if (mode === "redacted") return { text: redactedText(text, redact) };
+  if (mode !== "metadata") return { text: redactedText(text, redact) };
   return { textLength: text.length, promptHash: sha256(text) };
 }
 
 export function telemetryAssistantPayload(payload: Record<string, unknown>, redact: (value: string) => string) {
   const mode = getTelemetryMode();
-  if (mode === "debug" || mode === "redacted") {
+  if (mode !== "metadata") {
     return typeof payload.text === "string" ? { ...payload, text: redactedText(payload.text, redact) } : payload;
   }
   const text = typeof payload.text === "string" ? payload.text : "";
@@ -72,17 +78,20 @@ export function telemetryAssistantPayload(payload: Record<string, unknown>, reda
 
 export function telemetrySystemPromptPayload(text: string, redact: (value: string) => string) {
   const mode = getTelemetryMode();
-  if (mode === "debug") return { text: redactedText(text, redact) };
-  if (mode === "redacted") return { text: redactedText(text, redact) };
+  if (mode !== "metadata") return { text: redactedText(text, redact) };
   return { textLength: text.length, promptHash: sha256(text) };
 }
 
 export function telemetryToolPayload(payload: Record<string, unknown>, redact: (value: string) => string) {
   const mode = getTelemetryMode();
-  if (mode === "metadata") {
+  if (mode === "metadata" || mode === "trace") {
     return Object.fromEntries(Object.entries(payload).map(([key, value]) => [
       key,
-      key === "toolCallId" || key === "toolName" ? (typeof value === "string" ? value.slice(0, 200) : metadataValue(value)) : metadataValue(value),
+      key === "toolCallId" || key === "toolName"
+        ? (typeof value === "string" ? value.slice(0, 200) : metadataValue(value))
+        : mode === "trace" && key === "args"
+          ? redactValue(value, redact)
+          : metadataValue(value),
     ]));
   }
   return redactValue(payload, redact);

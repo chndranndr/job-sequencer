@@ -60,11 +60,23 @@ test("scrape removes hard-excluded and non-remote results before persistence", a
     assert.equal(stored.length,1); assert.equal(stored[0].company,"Good"); assert.equal(stored[0].role,"Backend Engineer"); assert.equal(stored[0].location,"Remote"); assert.equal(stored[0].posting,"Backend role");
   } finally { await app.close(); db.close(); await rm(dir,{recursive:true,force:true}); }
 });
-test("available model endpoint returns provider-authenticated Pi model options", async()=>{
-  const db=openDatabase(":memory:"); let requestedProvider="";
-  const app=await buildServer({db,availableModels:async provider=>{requestedProvider=provider;return[{id:"gpt-5.6-luna",name:"GPT-5.6 Luna"}];}});
-  try { const response=await app.inject({url:"/api/ai/models?provider=openai-codex"}); assert.equal(response.statusCode,200); assert.deepEqual(response.json(),{provider:"openai-codex",models:[{id:"gpt-5.6-luna",name:"GPT-5.6 Luna"}]}); assert.equal(requestedProvider,"openai-codex"); }
-  finally { await app.close(); db.close(); }
+test("all-provider authenticated model catalog preserves provider IDs and accepts an empty catalog", async()=>{
+  const db=openDatabase(":memory:");
+  const models=[
+    {provider:"custom-auth-provider",id:"shared-model",name:"Custom shared"},
+    {provider:"openai-codex",id:"shared-model",name:"Codex shared"},
+  ];
+  const app=await buildServer({db,availableModels:async()=>models});
+  try {
+    const response=await app.inject({url:"/api/ai/models"});
+    assert.equal(response.statusCode,200);
+    assert.deepEqual(response.json(),{models});
+    models.length=0;
+    const empty=await app.inject({url:"/api/ai/models"});
+    assert.equal(empty.statusCode,200);
+    assert.deepEqual(empty.json(),{models:[]});
+    assert.equal((await app.inject({url:"/api/ai/models?provider=openai-codex"})).statusCode,400);
+  } finally { await app.close(); db.close(); }
 });
 
 test("profile API exposes the deterministic CV page estimate", async()=>{

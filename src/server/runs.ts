@@ -20,11 +20,13 @@ import type { FactualAuditorFn } from "./agents/factual-auditor.js";
 import type { ReviserFn } from "./agents/reviser.js";
 import type { StrategistFn } from "./agents/strategist.js";
 import type { WriterFn } from "./agents/writer.js";
-import { jobSourceLabel, type CustomJobSource, type JobSource, type SearchBudget, type SearchHit, type TrajectoryRecorder } from "../shared.js";
+import { jobSourceLabel } from "../shared.js";
+import type { CustomJobSource, JobSource, RunTrajectorySourceCoverage, SearchBudget, SearchHit, TrajectoryRecorder } from "../shared.js";
 import { createSourceRegistry, defaultSourceRegistry, type ResolvedSource, type SourceRegistry } from "./source-plugins.js";
 import { runStructured } from "./structured.js";
 import { RunCoordinator } from "./coordinator.js";
 import { compileSearchMemory } from "./search/memory.js";
+import { BrowserDiscoveryError, createBrowserDiscoveryExecutor } from "./browser-discovery.js";
 
 export interface ScrapeContext { profile:string; criteria:Criteria; settings:Settings; signal:AbortSignal; runId?:string; trajectory?:TrajectoryRecorder; onUsage?: (usage: PiRunUsage) => void; searchBudget?: Partial<SearchBudget>; db?: DatabaseSync }
 export type ScrapeEvidence = SearchHit & { posting?: string };
@@ -54,6 +56,7 @@ export type ScrapeFunnel = {
   detailFetches: number;
   selectedJobs: number;
   stopReason: string | null;
+  sourceCoverage: RunTrajectorySourceCoverage;
   sources: Record<string, ScrapeFunnelSource>;
 };
 export type ScrapeExecution = { result: unknown; provenance: Map<string, string>; evidence?: ReadonlyMap<string, ScrapeEvidence>; errors?: string[]; warnings?: string[]; funnel?: ScrapeFunnel; hardFiltered?: boolean };
@@ -139,6 +142,7 @@ function buildScrapeFunnel(tools: AgentSearchTools, criteria: Criteria, selected
   const detailFetches = snapshot.attempts.filter(attempt => attempt.operation === "detail" && attempt.status !== "rejected").length;
   return {
     enabledSources,
+    sourceCoverage: snapshot.sourceCoverage,
     sourceAttempts,
     queriesBySource,
     pagesBySource,
@@ -155,7 +159,7 @@ function buildScrapeFunnel(tools: AgentSearchTools, criteria: Criteria, selected
 }
 
 export class AllSourcesFailedError extends Error {
-  constructor(public readonly errors: string[], public readonly warnings: string[] = []) {
+  constructor(public readonly errors: string[], public readonly warnings: string[] = [], public readonly funnel?: ScrapeFunnel) {
     super("All enabled job sources returned no valid results.");
     this.name = "AllSourcesFailedError";
   }
@@ -190,6 +194,7 @@ function appendSourceMessages(target: string[], label: string, values: readonly 
 }
 
 function configuredSourceKeys(settings: Settings) {
+  if (settings.scrapeMode === "web-discovery") return ["web-discovery"];
   return settings.enabledSources?.length ? settings.enabledSources : [settings.source];
 }
 
@@ -421,7 +426,10 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
     const profileHints = deriveProfileSearchHints(context.profile, context.criteria);
     const criteria = effectiveSearchCriteria(context.criteria, profileHints);
     const maxJobs = Math.min(criteria.maxJobsPerRun, context.settings.maxResults);
-    const budget = resolveSearchBudget(context.searchBudget, maxJobs, sources.length);
+    const budget = resolveSearchBudget({
+      ...context.searchBudget,
+      maxRunDurationMs: context.searchBudget?.maxRunDurationMs ?? 300_000,
+    }, maxJobs, sources.length);
     const tasks = createTaskReporter(context.trajectory, context.runId);
     tasks.start({ taskId: "scrape:agent:prepare", label: "Prepare adaptive search", detail: sources.map((source) => jobSourceLabel(source.key, source.custom ? [source.custom] : [])).join(", ") });
     let guidance: string;
@@ -467,6 +475,7 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
               intent: attempt.intent ?? null,
               status: attempt.status === "completed" ? "completed" : attempt.status === "failed" ? "failed" : "rejected",
               resultCount: attempt.resultCount ?? 0,
+              rawHits: attempt.rawHits,
               uniqueResultCount: attempt.uniqueResultCount ?? 0,
               promisingResultCount: attempt.promisingResultCount ?? 0,
               duplicateCount: attempt.duplicateCount ?? 0,
@@ -555,13 +564,13 @@ export function createAgentSearchExecutor(dependencies: LiveAgentScrapeDependenc
       if (!assistantText && typeof output === "string") assistantText = output;
       tools.state.assertFinished();
       const result = validateScrapeResult(parseAgentResult(assistantText), tools.provenance, maxJobs, undefined, sourceConfigs.map((source) => source.key));
-      const completedSearch = tools.state.attempts.some(attempt => attempt.operation === "search" && attempt.status === "completed");
-      if (!result.jobs.length && !completedSearch) {
-        throw new AllSourcesFailedError(tools.state.errors.length ? tools.state.errors : ["Adaptive search finished without a completed search."], tools.warnings);
-      }
       const funnel = buildScrapeFunnel(tools, criteria, result.jobs.length);
       if (context.runId && context.trajectory) {
         try { context.trajectory(context.runId, { kind: "lifecycle", type: "search_funnel", payload: funnel }); } catch {}
+      }
+      const completedSearch = tools.state.attempts.some(attempt => attempt.operation === "search" && attempt.status === "completed");
+      if (!result.jobs.length && !completedSearch) {
+        throw new AllSourcesFailedError(tools.state.errors.length ? tools.state.errors : ["Adaptive search finished without a completed search."], tools.warnings, funnel);
       }
       tasks.complete("scrape:agent:run", `${result.jobs.length} result(s) selected`);
       return { result: hydrateScrapeResult(result, tools.detailDescriptions), provenance: tools.provenance, evidence: buildScrapeEvidence(tools.state.hits, tools.detailDescriptions), errors: tools.errors, warnings: tools.warnings, funnel };
@@ -789,8 +798,10 @@ export function createMultiSourceScrapeExecutor(sourceExecutor?: SourceScrapeExe
   };
 }
 
-export const liveScrapeExecutor: ScrapeExecutor = createAgentSearchExecutor();
-const safeMessage=(error:unknown)=> error instanceof PiRunTimeoutError?"Scrape timed out.":error instanceof PiRunCancelledError||((error as Error)?.name==="AbortError")?"Scrape cancelled.":"Scrape failed. Check provider settings and try again.";
+const jobBoardExecutor = createAgentSearchExecutor();
+const browserDiscoveryExecutor = createBrowserDiscoveryExecutor();
+export const liveScrapeExecutor: ScrapeExecutor = context => context.settings.scrapeMode === "web-discovery" ? browserDiscoveryExecutor(context) : jobBoardExecutor(context);
+const safeMessage=(error:unknown)=> error instanceof BrowserDiscoveryError?error.message:error instanceof PiRunTimeoutError?"Scrape timed out.":error instanceof PiRunCancelledError||((error as Error)?.name==="AbortError")?"Scrape cancelled.":"Scrape failed. Check provider settings and try again.";
 
 export class RunManager {
   private readonly coordinator: RunCoordinator;
@@ -807,7 +818,7 @@ export class RunManager {
       idempotencyKey,
       execute: ({ runId, signal, onUsage }) => this.work(runId, signal, context, onUsage),
       onError: error => ({
-        summary: error instanceof AllSourcesFailedError ? { jobsFound: 0, recommended: 0, discarded: 0, duplicatesSkipped: 0, errors: error.errors, warnings: error.warnings } : null,
+        summary: error instanceof AllSourcesFailedError ? { jobsFound: 0, recommended: 0, discarded: 0, duplicatesSkipped: error.funnel?.duplicatesRemoved ?? 0, errors: error.errors, warnings: error.warnings, ...(error.funnel ? { funnel: error.funnel } : {}) } : null,
         error: safeMessage(error),
         errorCode: classifyPiError(error),
       }),

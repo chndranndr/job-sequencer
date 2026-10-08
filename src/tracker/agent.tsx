@@ -192,9 +192,13 @@ export function AgentPane({
       <button type="button" className="agent__toggle" aria-controls="agent-panel" aria-expanded={!agentCollapsed} aria-label={agentCollapsed ? "Open agent panel" : "Collapse agent panel"} onClick={() => setAgentCollapsed((value) => !value)}>{agentCollapsed ? "‹" : "›"}</button>
     </div>
     <div id="agent-panel" className="agent__content" hidden={agentCollapsed}>
+    {!pendingScrape && preferences.settings && <div className="agent-prefs">
+      <ScrapeMode settings={preferences.settings} disabled={!preferences.ready || running} onSettings={preferences.onSettings} onError={preferences.onError} />
+      <p className="agent-prefs__note">Press PLAY to review preferences and start the selected search mode.</p>
+    </div>}
     {pendingScrape && <div className="ask">
       <h2>Start scrape?</h2>
-      {scrapeIssues.length ? <p>{scrapeIssues.join(" ")}</p> : <p>Pi will search enabled sources and rank jobs. Nothing is selected for you.</p>}
+      {scrapeIssues.length ? <p>{scrapeIssues.join(" ")}</p> : <p>{preferences.settings?.scrapeMode === "web-discovery" ? "Pi will discover public company career and ATS pages and rank jobs." : "Pi will search enabled sources and rank jobs."} Nothing is selected for you.</p>}
       <SearchPreferences {...preferences} />
       <div className="choices">
         {scrapeIssues.length ? <button onClick={() => navigate("#/disk")}>Open DISK and fix this</button> : <button disabled={!preferences.ready} onClick={onConfirmScrape}>Yes · scrape</button>}
@@ -224,7 +228,17 @@ export function AgentPane({
   </aside>;
 }
 
-function SearchPreferences({ criteria, settings, dirty, error, onCriteria, onSettings, onError, onSave, onRevert }: SearchPreferencePanel) {
+function ScrapeMode({ settings, disabled, onSettings, onError }: Pick<SearchPreferencePanel, "settings" | "onSettings" | "onError"> & { disabled: boolean }) {
+  if (!settings) return null;
+  return <label className="field">Scrape mode
+    <select disabled={disabled} value={settings.scrapeMode ?? "job-boards"} onChange={(event) => { onError(""); onSettings({ ...settings, scrapeMode: event.target.value as Settings["scrapeMode"] }); }}>
+      <option value="job-boards">Job boards</option>
+      <option value="web-discovery">Web discovery</option>
+    </select>
+  </label>;
+}
+
+function SearchPreferences({ criteria, settings, ready, dirty, error, onCriteria, onSettings, onError, onSave, onRevert }: SearchPreferencePanel) {
   // The error must render in this branch too: a failed GET leaves criteria null, and the
   // normal error slot below is unreachable from the early return. Loading without a failure
   // reason would otherwise look like an endless load.
@@ -234,6 +248,7 @@ function SearchPreferences({ criteria, settings, dirty, error, onCriteria, onSet
   </div>;
   // const binding so the narrowing survives the closures below.
   const current = settings;
+  const discovery = current.scrapeMode === "web-discovery";
   const armed = enabledSources(current);
   function arm(source: string, next: boolean) {
     const result = toggleEnabledSource(current, source, next);
@@ -243,18 +258,20 @@ function SearchPreferences({ criteria, settings, dirty, error, onCriteria, onSet
   }
   return <div className="agent-prefs">
     <ProfileSaveBar dirty={dirty} label="Search preferences" onSave={onSave} onDiscard={onRevert} variant="tracker" />
+    <ScrapeMode settings={current} disabled={!ready} onSettings={onSettings} onError={onError} />
+    {discovery && <p className="agent-prefs__note">Requires the BrowserSkill bsk CLI and browser extension. Reads public company career and ATS pages; never applies automatically. Job-board selections are saved for Job boards mode and do not limit discovery.</p>}
     <CriteriaFields criteria={criteria} setCriteria={onCriteria} error="" variant="tracker" />
     <div className="slats">
       <div className="slat"><span>FIT</span><input type="range" min={1} max={99} aria-label="Fit score threshold" value={current.scoreThreshold} onChange={(event) => onSettings({ ...current, scoreThreshold: Number(event.target.value) })} /><span>{current.scoreThreshold}</span></div>
     </div>
     <div className="disk-source-rack">
       {jobSourceKeys.map((source) => <label className={`disk-source disk-source--custom ${armed.includes(source) ? "armed" : ""}`} key={source}>
-        <input type="checkbox" checked={armed.includes(source)} onChange={(event) => arm(source, event.target.checked)} />
+        <input type="checkbox" disabled={discovery} checked={armed.includes(source)} onChange={(event) => arm(source, event.target.checked)} />
         <span className="disk-source__led" aria-hidden="true" />
         <span className="disk-source__name">{jobSourceLabel(source, current.customSources ?? [])}</span>
       </label>)}
       {(current.customSources ?? []).map((custom) => <label className={`disk-source disk-source--custom ${armed.includes(custom.key) ? "armed" : ""}`} key={custom.key}>
-        <input type="checkbox" checked={armed.includes(custom.key)} onChange={(event) => arm(custom.key, event.target.checked)} />
+        <input type="checkbox" disabled={discovery} checked={armed.includes(custom.key)} onChange={(event) => arm(custom.key, event.target.checked)} />
         <span className="disk-source__led" aria-hidden="true" />
         <span className="disk-source__name">{custom.label} <small>({custom.key})</small></span>
       </label>)}

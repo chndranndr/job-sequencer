@@ -16,7 +16,7 @@ export class ApiError extends Error {
   }
 }
 
-export type PiModelOption = { id: string; name: string };
+export type PiModelOption = { provider: string; id: string; name: string };
 export type ProfileImportIdentity = {
   conflict: boolean;
   currentName: string;
@@ -53,7 +53,7 @@ export const importProfile = (file: File, currentProfile?: StructuredProfile | n
 };
 export const getCriteria = () => api<Criteria>("/api/criteria");
 export const getSettings = () => api<Settings>("/api/settings");
-export const getAvailableModels = (provider: string) => api<{ provider: string; models: PiModelOption[] }>(`/api/ai/models?provider=${encodeURIComponent(provider)}`);
+export const getAvailableModels = () => api<{ models: PiModelOption[] }>("/api/ai/models");
 export const getJobs = (stages?: string[]) => api<{ jobs: Job[] }>(stages?.length ? `/api/jobs?stage=${encodeURIComponent(stages.join(","))}` : "/api/jobs");
 export const getApplications = () => api<{ jobs: Job[] }>("/api/applications");
 export const getJob = (id: string) => api<Job>(`/api/jobs/${encodeURIComponent(id)}`);

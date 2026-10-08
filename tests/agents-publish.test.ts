@@ -67,9 +67,11 @@ test("failed revision compile leaves current bytes and verification unchanged", 
     assert.deepEqual(await readdir(join(current, "drafts")), ["1.json"]);
     assert.ok(signals.length > 0 && signals.every(signal => signal instanceof AbortSignal));
     const before = (db.prepare("SELECT verification_json FROM applications WHERE job_id=?").get(jobId) as { verification_json: string }).verification_json;
+    const exportsBefore = await readdir(join(dir, "generated"));
 
     await assert.rejects(() => generateJob(options({ db, dataDir: dir, jobId, runId: "publish-two", profile: JSON.stringify(candidate), runner: runner("second", signals, true), allowDrafting: true })), /lualatex failed/);
     assert.equal(await readFile(join(current, "cv.pdf"), "utf8"), "first");
+    assert.deepEqual(await readdir(join(dir, "generated")), exportsBefore);
     assert.equal((db.prepare("SELECT verification_json FROM applications WHERE job_id=?").get(jobId) as { verification_json: string }).verification_json, before);
     await readFile(join(dir, "applications", jobId, "revisions", "publish-two", "cv.tex"), "utf8");
     await assert.rejects(() => readdir(join(dir, "applications", jobId, "history")));
@@ -93,6 +95,16 @@ test("successful revision replaces current and preserves history", async () => {
     const history = await readdir(join(applicationDir, "history"));
     assert.equal(history.length, 1);
     assert.equal(await readFile(join(applicationDir, "history", history[0]!, "cv.pdf"), "utf8"), "first");
+    const generated = join(dir, "generated");
+    const folders = (await readdir(generated)).sort();
+    assert.equal(folders.length, 2);
+    for (const [index, bytes] of ["first", "second"].entries()) {
+      assert.match(folders[index]!, /^example_engineer_2026-08-31T12-00-0[12]-000Z-/);
+      const folder = join(generated, folders[index]!);
+      assert.deepEqual((await readdir(folder)).sort(), ["cover_letter_example_engineer.pdf", "cv_example_engineer.pdf"]);
+      assert.equal(await readFile(join(folder, "cv_example_engineer.pdf"), "utf8"), bytes);
+      assert.equal(await readFile(join(folder, "cover_letter_example_engineer.pdf"), "utf8"), bytes);
+    }
   } finally {
     db.close();
     await rm(dir, { recursive: true, force: true });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultSettings } from "../src/server/config.js";
-import { defaultSourceMaxAgeDays } from "../src/shared.js";
+import { defaultSourceMaxAgeDays, jobSourceLabel } from "../src/shared.js";
 import {
   blankCustomSource,
   cloneSettings,
@@ -20,6 +20,15 @@ test("settings dirty state compares against an independent saved snapshot", () =
   saved.scoreThreshold += 1;
   assert.equal(settingsAreDirty(defaultSettings, saved), true);
   assert.equal(defaultSettings.scoreThreshold, 60);
+});
+
+test("scrape mode changes are dirty and survive source edits and cloning", () => {
+  const discovery = { ...defaultSettings, scrapeMode: "web-discovery" as const };
+  assert.equal(settingsAreDirty(discovery, defaultSettings), true);
+  const updated = updateEnabledSources(discovery, ["linkedin"]);
+  assert.equal(updated.value?.scrapeMode, "web-discovery");
+  assert.equal(cloneSettings(updated.value!).scrapeMode, "web-discovery");
+  assert.equal(jobSourceLabel("web-discovery"), "Web discovery");
 });
 
 test("source age uses configured values and built-in defaults", () => {

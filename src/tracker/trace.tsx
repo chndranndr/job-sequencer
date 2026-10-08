@@ -9,7 +9,8 @@ import { shouldRefreshActiveRun } from "./visibility.js";
 const RUN_SYNC_TYPE = "tracker-active-run" as const;
 const RUN_SYNC_CHANNEL = "jobdesk-tracker-runs";
 const MAX_PAYLOAD_CHARS = 8_000;
-const secretKey = /(?:api[_-]?key|apikey|token|secret|password|authorization|credential|cookie|private[_-]?key|stack|prompt)/i;
+const MAX_MESSAGE_CHARS = 2_000_000;
+const secretKey = /(?:^|_)(?:api_key|apikey|token|secret|password|authorization|credential|credentials|cookie|private_key|access_token|bearer|auth|client_secret|refresh_token|stack|prompt)(?:_|$)/;
 const secretString = /((?:api[_-]?key|apikey|token|secret|password|authorization|credential|cookie|private[_-]?key)\s*[:=]\s*["']?)[^"'\s,}]+|((?:bearer\s+))[^\s,}]+/gi;
 
 export type RunSyncMessage = { type: typeof RUN_SYNC_TYPE; runId: string | null };
@@ -25,8 +26,13 @@ function scrubString(value: string) {
     .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}\b/g, "[redacted]");
 }
 
+function isSecretKey(key: string) {
+  const normalized = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_").toLowerCase();
+  return secretKey.test(normalized);
+}
+
 function scrub(value: unknown, seen: WeakSet<object>, key = "", depth = 0): unknown {
-  if (key && secretKey.test(key)) return "[redacted]";
+  if (key && isSecretKey(key)) return "[redacted]";
   if (typeof value === "string") return scrubString(value);
   if (value === null || typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "bigint") return `${value}n`;
@@ -49,17 +55,25 @@ export function safePayloadText(value: unknown) {
   return output.length > MAX_PAYLOAD_CHARS ? `${output.slice(0, MAX_PAYLOAD_CHARS)}\n[Payload truncated]` : output;
 }
 
+export function safeMessageText(value: string) {
+  const output = scrubString(value);
+  return output.length > MAX_MESSAGE_CHARS ? output.slice(0, MAX_MESSAGE_CHARS) + "\n[Message truncated]" : output;
+}
+
 function summaryText(value: string) {
   return scrubString(value).replace(/\s+/g, " ").trim().slice(0, 150);
 }
 
-function isProtectedTraceEvent(event: TrajectoryEvent) {
+function isMessageTraceEvent(event: TrajectoryEvent) {
   return event.kind === "thinking" || event.type === "system_prompt" || event.type === "user_prompt" || event.type === "assistant_thinking" || event.type === "assistant_message";
 }
 
 export function eventSummary(event: TrajectoryEvent) {
-  if (isProtectedTraceEvent(event)) return "[content omitted]";
   const payload = record(event.payload);
+  if (isMessageTraceEvent(event)) {
+    if (typeof payload?.text === "string") return summaryText(payload.text);
+    return typeof payload?.textLength === "number" ? "Content not stored · " + payload.textLength + " chars" : "Content not stored for this run";
+  }
   if (typeof payload?.text === "string" && summaryText(payload.text)) return summaryText(payload.text);
   if (typeof payload?.toolName === "string") return summaryText(payload.toolName);
   if (typeof payload?.error === "string") return summaryText(payload.error);
@@ -520,6 +534,12 @@ function TraceObservabilitySummary({ run, observability }: { run: Run; observabi
         <TraceMeta label="Source attempts">{observableFunnelAttempts(funnel.sourceAttempts)}</TraceMeta>
         <TraceMeta label="Queries used">{observableFunnelMap(funnel.queriesBySource)}</TraceMeta>
         <TraceMeta label="Pages visited">{observableFunnelMap(funnel.pagesBySource)}</TraceMeta>
+        {funnel.sourceCoverage && <>
+          <TraceMeta label="Required sources">{observableText(funnel.sourceCoverage.required.join(", "))}</TraceMeta>
+          <TraceMeta label="Searched sources">{observableText(funnel.sourceCoverage.searched.join(", "))}</TraceMeta>
+          <TraceMeta label="Unavailable sources">{observableText(funnel.sourceCoverage.unavailable.join(", "))}</TraceMeta>
+          <TraceMeta label="Unsearched sources">{observableText(funnel.sourceCoverage.unsearched.join(", "))}</TraceMeta>
+        </>}
         <TraceMeta label="Raw hits">{observableCount(funnel.rawHits)}</TraceMeta>
         <TraceMeta label="Unique hits">{observableCount(funnel.uniqueHits)}</TraceMeta>
         <TraceMeta label="Promising hits">{observableCount(funnel.promisingHits)}</TraceMeta>
@@ -558,8 +578,15 @@ function TaskRow({ row }: { row: RunTaskRow }) {
 }
 
 function TraceEvent({ event }: { event: TrajectoryEvent }) {
-  return <details className={`trace-event event-${event.kind}`}>
+  const payload = record(event.payload);
+  const messageText = typeof payload?.text === "string" ? payload.text : null;
+  const messageMetadata = ["provider", "model", "stopReason"].flatMap((key) => {
+    const value = payload?.[key];
+    return typeof value === "string" ? [key + ": " + value] : [];
+  });
+  const isMessage = isMessageTraceEvent(event);
+  return <details className={`trace-event event-${event.kind}`} open={isMessage}>
     <summary><span className="trace-event-main"><em>{event.kind.replaceAll("_", " ")}</em><strong>{event.type.replaceAll("_", " ")}</strong><small>{eventSummary(event)}</small></span><span className="trace-event-time"><strong>{eventTime(event.timestamp)}</strong><small>{formatTraceDuration(event.durationMs)}</small></span></summary>
-    <div className="trace-event-body"><div className="trace-event-facts"><span>SEQ <b>{event.sequence}</b></span><span>CAPTURED <b>{dateTime(event.timestamp)}</b></span>{event.startedAt && <span>STARTED <b>{dateTime(event.startedAt)}</b></span>}{event.endedAt && <span>ENDED <b>{dateTime(event.endedAt)}</b></span>}</div>{isProtectedTraceEvent(event) ? <p className="trace-event-redacted">Content omitted from TRACE.</p> : <pre>{safePayloadText(event.payload)}</pre>}</div>
+    <div className="trace-event-body"><div className="trace-event-facts"><span>SEQ <b>{event.sequence}</b></span><span>CAPTURED <b>{dateTime(event.timestamp)}</b></span>{event.startedAt && <span>STARTED <b>{dateTime(event.startedAt)}</b></span>}{event.endedAt && <span>ENDED <b>{dateTime(event.endedAt)}</b></span>}</div>{isMessage ? messageText !== null ? <><div className="trace-message-meta"><strong>{event.type.replaceAll("_", " ")}</strong>{messageMetadata.map((item) => <span key={item}>{item}</span>)}</div><pre className="trace-message-content">{safeMessageText(messageText)}</pre></> : <><p className="trace-message-missing">This run stored only message metadata. New traces will include the content.</p>{payload && <pre>{safePayloadText(payload)}</pre>}</> : <pre>{safePayloadText(event.payload)}</pre>}</div>
   </details>;
 }

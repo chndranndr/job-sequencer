@@ -106,6 +106,7 @@ export type CustomJobSource = {
 
 export function jobSourceLabel(source: string, customSources: readonly CustomJobSource[] = []): string {
   if (source === "manual") return "Manual";
+  if (source === "web-discovery") return "Web discovery";
   if (isJobSource(source)) return jobSourceLabels[source];
   return customSources.find((item) => item.key === source)?.label ?? source;
 }
@@ -149,6 +150,7 @@ export type SearchBudget = Readonly<{
 export type Settings = {
   provider: string;
   model: string;
+  scrapeMode?: "job-boards" | "web-discovery";
   /** Legacy compatibility alias. Use enabledSources for new settings. */
   source: BuiltInJobSource;
   enabledSources?: string[];
@@ -529,6 +531,7 @@ export type RunTrajectoryAttempt = {
   resultId: string | null;
   requestedLimit: number | null;
   resultCount: number | null;
+  rawHits?: number;
   uniqueResultCount: number | null;
   duplicateCount: number | null;
   promisingResultCount: number | null;
@@ -575,6 +578,7 @@ export type RunTrajectoryQueryRecord = {
   page?: number;
   cursor?: string;
   returnedHits?: number;
+  rawHits?: number;
   uniqueHits?: number;
   duplicateRate?: number;
   hasMore?: boolean;
@@ -701,6 +705,7 @@ export type RunTrajectoryFunnel = {
   sourceAttempts?: number | Record<string, number>;
   queriesBySource?: Record<string, string[]>;
   pagesBySource?: Record<string, number[]>;
+  sourceCoverage?: RunTrajectorySourceCoverage;
   rawHits?: number;
   uniqueHits?: number;
   candidatesAfterCheapFiltering?: number;

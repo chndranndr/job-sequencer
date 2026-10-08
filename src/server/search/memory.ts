@@ -75,7 +75,7 @@ export function aggregateSourcePerformance(
   const sourceFilter = historicalSourceFilter(options.enabledSources);
   const rows = db.prepare(`
     SELECT source, status, unique_result_count, promising_result_count,
-           duplicate_count, result_count, created_at
+           duplicate_count, result_count, raw_hits, created_at
     FROM search_attempts
     ${sourceFilter.sql}
     ORDER BY created_at DESC
@@ -88,20 +88,20 @@ export function aggregateSourcePerformance(
     unique: number;
     promising: number;
     duplicates: number;
-    results: number;
+    rawHits: number;
     lastAttemptedAt?: string;
   }>();
 
   for (const row of rows) {
     const source = normalizeHistoricalValue(row.source, maxHistoricalSourceLength);
     if (!source || (enabledSet && !enabledSet.has(source as JobSource))) continue;
-    const current = summaries.get(source) ?? { attempts: 0, completed: 0, unique: 0, promising: 0, duplicates: 0, results: 0 };
+    const current = summaries.get(source) ?? { attempts: 0, completed: 0, unique: 0, promising: 0, duplicates: 0, rawHits: 0 };
     current.attempts += 1;
     current.completed += row.status === "completed" ? 1 : 0;
     current.unique += Number(row.unique_result_count ?? 0);
     current.promising += Number(row.promising_result_count ?? 0);
     current.duplicates += Number(row.duplicate_count ?? 0);
-    current.results += Number(row.result_count ?? 0);
+    current.rawHits += Number(row.raw_hits ?? row.result_count ?? 0);
     const createdAt = row.created_at ? String(row.created_at) : undefined;
     if (createdAt && (!current.lastAttemptedAt || createdAt > current.lastAttemptedAt)) current.lastAttemptedAt = createdAt;
     summaries.set(source, current);
@@ -114,7 +114,7 @@ export function aggregateSourcePerformance(
       attempts: summary.attempts,
       successRate: Number((summary.completed / summary.attempts).toFixed(2)),
       averageYield: Number(((summary.unique + summary.promising) / summary.attempts).toFixed(2)),
-      duplicateRate: summary.results > 0 ? Number((summary.duplicates / summary.results).toFixed(2)) : 0,
+      duplicateRate: summary.rawHits > 0 ? Number((summary.duplicates / summary.rawHits).toFixed(2)) : 0,
       promisingJobs: summary.promising,
       lastAttemptedAt: summary.lastAttemptedAt,
     }));
@@ -130,7 +130,7 @@ export function deriveHistoricalSearchSignals(
 
   const rows = db.prepare(`
     SELECT source, query, location, status, unique_result_count,
-           promising_result_count, duplicate_count, result_count, created_at
+           promising_result_count, duplicate_count, result_count, raw_hits, created_at
     FROM search_attempts
     ${sourceFilter.sql}
     ORDER BY created_at DESC
@@ -145,7 +145,7 @@ export function deriveHistoricalSearchSignals(
     unique: number;
     promising: number;
     duplicates: number;
-    results: number;
+    rawHits: number;
     lastAttemptedAt?: string;
   }>();
 
@@ -155,13 +155,13 @@ export function deriveHistoricalSearchSignals(
     const location = normalizeHistoricalValue(row.location, maxHistoricalLocationLength);
     if (!source || !query) continue;
     const key = `${source}\u0000${query}\u0000${location}`;
-    const current = aggregates.get(key) ?? { source, query, location, attempts: 0, completed: 0, unique: 0, promising: 0, duplicates: 0, results: 0 };
+    const current = aggregates.get(key) ?? { source, query, location, attempts: 0, completed: 0, unique: 0, promising: 0, duplicates: 0, rawHits: 0 };
     current.attempts += 1;
     current.completed += row.status === "completed" ? 1 : 0;
     current.unique += Number(row.unique_result_count ?? 0);
     current.promising += Number(row.promising_result_count ?? 0);
     current.duplicates += Number(row.duplicate_count ?? 0);
-    current.results += Number(row.result_count ?? 0);
+    current.rawHits += Number(row.raw_hits ?? row.result_count ?? 0);
     const createdAt = row.created_at ? String(row.created_at) : undefined;
     if (createdAt && (!current.lastAttemptedAt || createdAt > current.lastAttemptedAt)) current.lastAttemptedAt = createdAt;
     aggregates.set(key, current);
@@ -172,7 +172,7 @@ export function deriveHistoricalSearchSignals(
   for (const row of [...aggregates.values()].sort((left, right) =>
     right.attempts - left.attempts || (right.lastAttemptedAt ?? "").localeCompare(left.lastAttemptedAt ?? ""),
   )) {
-    const { attempts, completed, unique, promising, duplicates, results, source, query, location, lastAttemptedAt } = row;
+    const { attempts, completed, unique, promising, duplicates, rawHits, source, query, location, lastAttemptedAt } = row;
     const pattern = `${query}${location ? ` / ${location}` : ""} / ${source}`;
     const confidence = Number((attempts / (attempts + 2)).toFixed(2));
 
@@ -182,7 +182,7 @@ export function deriveHistoricalSearchSignals(
     if (promising >= 2 || (promising >= 1 && unique >= 2 && duplicates <= unique)) {
       signal = "positive";
       evidence = `higher unique/promising yield across recent runs (${promising} promising, ${unique} unique across ${attempts} attempt(s))`;
-    } else if ((attempts >= 2 && unique === 0) || (results > 0 && duplicates / results >= 0.7 && unique === 0)) {
+    } else if ((attempts >= 2 && unique === 0) || (rawHits > 0 && duplicates / rawHits >= 0.7 && unique === 0)) {
       signal = "negative";
       evidence = `high duplicate or low useful yield (${duplicates} duplicate(s), ${unique} unique across ${attempts} attempt(s))`;
     } else if (completed === 0 && attempts >= 2) {

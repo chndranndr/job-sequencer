@@ -40,7 +40,11 @@ const SearchArgs = Type.Object({
 const DetailArgs = Type.Object({ resultId: Type.String({ minLength: 1, maxLength: 200 }) });
 
 const SearchResponseSchema = z.object({
-  meta: z.object({ count: z.number().int().nonnegative() }).passthrough(),
+  meta: z.object({
+    count: z.number().int().nonnegative(),
+    rawHits: z.number().int().nonnegative().optional(),
+    duplicatesRemoved: z.number().int().nonnegative().optional(),
+  }).passthrough(),
   results: z.array(z.object({
     id: z.string().trim().min(1).max(200).refine(value => !/[\\/\0\r\n]/.test(value) && !value.startsWith("-"), "invalid result ID"),
     title: z.string().trim().min(1).max(500),
@@ -183,7 +187,16 @@ export function createScrapeTools(options: ScrapeToolsOptions = {}) {
       }
       const response = await plugin.search({ query, location, limit, ...(page === undefined ? {} : { page }), ...(cursor === undefined ? {} : { cursor }), maxAgeDays, fallbackQueries: options.fallbackQueries }, context(signal));
       const parsed = SearchResponseSchema.parse(response);
-      const results = dedupeSearchResults(parsed.results as SourceSearchHit[]).slice(0, limit);
+      const adapterDuplicatesRemoved = parsed.meta.duplicatesRemoved ?? 0;
+      const minimumRawHits = parsed.results.length + adapterDuplicatesRemoved;
+      const rawHits = parsed.meta.rawHits ?? minimumRawHits;
+      if (rawHits < minimumRawHits) {
+        throw new Error(`Source returned inconsistent hit accounting: rawHits ${rawHits} is below ${minimumRawHits} results and adapter-removed duplicates.`);
+      }
+      const deduped = dedupeSearchResults(parsed.results as SourceSearchHit[]);
+      const commonDuplicatesRemoved = parsed.results.length - deduped.length;
+      const results = deduped.slice(0, limit);
+      const duplicatesRemoved = adapterDuplicatesRemoved + commonDuplicatesRemoved;
       noteStaleResults(results);
       for (const job of results) {
         returned.set(job.id, job.url);
@@ -198,7 +211,7 @@ export function createScrapeTools(options: ScrapeToolsOptions = {}) {
         });
       }
       const pageInfo = normalizedPageInfo(parsed.pageInfo);
-      const normalized = { meta: { count: results.length }, results, ...(pageInfo ? { pageInfo } : {}) };
+      const normalized = { meta: { count: results.length, rawHits, duplicatesRemoved }, results, ...(pageInfo ? { pageInfo } : {}) };
       return { content: [{ type: "text", text: JSON.stringify(normalized) }], details: { count: results.length } };
     },
   });

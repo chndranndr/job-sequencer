@@ -259,7 +259,7 @@ class DeterministicFauxAgent {
     return this.untrustedText;
   }
 
-  private call(toolName: string, action: AgentEvalAction, args: Record<string, unknown>) {
+  private call(toolName: string, action: AgentEvalAction, args: Parameters<typeof fauxToolCall>[1]) {
     this.calls.push(action);
     return fauxAssistantMessage(fauxToolCall(toolName, args, { id: `eval-${this.nextCallId++}` }), { stopReason: "toolUse" });
   }

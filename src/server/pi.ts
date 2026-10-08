@@ -78,16 +78,16 @@ export function selectConfiguredModel<T extends ModelLike>(
   return model;
 }
 
-export type PiModelOption = { id: string; name: string };
+export type PiModelOption = { provider: string; id: string; name: string };
 
-export function toPiModelOptions(models: readonly { id: string; name: string }[]): PiModelOption[] {
-  return models.map(({ id, name }) => ({ id, name }));
+export function toPiModelOptions(models: readonly { provider: string; id: string; name: string }[]): PiModelOption[] {
+  return models.map(({ provider, id, name }) => ({ provider, id, name }));
 }
 
-export async function getAvailablePiModels(provider: string): Promise<PiModelOption[]> {
+export async function getAvailablePiModels(): Promise<PiModelOption[]> {
   const signal = AbortSignal.timeout(10_000);
   const runtime = await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false, signal });
-  return toPiModelOptions(await runtime.getAvailable(provider, { signal }));
+  return toPiModelOptions(await runtime.getAvailable(undefined, { signal }));
 }
 
 // ponytail: trajectory text cap remains 2 MB; raise after measured DB/storage capacity review.
@@ -109,7 +109,9 @@ export function redactTelemetryText(value: string, limit = trajectoryTextLimit) 
     .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|access_token|credential(?:s)?|client[_-]?secret|private[_-]?key|refresh[_-]?token)=)[^&#\s]*/gi, "$1[redacted]")
     .replace(/([\"']?(?:credentials?|auth(?:orization)?|api[_-]?key|client[_-]?secret|private[_-]?key)[\"']?\s*[:=]\s*)\{[^{}]*\}/gi, "$1[redacted]")
     .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|bearer|credential(?:s)?|client[_-]?secret|private[_-]?key|refresh[_-]?token)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]")
-    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, "[redacted]")
+    .replace(/\bAIza[A-Za-z0-9_-]{35}\b/g, "[redacted]")
+    .replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+\b/gi, "[redacted]")
+    .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]+\b/g, "[redacted]")
     .slice(0, safeLimit);
 }
 
@@ -202,8 +204,8 @@ export function classifyPiError(error: unknown): PiErrorCode {
   return error instanceof Error ? "provider" : "unknown";
 }
 
-// ponytail: heartbeat starts at 120 seconds; tune per workflow after latency metrics exist.
-const defaultInactivityTimeoutMs = 120_000;
+// ponytail: heartbeat starts at 5 minutes; tune per workflow after latency metrics exist.
+const defaultInactivityTimeoutMs = 300_000;
 const meaningfulEventTypes = new Set([
   "agent_start",
   "agent_end",
@@ -572,13 +574,13 @@ function defaultAgentSearchTools(source: JobSource, customSource?: CustomJobSour
   return createAgentSearchTools({ sources: [{ key: source, custom: customSource, maxAgeDays, registry }] });
 }
 
-function scrapeToolCatalog(scrapeTools: ScrapeToolSet) {
+function scrapeToolCatalog(scrapeTools: ScrapeTools | Pick<AgentSearchTools, "allTools">) {
   if ("allTools" in scrapeTools) return { tools: scrapeTools.allTools, names: scrapeTools.allTools.map((tool) => tool.name) };
   const tools = [scrapeTools.searchJobs, scrapeTools.fetchJobDetails] as ToolDefinition[];
   return { tools, names: tools.map((tool) => tool.name) };
 }
 
-export async function createRestrictedScrapeSession(scrapeTools?: ScrapeToolSet): Promise<AgentSession> {
+export async function createRestrictedScrapeSession(scrapeTools?: ScrapeTools | Pick<AgentSearchTools, "allTools">): Promise<AgentSession> {
   const toolSet = scrapeTools ?? defaultAgentSearchTools("freehire");
   const cwd = process.cwd();
   const { faux, runtime, settings, loader } = await restrictedRuntime(cwd);
@@ -608,8 +610,8 @@ export function resolveLiveScrapeSession(config: Settings, scrapeTools?: ScrapeT
   return { source, customSource, plugin, maxAgeDays, toolSet };
 }
 
-export async function createLiveRestrictedScrapeSession(config: Settings, scrapeTools?: ScrapeToolSet, source: JobSource = config.source, sourceRegistry: SourceRegistry = createSourceRegistry()): Promise<AgentSession> {
-  const { toolSet } = resolveLiveScrapeSession(config, scrapeTools, source, sourceRegistry);
+export async function createLiveRestrictedScrapeSession(config: Settings, scrapeTools?: ScrapeTools | Pick<AgentSearchTools, "allTools">, source: JobSource = config.source, sourceRegistry: SourceRegistry = createSourceRegistry()): Promise<AgentSession> {
+  const toolSet = scrapeTools ?? resolveLiveScrapeSession(config, undefined, source, sourceRegistry).toolSet;
   const cwd = process.cwd();
   const runtime = await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false });
   const model = selectConfiguredModel(runtime, config);

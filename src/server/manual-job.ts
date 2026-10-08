@@ -167,10 +167,13 @@ function privateIpv4(value: string) {
 }
 
 function privateIpv6(value: string) {
-  const normalized = value.toLowerCase();
+  const normalized = new URL(`http://[${value}]/`).hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || /^(?:fe[89ab]):/.test(normalized)) return true;
-  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  return Boolean(mapped && privateIpv4(mapped[1]));
+  const mapped = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (!mapped) return false;
+  const high = Number.parseInt(mapped[1]!, 16);
+  const low = Number.parseInt(mapped[2]!, 16);
+  return privateIpv4(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
 }
 
 function privateAddress(value: string) {
@@ -194,7 +197,7 @@ export function validateManualUrl(value: string): URL {
   return url;
 }
 
-async function validateDestination(url: URL, lookup: ManualLookup) {
+export async function validateDestination(url: URL, lookup: ManualLookup) {
   validateManualUrl(url.toString());
   if (isIP(url.hostname.replace(/^\[|\]$/g, ""))) return;
   let addresses: readonly { address: string; family: number }[];

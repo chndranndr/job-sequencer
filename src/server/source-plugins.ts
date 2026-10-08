@@ -17,6 +17,7 @@ export type SourceCapabilities = Readonly<{
   detail: boolean;
   pagination: boolean;
   location: boolean;
+  locationOptional?: boolean;
   freshness: boolean;
   remote: boolean;
   activeStatus: boolean;
@@ -72,7 +73,7 @@ export type SourceSearchHit = Readonly<{
 }>;
 
 export type SourceSearchResponse = Readonly<{
-  meta: { count: number };
+  meta: { count: number; rawHits?: number; duplicatesRemoved?: number };
   results: SourceSearchHit[];
   pageInfo?: SearchPageInfo;
 }>;
@@ -126,6 +127,7 @@ const manifestSchema = z.object({
     detail: z.boolean(),
     pagination: z.boolean(),
     location: z.boolean(),
+    locationOptional: z.boolean().optional(),
     freshness: z.boolean(),
     remote: z.boolean(),
     activeStatus: z.boolean(),
@@ -401,6 +403,8 @@ const searchJobSchema = z.object({
 const searchResultSchema = z.object({
   meta: z.object({
     count: z.number().int().nonnegative(),
+    rawHits: z.number().int().nonnegative().optional(),
+    duplicatesRemoved: z.number().int().nonnegative().optional(),
     page: z.number().int().min(1).optional(),
     total: z.number().int().nonnegative().optional(),
     nextCursor: z.string().trim().max(500).nullable().optional(),
@@ -437,9 +441,18 @@ function pageInfo(meta: Record<string, unknown>, request?: SourceSearchRequest, 
   };
 }
 
-function toSearchResponse(results: z.infer<typeof searchJobSchema>[], count = results.length, info?: SearchPageInfo): SourceSearchResponse {
+function toSearchResponse(
+  results: z.infer<typeof searchJobSchema>[],
+  count = results.length,
+  info?: SearchPageInfo,
+  accounting?: Pick<SourceSearchResponse["meta"], "rawHits" | "duplicatesRemoved">,
+): SourceSearchResponse {
   return {
-    meta: { count },
+    meta: {
+      count,
+      ...(accounting?.rawHits === undefined ? {} : { rawHits: accounting.rawHits }),
+      ...(accounting?.duplicatesRemoved === undefined ? {} : { duplicatesRemoved: accounting.duplicatesRemoved }),
+    },
     ...(info ? { pageInfo: info } : {}),
     results: results.map(result => {
       const normalized = { ...result } as Record<string, unknown>;
@@ -450,14 +463,13 @@ function toSearchResponse(results: z.infer<typeof searchJobSchema>[], count = re
     }),
   };
 }
-
 function parseDefaultSearch(value: unknown, request?: SourceSearchRequest) {
   const parsed = searchResultSchema.parse(value);
-  return toSearchResponse(parsed.results, parsed.meta.count, pageInfo(parsed.meta as Record<string, unknown>, request));
+  return toSearchResponse(parsed.results, parsed.meta.count, pageInfo(parsed.meta as Record<string, unknown>, request), parsed.meta);
 }
 function parseFreehireSearch(value: unknown, request?: SourceSearchRequest) {
   const parsed = searchResultSchema.parse(value);
-  return toSearchResponse(parsed.results, parsed.meta.count, pageInfo(parsed.meta as Record<string, unknown>, request, true, false));
+  return toSearchResponse(parsed.results, parsed.meta.count, pageInfo(parsed.meta as Record<string, unknown>, request, true, false), parsed.meta);
 }
 
 function parseJapanSearch(value: unknown, request?: SourceSearchRequest) {
@@ -566,6 +578,7 @@ function createCliPlugin(spec: CliPluginSpec): JobSourcePlugin {
       const initial = await runSearch(request.query);
       if (!initial) throw new Error(`${spec.manifest.label} search did not start`);
       if (!spec.fallback) return initial;
+      let rawHits = initial.results.length;
       let results = dedupeSearchResults(initial.results);
       for (const fallbackQuery of sanitizeFallbackQueries(request.fallbackQueries)) {
         if (results.length || fallbackQuery === request.query) {
@@ -574,10 +587,15 @@ function createCliPlugin(spec: CliPluginSpec): JobSourcePlugin {
         }
         const fallback = await runSearch(fallbackQuery, true);
         if (!fallback) break;
+        rawHits += fallback.results.length;
         results = dedupeSearchResults([...results, ...fallback.results]);
       }
       const capped = results.slice(0, request.limit);
-      return { meta: { count: capped.length }, results: capped, ...(initial.pageInfo ? { pageInfo: initial.pageInfo } : {}) };
+      return {
+        meta: { count: capped.length, rawHits, duplicatesRemoved: rawHits - results.length },
+        results: capped,
+        ...(initial.pageInfo ? { pageInfo: initial.pageInfo } : {}),
+      };
     },
     async details(ref, context) {
       if (!context.runCli) throw new Error(`${spec.manifest.label} CLI is unavailable`);
@@ -826,7 +844,7 @@ const freehireManifest = manifest({
   id: "freehire",
   label: "FreeHire",
   version: "1.0.0",
-  capabilities: { search: true, detail: true, pagination: true, location: true, freshness: true, remote: true, activeStatus: false },
+  capabilities: { search: true, detail: true, pagination: true, location: true, locationOptional: true, freshness: true, remote: true, activeStatus: false },
   policy: defaultPolicy,
   defaults: { maxAgeDays: 9_999 },
   guidance: {
@@ -840,7 +858,7 @@ const linkedinManifest = manifest({
   id: "linkedin",
   label: "LinkedIn",
   version: "1.0.0",
-  capabilities: { search: true, detail: true, pagination: false, location: true, freshness: true, remote: true, activeStatus: false },
+  capabilities: { search: true, detail: true, pagination: false, location: true, locationOptional: false, freshness: true, remote: true, activeStatus: false },
   policy: { ...defaultPolicy, maxConcurrentRequests: 1 },
   defaults: { maxAgeDays: 9_999 },
   guidance: {
@@ -854,7 +872,7 @@ const japanManifest = (id: "tokyodev" | "japan-dev", label: string): SourceManif
   id,
   label,
   version: "1.0.0",
-  capabilities: { search: true, detail: true, pagination: false, location: false, freshness: true, remote: false, activeStatus: false },
+  capabilities: { search: true, detail: true, pagination: false, location: false, locationOptional: false, freshness: true, remote: false, activeStatus: false },
   policy: defaultPolicy,
   defaults: { maxAgeDays: 45 },
   preflight: true,
@@ -868,7 +886,7 @@ const relocateManifest = manifest({
   id: "relocate-me",
   label: "Relocate.me",
   version: "1.0.0",
-  capabilities: { search: true, detail: true, pagination: false, location: true, freshness: false, remote: false, activeStatus: false },
+  capabilities: { search: true, detail: true, pagination: false, location: false, locationOptional: false, freshness: false, remote: false, activeStatus: false },
   policy: { ...defaultPolicy, maxRequestsPerRun: 10, minimumDelayMs: 250 },
   defaults: { maxAgeDays: 9_999 },
   guidance: {
@@ -882,7 +900,7 @@ const ycombinatorRemoteManifest = manifest({
   id: "ycombinator-remote",
   label: "Y Combinator Remote",
   version: "1.0.0",
-  capabilities: { search: true, detail: true, pagination: false, location: true, freshness: false, remote: true, activeStatus: false },
+  capabilities: { search: true, detail: true, pagination: false, location: false, locationOptional: false, freshness: false, remote: true, activeStatus: false },
   policy: { ...defaultPolicy, maxRequestsPerRun: 10, minimumDelayMs: 250 },
   defaults: { maxAgeDays: 9_999 },
   guidance: {
@@ -896,7 +914,7 @@ const indeedIndonesiaManifest = manifest({
   id: "indeed-id",
   label: "Indeed Indonesia",
   version: "1.0.0",
-  capabilities: { search: true, detail: true, pagination: false, location: true, freshness: false, remote: true, activeStatus: false },
+  capabilities: { search: true, detail: true, pagination: false, location: true, locationOptional: true, freshness: false, remote: true, activeStatus: false },
   policy: { ...defaultPolicy, maxRequestsPerRun: 10, minimumDelayMs: 250 },
   defaults: { maxAgeDays: 9_999 },
   guidance: {
@@ -1022,7 +1040,7 @@ export function createDeclarativeSourcePlugin(sourceValue: CustomJobSource): Job
     id: source.key,
     label: source.label,
     version: "1.0.0",
-    capabilities: { search: true, detail: true, pagination: false, location: true, freshness: false, remote: false, activeStatus: false },
+    capabilities: { search: true, detail: true, pagination: false, location: true, locationOptional: false, freshness: false, remote: false, activeStatus: false },
     policy: { maxRequestsPerRun: 10, maxConcurrentRequests: 1, timeoutMs: CUSTOM_SOURCE_TIMEOUT_MS, minimumDelayMs: 0 },
     guidance: {
       strengths: ["Declarative HTTP source with a bounded JSON or HTML parser."],

@@ -163,15 +163,13 @@ test("telemetry redaction removes bearer tokens and query secrets", () => {
   assert.equal(redactTelemetryText('credentials: {"username":"private"}').includes('"username":"private"'), false);
 });
 
-test("default telemetry mode stores metadata instead of full private prompt text", () => {
+test("default trace mode stores full prompt text with credential redaction", () => {
   const previous = process.env.TELEMETRY_MODE;
   delete process.env.TELEMETRY_MODE;
   try {
-    assert.equal(getTelemetryMode(), "metadata");
+    assert.equal(getTelemetryMode(), "trace");
     const payload = telemetryPromptPayload("private profile and CV facts", redactTelemetryText);
-    assert.equal("text" in payload, false);
-    assert.equal(payload.textLength, 28);
-    assert.match(String(payload.promptHash), /^[a-f0-9]{64}$/);
+    assert.deepEqual(payload, { text: "private profile and CV facts" });
   } finally {
     if (previous === undefined) delete process.env.TELEMETRY_MODE;
     else process.env.TELEMETRY_MODE = previous;
@@ -250,7 +248,7 @@ test("untrusted section content cannot create a nested delimiter", () => {
   assert.match(section, /\[separator\]/);
 });
 
-test("metadata telemetry omits private prompt and tool payloads by default", async () => {
+test("default local trace stores prompts and model tool arguments but not raw results", async () => {
   const previous = process.env.TELEMETRY_MODE;
   delete process.env.TELEMETRY_MODE;
   const privateProfile = "PRIVATE_PROFILE_MARKER";
@@ -268,10 +266,13 @@ test("metadata telemetry omits private prompt and tool payloads by default", asy
       ]),
     });
     const serialized = JSON.stringify(events);
-    assert.doesNotMatch(serialized, /PRIVATE_PROFILE_MARKER|PRIVATE_CV_MARKER/);
+    assert.match(serialized, /PRIVATE_PROFILE_MARKER/);
+    assert.doesNotMatch(serialized, /PRIVATE_CV_MARKER/);
+    const toolCallPayload = events.find(({ type }) => type === "tool_execution_start")?.payload as { args?: { profile?: string } } | undefined;
+    assert.equal(toolCallPayload?.args?.profile, privateProfile);
     const promptPayload = events.find(({ type }) => type === "user_prompt")?.payload as { text?: string; textLength?: number } | undefined;
-    assert.equal(promptPayload?.text, undefined);
-    assert.equal(promptPayload?.textLength, privateProfile.length);
+    assert.equal(promptPayload?.text, privateProfile);
+    assert.equal(promptPayload?.textLength, undefined);
   } finally {
     if (previous === undefined) delete process.env.TELEMETRY_MODE;
     else process.env.TELEMETRY_MODE = previous;

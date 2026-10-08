@@ -118,7 +118,10 @@ export function TrackerApp() {
         if (!active) return;
         setCriteria(nextCriteria);
         setSavedCriteria(cloneProfile(nextCriteria));
-        setSettings(nextSettings);
+        // Keep the mode chosen in the sidebar while refreshing the other preferences.
+        setSettings((current) => current && current.scrapeMode !== savedSettings?.scrapeMode
+          ? { ...nextSettings, scrapeMode: current.scrapeMode }
+          : nextSettings);
         setSavedSettings(cloneSettings(nextSettings));
         setPrefsError("");
         setPrefsLoad("ok");
@@ -262,7 +265,7 @@ export function TrackerApp() {
     if (!settings?.model) issues.push("Select a provider model on DISK.");
     return issues;
   }, [profileReady, settings]);
-  const enabledLabels = settings ? (settings.enabledSources?.length ? settings.enabledSources : [settings.source]).map((source) => jobSourceLabel(source, settings.customSources ?? [])).join(", ") : "…";
+  const enabledLabels = settings?.scrapeMode === "web-discovery" ? jobSourceLabel("web-discovery") : settings ? (settings.enabledSources?.length ? settings.enabledSources : [settings.source]).map((source) => jobSourceLabel(source, settings.customSources ?? [])).join(", ") : "…";
   const running = run?.status === "running";
   const playIndex = running ? Math.floor(now / 400) : 0;
   const hits = commands.filter((item) => item.join(" ").toLowerCase().includes(query.toLowerCase()));
@@ -331,9 +334,11 @@ export function TrackerApp() {
         criteriaDirty ? api<Criteria>("/api/criteria", { method: "PUT", body: JSON.stringify(criteria) }) : Promise.resolve(criteria),
         settingsDirty ? api<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(settings) }) : Promise.resolve(settings),
       ]);
-      setCriteria(nextCriteria);
+      // Save the baseline, but don't erase edits made while the request was in flight.
+      setCriteria((current) => current === criteria ? nextCriteria : current);
       setSavedCriteria(cloneProfile(nextCriteria));
-      adoptSettings(nextSettings);
+      setSettings((current) => current === settings ? nextSettings : current);
+      setSavedSettings(cloneSettings(nextSettings));
       setPrefsError("");
       return true;
     } catch (caught) {

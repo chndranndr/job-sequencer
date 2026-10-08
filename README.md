@@ -20,7 +20,7 @@ The screenshot and animated walkthrough use deterministic fixture data. They sho
 
 1. Define a profile and optional search preferences in **DISK**.
 2. Start a bounded search from **PATTERN**.
-3. Let Pi refine the query when the first pass is weak.
+3. Let the search harness adapt queries from source coverage and observed yield.
 4. Review ranked jobs and open their evidence in **SAMPLE**.
 5. Select jobs yourself before document generation.
 6. Approve drafts before you record **Applied**.
@@ -148,7 +148,7 @@ npx --no-install pi auth check --provider openai
 
 Run only the check for the provider you use. Add `--model <exact-model-id>` when you want to validate a specific model. Do **not** use `--credentials` because it prints the resolved secret.
 
-The dashboard Settings dropdown exposes `google`, `anthropic`, API-key `openai`, and `openai-codex` for ChatGPT/Codex OAuth. After selecting a provider, the Model dropdown is populated from Pi's authenticated model list. Select a model, save, then run **Test connection**.
+The dashboard Settings dropdown is populated from Pi's authenticated model catalog, so it lists providers with available models and filters models by the selected provider. After choosing a provider and model, save, then run **Test connection**.
 
 List available model IDs when needed:
 
@@ -200,14 +200,32 @@ Vite proxies `/api` and `/health` to the backend. After changing server-side Typ
 
 ## First-run checklist
 
-1. Open **DISK** and enable the job sources to search (FreeHire, LinkedIn, TokyoDev, Japan Dev, Relocate.me, Y Combinator Remote, or Indeed Indonesia). A scrape searches every checked source; each built-in source has an editable maximum age in days. FreeHire, LinkedIn, Relocate.me, Y Combinator Remote, and Indeed Indonesia default to `9999` (effectively no cutoff); TokyoDev and Japan Dev default to 45 days. Increasing a source above 45 days can return older postings and adds a warning asking you to verify that they are still active. Custom sources keep their bounded declarative HTTP(S) controls and do not require a posted-date field.
-2. Select the Pi provider (`google`, `anthropic`, `openai`, or `openai-codex`).
+1. Open **DISK** and enable the job sources to search (FreeHire, LinkedIn, TokyoDev, Japan Dev, Relocate.me, Y Combinator Remote, or Indeed Indonesia). A scrape attempts each enabled healthy source at the configured minimum when search-call, result-slot, and source request quotas allow; failures and unsearched sources remain visible in TRACE. Each built-in source has an editable maximum age in days. FreeHire, LinkedIn, Relocate.me, Y Combinator Remote, and Indeed Indonesia default to `9999` (effectively no cutoff); TokyoDev and Japan Dev default to 45 days. Increasing a source above 45 days can return older postings and adds a warning asking you to verify that they are still active. Custom sources keep their bounded declarative HTTP(S) controls and do not require a posted-date field.
+2. Select an authenticated Pi provider from DISK's catalog-backed dropdown.
 3. Choose a model from the authenticated Model dropdown and save settings. The model field is non-secret configuration only.
 4. Click **Test connection**. The credential remains in Pi auth storage/environment variables.
 5. Open **DISK**, review and save the structured profile. Add search preferences when useful; they steer discovery but are not required.
 6. Use **PATTERN** to scrape and review jobs. Select jobs manually before generating documents.
 
 The canonical profile is `data/profile.json`. A legacy `data/profile.md` is preserved for review/import and is not overwritten automatically. Runtime data and generated applications are under gitignored `data/`.
+
+After each successful document generation, PDF copies are also saved in `data/generated/<company>_<role>_<UTC-timestamp>-<unique-suffix>/`, for example `cv_example_engineer.pdf` and `cover_letter_example_engineer.pdf`. Open this folder directly in File Explorer to collect the PDFs. Each generation has its own folder, so revisions and matching job names never overwrite earlier exports. These are drafts until approved in the app. Existing documents are exported on their next successful generation; exports remain until manually deleted.
+
+## Web discovery (optional)
+
+Choose **Web discovery** in DISK or the scrape confirmation preferences, save, then start a scrape. **Job boards** remains the default and retains its existing source selections. Discovery uses the saved profile and optional preferences to search the web, follow company careers/ATS links, read individual postings, and score them into the same dashboard. It never fills or submits applications. Search snippets and careers index pages should not be returned as jobs.
+
+Install the [BrowserSkill CLI](https://github.com/Tencent/BrowserSkill/blob/main/AGENT_INSTALL.md) locally. On Windows, its documented installation command is:
+
+```powershell
+irm https://raw.githubusercontent.com/Tencent/BrowserSkill/main/install.ps1 | iex
+```
+
+The backend finds `bsk.exe` under `%USERPROFILE%\.local\bin` or `bsk` on PATH. Install the [BrowserSkill extension](https://chromewebstore.google.com/detail/hhcmgoofomhgciiibhipgmgkgnoenaoi) in your browser and enable its local connection. BrowserSkill officially supports Chrome/Edge; Brave compatibility must be checked on this machine. Run `bsk doctor` after connecting. With multiple connected browsers, use `bsk browsers --json` and set `BSK_BROWSER` to the intended Brave instance ID before starting the backend.
+
+Each discovery run creates its own background Agent Window and attempts to close only that session on completion, cancellation, or failure. Login, consent and CAPTCHA require manual browser action; discovery reports a setup/verification error rather than bypassing them. The backend exposes only `searchWeb` and `readWebPage`, with fixed page extraction, same-run link provenance, six searches, 24 page reads, and a five-minute agent budget. Jobs retain source URLs and page evidence, and TRACE records searches, read pages and counts. It does not use the job-board adapters' MAX age values or a fixed 14-day cutoff; explicitly expired/closed postings are excluded by the agent, and uncertain dates are flagged.
+
+Requested URLs and settled destinations are checked for public HTTP(S), DNS addresses and credential-bearing links. Known job-board hosts are blocked, but the finite list is not an exhaustive source-identity guarantee; verify the employer and individual posting. This is not a browser network firewall: redirects and page subresources run inside the browser. Live acceptance requires a connected browser and an explicitly requested provider-backed scrape; deterministic tests use fixtures.
 
 ## Verification commands
 

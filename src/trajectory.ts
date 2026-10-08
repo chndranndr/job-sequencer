@@ -45,42 +45,51 @@ const MAX_REASON_LENGTH = 500;
 const MAX_GOALS = 20;
 const MAX_GOAL_LENGTH = 240;
 
-const protectedTrajectoryEventTypes = new Set(["thinking", "system_prompt", "user_prompt", "assistant_thinking", "assistant_message"]);
-
 export function redactTelemetryText(value: string) {
   return value
     .replace(/(https?:\/\/)([^/\s:@]+)(?::[^/\s@]*)?@/gi, "$1[redacted]@")
     .replace(/(authorization\s*[:=]\s*bearer\s+|bearer\s+)[^\s,}]+/gi, "$1[redacted]")
     .replace(/([?&](?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|access[_-]?token|client[_-]?secret|refresh[_-]?token)=)[^&\s]*/gi, "$1[redacted]")
     .replace(/([\"']?(?:api[_-]?key|apikey|token|secret|password|authorization|credential|credentials|cookie|private[_-]?key|bearer|client[_-]?secret|refresh[_-]?token)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+/gi, "$1[redacted]")
+    .replace(/\bAIza[A-Za-z0-9_-]{35}\b/g, "[redacted]")
     .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]+\b/gi, "[redacted]")
-    .replace(/\b(?:system|user|assistant)[ _-](?:prompt|message|thinking|content)\s*[:=]\s*[^|;]+/gi, "[redacted]");
+    .replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+\b/gi, "[redacted]");
 }
+const trajectorySecretField = /(?:^|_)(?:api_key|apikey|token|secret|password|authorization|credential|credentials|cookie|private_key|access_token|bearer|auth|client_secret|refresh_token)(?:_|$)/;
+function isTrajectorySecretKey(key: string) {
+  const normalized = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_").toLowerCase();
+  return trajectorySecretField.test(normalized);
+}
+
+const messageTraceEventTypes = new Set(["system_prompt", "user_prompt", "assistant_thinking", "assistant_message"]);
 const omittedVisiblePayloadKeys = new Set(["text", "content", "prompt", "systemprompt", "userprompt", "assistantmessage", "thinking", "reasoning", "posting", "description", "body", "raw", "rawtext", "result", "results", "summary", "data", "output", "outputs", "apikey", "token", "secret", "password", "authorization", "credential", "credentials", "cookie", "privatekey", "accesstoken", "bearer", "auth", "clientsecret", "refreshtoken", "cursor", "nextcursor"]);
 const MAX_VISIBLE_PAYLOAD_DEPTH = 6;
 const MAX_VISIBLE_PAYLOAD_KEYS = 80;
 const MAX_VISIBLE_PAYLOAD_ITEMS = 50;
 const MAX_VISIBLE_PAYLOAD_STRING = 320;
 
-function sanitizeVisiblePayload(value: unknown, seen: WeakSet<object>, depth = 0): unknown {
-  if (typeof value === "string") return text(value, MAX_VISIBLE_PAYLOAD_STRING);
+function sanitizeVisiblePayload(value: unknown, seen: WeakSet<object>, depth = 0, key = "", includeContent = false): unknown {
+  if (key && isTrajectorySecretKey(key)) return "[redacted]";
+  if (typeof value === "string") return includeContent ? redactTelemetryText(value) : text(value, MAX_VISIBLE_PAYLOAD_STRING);
   if (value === null || typeof value === "number" || typeof value === "boolean") return value;
   if (depth > MAX_VISIBLE_PAYLOAD_DEPTH || typeof value !== "object") return "[payload omitted]";
   if (seen.has(value)) return "[circular payload]";
   seen.add(value);
-  if (Array.isArray(value)) return value.slice(0, MAX_VISIBLE_PAYLOAD_ITEMS).map((item) => sanitizeVisiblePayload(item, seen, depth + 1));
+  if (Array.isArray(value)) return value.slice(0, MAX_VISIBLE_PAYLOAD_ITEMS).map((item) => sanitizeVisiblePayload(item, seen, depth + 1, "", includeContent));
   if (!isJsonRecord(value)) return "[payload omitted]";
-  return Object.fromEntries(Object.entries(value).slice(0, MAX_VISIBLE_PAYLOAD_KEYS).flatMap(([key, item]) => {
-    const normalizedKey = key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
-    if (omittedVisiblePayloadKeys.has(normalizedKey)) return [];
-    return [[text(key, 80) ?? "field", sanitizeVisiblePayload(item, seen, depth + 1)]];
+  return Object.fromEntries(Object.entries(value).slice(0, MAX_VISIBLE_PAYLOAD_KEYS).flatMap(([name, item]) => {
+    const normalizedKey = name.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+    if (!includeContent && omittedVisiblePayloadKeys.has(normalizedKey)) return [];
+    return [[
+      text(name, 80) ?? "field",
+      sanitizeVisiblePayload(item, seen, depth + 1, name, includeContent),
+    ]];
   }));
 }
 
 export function sanitizeTrajectoryEvent(event: TrajectoryEvent): TrajectoryEvent {
-  return event.kind === "thinking" || protectedTrajectoryEventTypes.has(event.type)
-    ? { ...event, payload: null }
-    : { ...event, payload: sanitizeVisiblePayload(event.payload, new WeakSet<object>()) };
+  const includeContent = event.kind === "thinking" || messageTraceEventTypes.has(event.type);
+  return { ...event, payload: sanitizeVisiblePayload(event.payload, new WeakSet<object>(), 0, "", includeContent) };
 }
 
 
@@ -230,6 +239,7 @@ function parseAdaptiveAttemptFields(payload: Payload | null): Partial<RunTraject
   const nextPage = payloadPage(payload, "nextPage") ?? payloadPage(pageInfo, "nextPage");
   const nextCursor = payloadText(payload, "nextCursor", MAX_CURSOR_LENGTH) ?? payloadText(pageInfo, "nextCursor", MAX_CURSOR_LENGTH);
   const total = payloadBoundedCount(payload, "total") ?? payloadBoundedCount(pageInfo, "total");
+  const rawHits = payloadBoundedCount(payload, "rawHits", "raw");
   return {
     ...(page === null ? {} : { page }),
     ...(cursor === null ? {} : { cursor: "[redacted]" }),
@@ -237,6 +247,7 @@ function parseAdaptiveAttemptFields(payload: Payload | null): Partial<RunTraject
     ...(nextPage === null ? {} : { nextPage }),
     ...(nextCursor === null ? {} : { nextCursor: "[redacted]" }),
     ...(total === null ? {} : { total }),
+    ...(rawHits === null ? {} : { rawHits }),
   };
 }
 
@@ -252,8 +263,8 @@ function parseQueryRecord(value: unknown, fallbackSource: string | null = null):
   const source = payloadText(payload, "source", MAX_SOURCE_LENGTH) ?? fallbackSource;
   const query = payloadText(payload, "query", MAX_QUERY_LENGTH);
   const location = payloadText(payload, "location", MAX_LOCATION_LENGTH);
-  const { page, cursor, hasMore, nextPage, nextCursor, total } = parseAdaptiveAttemptFields(payload);
-  const returnedHits = payloadBoundedCount(payload, "returnedHits", "resultCount", "rawHits", "raw");
+  const { page, cursor, rawHits, hasMore, nextPage, nextCursor, total } = parseAdaptiveAttemptFields(payload);
+  const returnedHits = payloadBoundedCount(payload, "returnedHits", "resultCount");
   const uniqueHits = payloadBoundedCount(payload, "uniqueHits", "uniqueResultCount", "uniqueCount", "unique");
   const duplicateRate = rate(payload?.duplicateRate);
   const fields: RunTrajectoryQueryRecord = {
@@ -263,6 +274,7 @@ function parseQueryRecord(value: unknown, fallbackSource: string | null = null):
     ...(page === undefined ? {} : { page }),
     ...(cursor === undefined ? {} : { cursor }),
     ...(returnedHits === null ? {} : { returnedHits }),
+    ...(rawHits === undefined ? {} : { rawHits }),
     ...(uniqueHits === null ? {} : { uniqueHits }),
     ...(duplicateRate === null ? {} : { duplicateRate }),
     ...(hasMore === undefined ? {} : { hasMore }),
@@ -282,7 +294,7 @@ function parsePath(value: unknown): RunTrajectoryPath | null {
   const searches = payloadBoundedCount(payload, "searches");
   const completed = bool(payload.completed);
   const pagesVisited = parsePages(payload.pagesVisited);
-  const raw = payloadBoundedCount(payload, "raw");
+  const raw = payloadBoundedCount(payload, "raw", "rawHits");
   const unique = payloadBoundedCount(payload, "unique");
   const duplicate = payloadBoundedCount(payload, "duplicate");
   const averageYield = yieldValue(payload.averageYield);
@@ -375,6 +387,7 @@ function parseFunnel(payload: Payload | null): RunTrajectoryFunnel | null {
   const sourceAttempts = boundedCount(candidate.sourceAttempts) ?? parseNumberMap(candidate.sourceAttempts);
   const queriesBySource = parseStringMap(candidate.queriesBySource);
   const pagesBySource = parsePageMap(candidate.pagesBySource);
+  const sourceCoverage = parseSourceCoverage(candidate.sourceCoverage);
   const sourceValues = new Map<string, SourceAccumulator>();
   mergeStateSourceStats(sourceValues, candidate.sources);
   const sources = sourceValues.size
@@ -383,6 +396,7 @@ function parseFunnel(payload: Payload | null): RunTrajectoryFunnel | null {
   const rawHits = boundedCount(candidate.rawHits);
   const uniqueHits = boundedCount(candidate.uniqueHits);
   const promisingHits = boundedCount(candidate.promisingHits);
+  const duplicatesRemoved = boundedCount(candidate.duplicatesRemoved);
   const candidatesAfterCheapFiltering = boundedCount(candidate.candidatesAfterCheapFiltering);
   const detailFetches = boundedCount(candidate.detailFetches);
   const selectedJobs = boundedCount(candidate.selectedJobs);
@@ -392,9 +406,11 @@ function parseFunnel(payload: Payload | null): RunTrajectoryFunnel | null {
     ...(sourceAttempts ? { sourceAttempts } : {}),
     ...(queriesBySource ? { queriesBySource } : {}),
     ...(pagesBySource ? { pagesBySource } : {}),
+    ...(sourceCoverage ? { sourceCoverage } : {}),
     ...(rawHits === null ? {} : { rawHits }),
     ...(uniqueHits === null ? {} : { uniqueHits }),
     ...(promisingHits === null ? {} : { promisingHits }),
+    ...(duplicatesRemoved === null ? {} : { duplicatesRemoved }),
     ...(candidatesAfterCheapFiltering === null ? {} : { candidatesAfterCheapFiltering }),
     ...(detailFetches === null ? {} : { detailFetches }),
     ...(selectedJobs === null ? {} : { selectedJobs }),
@@ -539,8 +555,9 @@ function setAttemptDerivedFields(attempt: RunTrajectoryAttempt) {
   if (attempt.resultCount !== null) {
     attempt.uniqueYield = attempt.uniqueResultCount === null ? null : attempt.uniqueResultCount / Math.max(1, attempt.resultCount);
     attempt.promisingYield = attempt.promisingResultCount === null ? null : attempt.promisingResultCount / Math.max(1, attempt.resultCount);
-    attempt.duplicateRate = attempt.duplicateCount === null ? null : attempt.duplicateCount / Math.max(1, attempt.resultCount);
   }
+  const rawHits = attempt.rawHits ?? attempt.resultCount;
+  if (rawHits !== null) attempt.duplicateRate = attempt.duplicateCount === null ? null : attempt.duplicateCount / Math.max(1, rawHits);
 }
 
 function sourceStats(): SourceAccumulator {
@@ -582,6 +599,7 @@ function attemptQueryRecord(attempt: RunTrajectoryAttempt): RunTrajectoryQueryRe
     page: attempt.page,
     cursor: attempt.cursor,
     returnedHits: attempt.resultCount,
+    rawHits: attempt.rawHits,
     uniqueHits: attempt.uniqueResultCount,
     duplicateRate: attempt.duplicateRate,
     hasMore: attempt.hasMore,
@@ -622,7 +640,8 @@ function updateSourceStats(
 ) {
   if (operationValue === "search") {
     if (status === "started") stats.searchCalls = increment(stats.searchCalls);
-    if (attempt.resultCount !== null) stats.rawHits = increment(stats.rawHits, attempt.resultCount);
+    const rawHits = attempt.rawHits ?? attempt.resultCount;
+    if (rawHits !== null) stats.rawHits = increment(stats.rawHits, rawHits);
     if (attempt.uniqueResultCount !== null) stats.uniqueCount = increment(stats.uniqueCount, attempt.uniqueResultCount);
     if (attempt.duplicateCount !== null) stats.duplicateCount = increment(stats.duplicateCount, attempt.duplicateCount);
     if (attempt.promisingResultCount !== null) stats.promisingCount = increment(stats.promisingCount, attempt.promisingResultCount);
@@ -1003,6 +1022,8 @@ export function deriveRunTrajectoryObservability(
       const index = resolve("detail", event, payload);
       updateAttempt(index, event, payload, "failed");
       addPolicy(event, payload);
+    } else if (event.type === "web_search_completed" || event.type === "web_page_read") {
+      mergeCounts(counts, parseCounts(payload));
     } else if (event.type === "search_funnel") {
       const parsed = parseFunnel(payload);
       if (parsed) funnel = parsed;

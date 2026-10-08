@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AtsChecks, StructuredProfile } from "../shared.js";
 
@@ -40,6 +40,23 @@ export function containedPath(root:string,...parts:string[]):string {
   const base=resolve(root); const target=resolve(base,...parts); const rel=relative(base,target);
   if(rel.startsWith("..")||isAbsolute(rel)) throw new Error("Document path is outside the application directory.");
   return target;
+}
+
+export async function exportGeneratedPdfs(dataDir: string, sourceDir: string, company: string, role: string, stamp: string) {
+  const root = containedPath(dataDir, "generated");
+  await mkdir(root, { recursive: true });
+  const label = friendlyDocumentFilename("cv.pdf", company, role).slice(3, -4);
+  const safeStamp = stamp.replace(/[^A-Za-z0-9_-]/g, "-");
+  const folder = await mkdtemp(containedPath(root, `${label}_${safeStamp}-`));
+  try {
+    for (const name of ["cv.pdf", "cover-letter.pdf"]) {
+      await copyFile(containedPath(sourceDir, name), containedPath(folder, friendlyDocumentFilename(name, company, role)));
+    }
+    return folder;
+  } catch (error) {
+    await rm(folder, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export function latexSmokeCommands(texFile: string): Array<[string, string[]]> {

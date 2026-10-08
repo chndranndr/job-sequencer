@@ -340,7 +340,9 @@ Rules:
 - `limit` accepts up to 25 jobs when the source supports that batch size;
 - non-paginated sources reject continuation requests;
 - the default adaptive budget targets 50 unique jobs with at most 20 search calls, 30 detail calls, and 100 result slots;
-- every enabled healthy source receives at least one search attempt;
+- the planner reserves result slots for the configured `minSearchesPerSource` on every enabled healthy source when search-call, result-slot, and per-source request capacity permit; failed sources are unavailable, and infeasible floors remain visible as unsearched source coverage;
+- after outstanding source floors are met, productive pagination is preferred over new query variants; variants preserve seed order, remain canonically distinct, and use observed unique yield, duplicate rate, and unmet role/location coverage while hard exclusions remain authoritative;
+- attempt and funnel telemetry distinguishes upstream `rawHits`, consumed result rows, and adapter/global duplicates removed; all-source-failed adaptive runs retain their funnel and source coverage in TRACE without importing partial jobs;
 - `resultId` must come from `searchJobs` in the same run;
 - tool results include stable source IDs, URLs, and pagination metadata;
 - custom source templates allow only URL-encoded `{{query}}`, `{{location}}`, `{{limit}}`, `{{id}}`, and `{{url}}` placeholders; parser configuration is data-only JSON paths or bounded CSS selectors.
@@ -568,6 +570,14 @@ data/applications/<job-id>/
 ```
 
 Before replacing `current/`, move the previous version into `history/` and retain only the three most recent history directories.
+
+Each successful generation also exports only the two PDFs to `data/generated/<company>_<role>_<UTC-timestamp>-<unique-suffix>/`, using the same friendly filenames as browser downloads. Separate folders prevent collisions and preserve previous exports. Failed compilation, verification, or publication must not leave an export. Exports remain drafts until manual approval and are retained until the user deletes them. Existing documents are exported on their next successful generation.
+
+### Optional public-web discovery
+
+Scrape settings support `job-boards` (default) and `web-discovery`. Public-web discovery uses BrowserSkill's local CLI and connected browser extension, with a separate Agent Window per run. The restricted agent has only `searchWeb` and `readWebPage`: it searches for profile-compatible company careers and employer ATS pages, follows only links observed during the run, reads individual postings, and returns scored jobs with source `web-discovery` into the existing manual workflow. Board selections remain saved for board mode.
+
+Discovery is bounded to six searches, 24 page reads, and five minutes, with exact source URL provenance and canonical page text. It does not terminate solely on raw link counts. It does not expose arbitrary shell, arbitrary browser scripts, form filling, application submission, credential extraction, or existing user tabs. Browser connection/verification failures are reported for manual action. The session is closed on completion or failure. Per-board freshness settings do not apply; closed/expired roles are excluded by the agent and unknown dates remain explicit gaps. TRACE records searches, read pages, and discovered/read counts. Public URL and DNS checks do not guarantee isolation of browser redirects/subresources; live BrowserSkill/Brave compatibility remains an acceptance check.
 
 ### Compilation and verification
 

@@ -11,7 +11,7 @@ import {
   type SourcePolicy,
   type SourceSearchResponse,
 } from "../src/server/source-plugins.js";
-import { createScrapeTools, validateScrapeResult } from "../src/server/scrape.js";
+import { createScrapeTools, validateScrapeResult, type ScrapeTools } from "../src/server/scrape.js";
 import { createAgentSearchTools } from "../src/server/search/tools.js";
 import { defaultCriteria } from "../src/server/config.js";
 
@@ -49,11 +49,11 @@ function fixtureTools(config: FixtureConfig = {}) {
   return createScrapeTools({ source: "fixture", registry });
 }
 
-async function callSearch(tools: ReturnType<typeof fixtureTools>) {
-  const output = await tools.searchJobs.execute("search", { query: "backend", location: "Remote", limit: 5 }, undefined, undefined, undefined as never);
+async function callSearch(tools: ScrapeTools, limit = 5) {
+  const output = await tools.searchJobs.execute("search", { query: "backend", location: "Remote", limit }, undefined, undefined, undefined as never);
   const block = output.content[0];
   if (block.type !== "text") throw new Error("search result was not text");
-  return JSON.parse(block.text) as { meta: { count: number }; results: Array<typeof hit> };
+  return JSON.parse(block.text) as { meta: { count: number; rawHits?: number; duplicatesRemoved?: number }; results: Array<typeof hit> };
 }
 
 test("registered plugins expose bounded manifests and preserve provenance", async () => {
@@ -110,6 +110,34 @@ test("search contract rejects malformed responses and removes duplicates", async
   assert.equal(result.results.length, 1);
   const malformed = fixtureTools({ search: async () => ({ meta: { count: 1 }, results: [{ ...hit, id: "" }] }) });
   await assert.rejects(() => callSearch(malformed), /invalid|ID|too_small/i);
+});
+
+test("source plugin accounting preserves raw fields without treating meta.count as raw hits", async () => {
+  const tools = fixtureTools({
+    search: async () => ({
+      meta: { count: 99, rawHits: 7, duplicatesRemoved: 3 },
+      results: [hit, { ...hit, id: "fixture-2", url: "https://fixture.example/jobs/2" }],
+    }),
+  });
+  const result = await callSearch(tools);
+  assert.deepEqual(result.meta, { count: 2, rawHits: 7, duplicatesRemoved: 3 });
+});
+
+test("common scrape dedupe counts duplicates but not cap-truncated unique rows", async () => {
+  const tools = fixtureTools({
+    search: async () => ({
+      meta: { count: 99 },
+      results: [
+        hit,
+        { ...hit, id: "same-url", title: "Duplicate URL" },
+        { ...hit, id: "fixture-3", url: "https://fixture.example/jobs/3" },
+        { ...hit, id: "fixture-4", url: "https://fixture.example/jobs/4" },
+      ],
+    }),
+  });
+  const result = await callSearch(tools, 2);
+  assert.deepEqual(result.meta, { count: 2, rawHits: 4, duplicatesRemoved: 1 });
+  assert.deepEqual(result.results.map(result => result.id), [hit.id, "fixture-3"]);
 });
 
 test("detail contract rejects provenance mismatches", async () => {
@@ -192,11 +220,13 @@ test("all built-in CLI plugins preserve their fixture transport contracts", asyn
         ? "https://relocate.me/spain/example/backend-engineer-1"
         : `https://fixture.example/${source}/jobs/1`;
     const japanEnvelope = source === "tokyodev" || source === "japan-dev" || source === "relocate-me";
+    const searchArgs: string[][] = [];
     const tools = createScrapeTools({
       source,
       plugin,
       runCli: async args => {
         if (args[0] === "search") {
+          searchArgs.push(args);
           const result = { id, source, title: "Backend Engineer", company: "Fixture Co", location: "Remote", url, ...(japanEnvelope ? { postedDate: null } : { date: null }) };
           return {
             code: 0,
@@ -218,6 +248,10 @@ test("all built-in CLI plugins preserve their fixture transport contracts", asyn
     assert.equal("postedAt" in (normalizedResult ?? {}), false);
     assert.equal(normalizedResult?.source, source);
     if (source === "relocate-me") assert.equal(searched.results[0]?.id, "relocate-me:spain%2Fexample%2Fbackend-engineer-1");
+    if (source === "relocate-me") {
+      assert.equal(tools.manifest?.capabilities.location, false);
+      assert.equal(searchArgs[0]?.includes("Remote"), false);
+    }
     await tools.fetchJobDetails.execute("detail", { resultId: searched.results[0]?.id ?? id }, undefined, undefined, undefined as never);
   }
 });
@@ -245,13 +279,17 @@ test("built-in HTML sources parse safe search IDs and detail provenance", async 
   for (const [source, fixture] of Object.entries(fixtures) as Array<[keyof typeof fixtures, (typeof fixtures)[keyof typeof fixtures]]>) {
     const plugin = builtInSourcePlugins.find(candidate => candidate.manifest.id === source);
     if (!plugin) throw new Error(`missing ${source} plugin`);
+    const requestUrls: string[] = [];
     const tools = createScrapeTools({
       source,
       plugin,
-      fetcher: async input => new Response(/\/jobs(?:\/role\/|[?])/.test(String(input))
-        ? fixture.search
-        : fixture.detail,
-        { headers: { "content-type": "text/html" } }),
+      fetcher: async input => {
+        requestUrls.push(String(input));
+        return new Response(/\/jobs(?:\/role\/|[?])/.test(String(input))
+          ? fixture.search
+          : fixture.detail,
+          { headers: { "content-type": "text/html" } });
+      },
     });
     const searchOutput = await tools.searchJobs.execute("search", { query: "backend", location: fixture.location, limit: 1 }, undefined, undefined, undefined as never);
     const searchBlock = searchOutput.content[0];
@@ -266,6 +304,10 @@ test("built-in HTML sources parse safe search IDs and detail provenance", async 
         ? "https://www.ycombinator.com/companies/example/jobs/yc-123-backend-engineer"
         : `https://id.indeed.com/m/viewjob?jk=${fixture.id}`,
     });
+    if (source === "ycombinator-remote") {
+      assert.equal(plugin.manifest.capabilities.location, false);
+      assert.deepEqual(requestUrls, ["https://www.ycombinator.com/jobs/role/all/remote"]);
+    }
     const detailOutput = await tools.fetchJobDetails.execute("detail", { resultId: fixture.id }, undefined, undefined, undefined as never);
     const detailBlock = detailOutput.content[0];
     if (detailBlock.type !== "text") throw new Error(`${source} detail result was not text`);

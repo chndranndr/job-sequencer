@@ -159,6 +159,46 @@ test("source performance summaries and historical signals are derived determinis
   assert.match(negative.pattern, /legacy maintainer/i);
   assert.match(negative.evidence, /duplicate/i);
 });
+
+test("raw hits set duplicate-rate denominators while legacy attempts stay unannotated", () => {
+  const db = openDatabase(":memory:");
+  insertSearchAttempt(db, {
+    id: "raw-counts",
+    source: "freehire",
+    query: "raw denominator",
+    location: "",
+    status: "completed",
+    resultCount: 2,
+    rawHits: 7,
+    uniqueResultCount: 0,
+    promisingResultCount: 0,
+    duplicateCount: 3,
+    createdAt: "2026-10-08T08:00:00.000Z",
+  });
+  insertSearchAttempt(db, {
+    id: "legacy-counts",
+    source: "linkedin",
+    query: "legacy denominator",
+    location: "",
+    status: "completed",
+    resultCount: 2,
+    uniqueResultCount: 0,
+    promisingResultCount: 0,
+    duplicateCount: 2,
+    createdAt: "2026-10-08T08:01:00.000Z",
+  });
+
+  const rawAttempt = listSearchAttempts(db).find(attempt => attempt.id === "raw-counts");
+  assert.equal(rawAttempt?.rawHits, 7);
+  assert.equal(aggregateSourcePerformance(db).find(summary => summary.source === "freehire")?.duplicateRate, 0.43);
+  assert.equal(deriveHistoricalSearchSignals(db).find(signal => signal.pattern.includes("raw denominator"))?.signal, "neutral");
+
+  const legacyAttempt = listSearchAttempts(db).find(attempt => attempt.id === "legacy-counts");
+  assert.equal(Object.hasOwn(legacyAttempt ?? {}, "rawHits"), false);
+  assert.equal(aggregateSourcePerformance(db).find(summary => summary.source === "linkedin")?.duplicateRate, 1);
+  assert.equal(deriveHistoricalSearchSignals(db).find(signal => signal.pattern.includes("legacy denominator"))?.signal, "negative");
+});
+
 test("compileSearchMemory excludes disabled-source history before recency bounds", () => {
   const db = openDatabase(":memory:");
   insertSearchAttempt(db, {
@@ -335,7 +375,7 @@ test("historical memory bounds and labels external role, location, and query tex
     profile: "Platform engineer",
     criteria: { ...defaultCriteria, locations: ["Tokyo"], maxJobsPerRun: 1 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
-    searchBudget: { maxSearchCalls: 2, maxDetailCalls: 1, maxTotalResults: 2, maxQueryVariantsPerSource: 1 },
+    searchBudget: { maxSearchCalls: 1, maxDetailCalls: 1, maxTotalResults: 2, maxQueryVariantsPerSource: 1 },
     signal: new AbortController().signal,
     runId: "hostile-prompt-run",
     db,
@@ -368,7 +408,7 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
             code: 0,
             stderr: "",
             stdout: JSON.stringify({
-              meta: { count: 2 },
+              meta: { count: 2, rawHits: 7, duplicatesRemoved: 3 },
               results: [
                 { id: "p-1", title: "Platform Engineer", company: "A", location: "Remote", url: "https://example.test/p-1" },
                 { id: "p-2", title: "Platform Engineer", company: "B", location: "Remote", url: "https://example.test/p-2" },
@@ -455,6 +495,15 @@ test("deterministic two-run fixture: Run 2 receives useful memory compiled from 
   // At least 3 attempts in db from run-1
   assert.ok(attemptsAfterRun1.some((a) => a.id === "run-1:search-1" && a.query === "platform engineer"));
   assert.ok(attemptsAfterRun1.some((a) => a.id === "run-1:search-2" && a.query === "legacy dev"));
+  const persistedPlatformAttempt = listSearchAttempts(db).find(attempt => attempt.id === "run-1:search-1");
+  assert.deepEqual(
+    persistedPlatformAttempt && {
+      resultCount: persistedPlatformAttempt.resultCount,
+      rawHits: persistedPlatformAttempt.rawHits,
+      duplicateCount: persistedPlatformAttempt.duplicateCount,
+    },
+    { resultCount: 2, rawHits: 7, duplicateCount: 3 },
+  );
 
   // RUN 2: Execute new scrape run with same db
   let run2Tools: AgentSearchTools | undefined;
@@ -600,7 +649,7 @@ test("poor historical query is deprioritized but not permanently forbidden", asy
     profile: "Developer",
     criteria: { ...defaultCriteria, maxJobsPerRun: 1 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
-    searchBudget: { maxSearchCalls: 3, maxDetailCalls: 1, maxTotalResults: 4, maxQueryVariantsPerSource: 2 },
+    searchBudget: { maxSearchCalls: 2, maxDetailCalls: 1, maxTotalResults: 4, maxQueryVariantsPerSource: 2 },
     signal: new AbortController().signal,
     runId: "retry-run",
     db,
@@ -677,7 +726,7 @@ test("search preferences remain visible when memory favors Singapore", async () 
     profile: "Platform engineer",
     criteria: { ...defaultCriteria, locations: ["Tokyo"], excludeKeywords: ["Singapore"], maxJobsPerRun: 1 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
-    searchBudget: { maxSearchCalls: 2, maxDetailCalls: 1, maxTotalResults: 2, maxQueryVariantsPerSource: 1 },
+    searchBudget: { maxSearchCalls: 1, maxDetailCalls: 1, maxTotalResults: 2, maxQueryVariantsPerSource: 1 },
     signal: new AbortController().signal,
     runId: "hard-criteria-run",
     db,

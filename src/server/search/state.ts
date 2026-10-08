@@ -105,6 +105,7 @@ export type SearchAttempt = {
   resultId?: string;
   requestedLimit?: number;
   resultCount?: number;
+  rawHits?: number;
   uniqueResultCount?: number;
   duplicateCount?: number;
   promisingResultCount?: number;
@@ -170,6 +171,7 @@ export type SearchQueryTelemetry = {
   page?: number;
   cursor?: string;
   returnedHits: number;
+  rawHits?: number;
   uniqueHits: number;
   duplicateRate: number;
   hasMore: boolean;
@@ -235,6 +237,9 @@ export type SearchStateOptions = {
   adaptive?: boolean;
   querySeeds?: ReadonlyMap<JobSource, readonly string[]> | Readonly<Record<string, readonly string[]>>;
   sourceCapabilities?: ReadonlyMap<JobSource, boolean> | Readonly<Record<string, boolean>>;
+  locationOptionalSources?: ReadonlyMap<JobSource, boolean> | Readonly<Record<string, boolean>>;
+  sourceLocationFiltering?: ReadonlyMap<JobSource, boolean> | Readonly<Record<string, boolean>>;
+  sourceRequestLimits?: ReadonlyMap<JobSource, number> | Readonly<Record<string, number>>;
 };
 
 export type SearchReservation = {
@@ -484,8 +489,10 @@ export class AgentSearchState {
   private readonly pathsByKey = new Map<string, SearchPathState>();
   private readonly attemptedPathKeys = new Set<string>();
   private readonly querySeedsBySource = new Map<JobSource, string[]>();
+  private readonly sourceLocationOptional = new Map<JobSource, boolean>();
   private readonly sourcePagination = new Map<JobSource, boolean>();
-  private readonly autoMutationSources = new Set<JobSource>();
+  private readonly sourceLocationFiltering = new Map<JobSource, boolean>();
+  private readonly sourceRequestLimits = new Map<JobSource, number>();
   private readonly adaptive: boolean;
   readonly errors: string[] = [];
   readonly warnings: string[] = [];
@@ -556,10 +563,18 @@ export class AgentSearchState {
         if (seeds.length >= this.budget.maxQueryVariantsPerSource) break;
       }
       this.querySeedsBySource.set(source, seeds);
-      if (seeds.length < 2) this.autoMutationSources.add(source);
       const capabilityConfig = config.sourceCapabilities;
       const pagination = isReadonlyMap<JobSource, boolean>(capabilityConfig) ? capabilityConfig.get(source) : capabilityConfig?.[source];
       this.sourcePagination.set(source, pagination === true);
+      const locationOptionalConfig = config.locationOptionalSources;
+      const locationOptional = isReadonlyMap<JobSource, boolean>(locationOptionalConfig) ? locationOptionalConfig.get(source) : locationOptionalConfig?.[source];
+      this.sourceLocationOptional.set(source, locationOptional === true);
+      const locationFilteringConfig = config.sourceLocationFiltering;
+      const locationFiltering = isReadonlyMap<JobSource, boolean>(locationFilteringConfig) ? locationFilteringConfig.get(source) : locationFilteringConfig?.[source];
+      this.sourceLocationFiltering.set(source, locationFiltering === true);
+      const requestLimitConfig = config.sourceRequestLimits;
+      const requestLimit = isReadonlyMap<JobSource, number>(requestLimitConfig) ? requestLimitConfig.get(source) : requestLimitConfig?.[source];
+      if (typeof requestLimit === "number" && Number.isSafeInteger(requestLimit) && requestLimit >= 0) this.sourceRequestLimits.set(source, requestLimit);
     }
   }
 
@@ -597,6 +612,7 @@ export class AgentSearchState {
       repeatCount: attempt.repeatCount ?? null,
       requestedLimit: attempt.requestedLimit ?? null,
       resultCount: attempt.resultCount ?? null,
+      rawHits: attempt.rawHits ?? null,
       uniqueResultCount: attempt.uniqueResultCount ?? null,
       duplicateCount: attempt.duplicateCount ?? null,
       promisingResultCount: attempt.promisingResultCount ?? null,
@@ -623,10 +639,10 @@ export class AgentSearchState {
       repeatCount: null,
       requestedLimit: null,
       resultCount: null,
+      rawHits: null,
       uniqueResultCount: null,
       duplicateCount: null,
       promisingResultCount: null,
-      latencyMs: null,
       sourceId: null,
       resultId: null,
       resultIdLength: null,
@@ -675,6 +691,7 @@ export class AgentSearchState {
       ...(value.page === undefined ? {} : { page: value.page }),
       ...(value.cursor === undefined ? {} : { cursor: text(value.cursor, 500) }),
       returnedHits: Math.max(0, Math.trunc(value.returnedHits)),
+      rawHits: Math.max(0, Math.trunc(value.rawHits ?? value.returnedHits)),
       uniqueHits: Math.max(0, Math.trunc(value.uniqueHits)),
       duplicateRate: Math.max(0, Math.min(1, value.duplicateRate)),
       hasMore: value.hasMore === true,
@@ -834,6 +851,8 @@ export class AgentSearchState {
     if (remaining.maxSearchCalls <= 0) this.rejectBudget("search", source, "maxSearchCalls", metadata);
     if (remaining.maxRunDurationMs <= 0) this.rejectBudget("search", source, "maxRunDurationMs", metadata);
     if (remaining.maxTotalResults <= 0) this.rejectBudget("search", source, "maxTotalResults", metadata);
+    if (this.remainingSourceRequestCapacity(source) <= 0) this.rejectSearchPath(source, metadata, "source request capacity exhausted");
+    const floor = this.adaptive ? this.sourceFloorDebt(source, remaining.maxSearchCalls) : { total: 0, source: 0 };
     const canonicalPath = this.pathKey(source, query, location, page, cursor);
     if (this.adaptive) {
       const paginationRequested = (page !== undefined && page > 1) || cursor !== undefined;
@@ -846,6 +865,9 @@ export class AgentSearchState {
       const accepted = this.acceptedSearchAttempts(source);
       if (accepted.length >= this.budget.maxSearchesPerSource) {
         this.rejectSearchPath(source, metadata, "maxSearchesPerSource");
+      }
+      if (floor.total > 0 && floor.source === 0) {
+        this.rejectSearchPath(source, metadata, "source-floor capacity is reserved for another enabled source");
       }
       const variants = new Set(accepted.filter(attempt => this.initialPath(attempt)).map(attempt => normalizedQuery(attempt.query)));
       const initialRequest = this.initialPath({ page, cursor });
@@ -874,8 +896,13 @@ export class AgentSearchState {
       }
       this.attemptedPathKeys.add(canonicalPath);
     }
+    const reservationLimit = floor.total > 0
+      ? Math.min(limit, 25, remaining.maxTotalResults >= floor.total
+        ? remaining.maxTotalResults - (floor.total - 1)
+        : 1)
+      : Math.min(limit, remaining.maxTotalResults);
     const startedAt = isoTime(this.now());
-    const attempt: SearchAttempt = { id: this.attemptId("search"), runId: this.runId, operation: "search", status: "started", source, query, location, page, cursor, intent, requestedLimit: Math.min(limit, remaining.maxTotalResults), repeatCount, startedAt };
+    const attempt: SearchAttempt = { id: this.attemptId("search"), runId: this.runId, operation: "search", status: "started", source, query, location, page, cursor, intent, requestedLimit: reservationLimit, repeatCount, startedAt };
     const attemptIndex = this.attemptList.push(attempt) - 1;
     const token = this.nextToken++;
     this.pending.set(token, attempt);
@@ -887,17 +914,24 @@ export class AgentSearchState {
     stats.lastYield = 0;
     stats.averageYield = stats.uniqueHits / Math.max(1, stats.searches);
     this.record("search_started", this.attemptPayload(attempt, { searchCall: this.searchCallCount }), "lifecycle");
-    return { token, source, query, location, page, cursor, limit: attempt.requestedLimit!, intent, attemptIndex };
+    return { token, source, query, location, page, cursor, limit: reservationLimit, intent, attemptIndex };
   }
 
-  completeSearch(reservation: SearchReservation, hits: SearchHit[], responsePageInfo?: SearchPageInfo) {
+  completeSearch(
+    reservation: SearchReservation,
+    hits: SearchHit[],
+    responsePageInfo?: SearchPageInfo,
+    accounting?: { rawHits: number; duplicatesRemoved: number },
+  ) {
     const attempt = this.pending.get(reservation.token);
     if (!attempt || attempt.operation !== "search") throw new Error("Unknown search reservation.");
     if (this.remainingBudgets().maxRunDurationMs <= 0) this.rejectExpired("search", reservation);
     this.pending.delete(reservation.token);
-    const consumedHits = hits.slice(0, Math.max(0, this.budget.maxTotalResults - this.discoveredCountValue));
+    const resultLimit = Math.min(reservation.limit, attempt.requestedLimit ?? reservation.limit, this.remainingBudgets().maxTotalResults);
+    const consumedHits = hits.slice(0, resultLimit);
+    const rawHits = accounting?.rawHits ?? hits.length;
     const added: SearchHit[] = [];
-    let duplicateCount = 0;
+    let duplicateCount = accounting?.duplicatesRemoved ?? 0;
     let promisingResultCount = 0;
     for (const hit of consumedHits) {
       if (hit.source !== reservation.source) throw new Error("Search result source does not match the enabled source.");
@@ -920,6 +954,7 @@ export class AgentSearchState {
     attempt.status = "completed";
     attempt.pageInfo = responsePageInfo;
     attempt.resultCount = consumedHits.length;
+    attempt.rawHits = rawHits;
     attempt.uniqueResultCount = added.length;
     attempt.duplicateCount = duplicateCount;
     attempt.promisingResultCount = promisingResultCount;
@@ -932,7 +967,7 @@ export class AgentSearchState {
     const pagesVisited = [...(prior?.pagesVisited ?? [])];
     if (currentPage !== undefined && !pagesVisited.includes(currentPage)) pagesVisited.push(currentPage);
     const searches = (prior?.searches ?? 0) + 1;
-    const raw = (prior?.raw ?? 0) + consumedHits.length;
+    const raw = (prior?.raw ?? 0) + rawHits;
     const unique = (prior?.unique ?? 0) + added.length;
     this.pathsByKey.set(path, {
       path,
@@ -957,7 +992,7 @@ export class AgentSearchState {
     });
     const stats = this.sourceStatsByKey.get(reservation.source)!;
     stats.discoveredCount += consumedHits.length;
-    stats.rawHits += consumedHits.length;
+    stats.rawHits += rawHits;
     stats.uniqueCount += added.length;
     stats.uniqueJobs += added.length;
     stats.uniqueHits += added.length;
@@ -974,8 +1009,9 @@ export class AgentSearchState {
       ...(currentPage === undefined ? {} : { page: currentPage }),
       ...(reservation.cursor === undefined ? {} : { cursor: reservation.cursor }),
       returnedHits: consumedHits.length,
+      rawHits,
       uniqueHits: added.length,
-      duplicateRate: consumedHits.length ? duplicateCount / consumedHits.length : 0,
+      duplicateRate: rawHits ? duplicateCount / rawHits : 0,
       hasMore: responsePageInfo?.hasMore === true,
       ...(responsePageInfo?.nextPage === undefined ? {} : { nextPage: responsePageInfo.nextPage }),
       ...(responsePageInfo?.nextCursor === undefined ? {} : { nextCursor: responsePageInfo.nextCursor }),
@@ -1112,6 +1148,33 @@ export class AgentSearchState {
     for (const value of values) if (typeof value === "string" && value.trim() && !this.warnings.includes(value)) this.warnings.push(text(value, 320));
   }
 
+  private remainingSourceRequestCapacity(source: JobSource) {
+    const limit = this.sourceRequestLimits.get(source);
+    if (limit === undefined) return Number.MAX_SAFE_INTEGER;
+    const stats = this.sourceStatsByKey.get(source);
+    return Math.max(0, limit - (stats?.searchCalls ?? 0) - (stats?.detailCalls ?? 0));
+  }
+  private sourceFloorDebt(source: JobSource, remainingSearchCalls: number) {
+    const unavailable = new Set(this.sourceCoverage().unavailable);
+    const completedBySource = new Map<JobSource, number>();
+    for (const attempt of this.attemptList) {
+      if (attempt.operation !== "search" || attempt.status !== "completed") continue;
+      completedBySource.set(attempt.source, (completedBySource.get(attempt.source) ?? 0) + 1);
+    }
+    let total = 0;
+    let sourceRemaining = 0;
+    for (const enabledSource of this.goal.enabledSources) {
+      if (unavailable.has(enabledSource)) continue;
+      const successfulFloorDebt = Math.max(0, this.budget.minSearchesPerSource - (completedBySource.get(enabledSource) ?? 0));
+      const consumedCalls = this.sourceStatsByKey.get(enabledSource)?.searchCalls ?? 0;
+      const remainingCallCapacity = Math.max(0, this.budget.maxSearchesPerSource - consumedCalls);
+      const remaining = Math.min(successfulFloorDebt, remainingCallCapacity, this.remainingSourceRequestCapacity(enabledSource));
+      total += remaining;
+      if (enabledSource === source) sourceRemaining = remaining;
+    }
+    return { total: Math.min(total, remainingSearchCalls), source: sourceRemaining };
+  }
+
   private sourceCoverage(): SearchSourceCoverage {
     const completed = new Set<JobSource>();
     const unavailable = new Set<JobSource>();
@@ -1187,6 +1250,21 @@ export class AgentSearchState {
     })).length;
     return (dimensions.length - matched) / dimensions.length;
   }
+  private queryCoverage(attemptIndex: number) {
+    const criteria = this.goal.criteria;
+    const hits = this.discoveredHits.filter(hit => this.hitAttemptByKey.get(searchProvenanceKey(hit.source, hit.sourceId)) === attemptIndex);
+    const candidates = hits.filter(hit => isDiscoveryCandidate(hit, criteria));
+    if (!candidates.length) return undefined;
+    const unmetRoles = criteria.roles.filter(role => !candidates.some(hit => includesCriterion(hit.title, role)));
+    const unmetLocations = criteria.locations.filter(location => !candidates.some(hit => includesCriterion(hit.location ?? "", location)));
+    const keywordKnown = hits.every(hit => this.detailDescriptions.has(searchProvenanceKey(hit.source, hit.sourceId)));
+    const unmetKeywords = keywordKnown
+      ? criteria.keywords.filter(keyword => !candidates.some(hit => includesCriterion(this.detailDescriptions.get(searchProvenanceKey(hit.source, hit.sourceId)) ?? "", keyword)))
+      : [];
+    const dimensions = criteria.roles.length + criteria.locations.length + (keywordKnown ? criteria.keywords.length : 0);
+    const gap = dimensions ? (unmetRoles.length + unmetLocations.length + (keywordKnown ? unmetKeywords.length : 0)) / dimensions : 0;
+    return { gap, unmetRoles, unmetLocations, unmetKeywords };
+  }
   private plannerDecision(): { nextSearch: SearchRecommendation | null; plannerStop: SearchPlannerStop } {
     if (!this.adaptive) return { nextSearch: null, plannerStop: "active" };
     const remaining = this.remainingBudgets();
@@ -1199,9 +1277,9 @@ export class AgentSearchState {
     const accepted = (source: JobSource) => this.acceptedSearchAttempts(source);
     const completed = (source: JobSource) => accepted(source).filter(attempt => attempt.status === "completed").length;
     const failed = (source: JobSource) => accepted(source).some(attempt => attempt.status === "failed") && completed(source) === 0;
-    const usedQuery = (source: JobSource, query: string) => accepted(source).some(attempt =>
+    const usedQuery = (source: JobSource, query: string, queryLocation = location) => accepted(source).some(attempt =>
       normalizedQuery(attempt.query) === normalizedQuery(query) &&
-      normalized(attempt.location) === normalized(location) &&
+      normalized(attempt.location) === normalized(queryLocation) &&
       (attempt.page === undefined || attempt.page === 1) &&
       attempt.cursor === undefined);
     const variantsFor = (source: JobSource) => new Set(accepted(source)
@@ -1211,39 +1289,78 @@ export class AgentSearchState {
       normalizedQuery(attempt.query) === normalizedQuery(path.query) &&
       normalized(attempt.location) === normalized(path.location)).length;
     const queryFor = (source: JobSource) => {
-      if (variantsFor(source).size >= this.budget.maxQueryVariantsPerSource) return undefined;
-      const candidates = [...seeds(source)];
-      if (this.autoMutationSources.has(source)) {
-        for (const attempt of accepted(source).filter(candidate => this.initialPath(candidate))) {
-          candidates.push(...queryAlternatives(attempt.query ?? ""));
+      const variants = variantsFor(source);
+      const candidates = seeds(source).map(query => ({ query, location }));
+      for (const attempt of accepted(source)) {
+        if (attempt.status !== "completed" || !this.initialPath(attempt)) continue;
+        const uniqueHits = attempt.uniqueResultCount ?? 0;
+        if (uniqueHits <= 2) {
+          if ((attempt.rawHits ? (attempt.duplicateCount ?? 0) / attempt.rawHits : 0) < 0.5) {
+            candidates.push(...queryAlternatives(attempt.query ?? "").map(query => ({ query, location })));
+          }
+          continue;
+        }
+        const coverage = this.queryCoverage(this.attemptList.indexOf(attempt));
+        if (!coverage) continue;
+        const query = attempt.query ?? "";
+        if (this.sourceLocationFiltering.get(source) === true) {
+          const nextLocation = coverage.unmetLocations.find(candidate =>
+            candidate.trim() &&
+            normalized(candidate) !== normalized(attempt.location) &&
+            !usedQuery(source, query, candidate),
+          );
+          if (nextLocation) candidates.push({ query, location: text(nextLocation, 120) });
+        }
+        if (coverage.gap < 0.5) continue;
+        const role = coverage.unmetRoles.find(value => !includesCriterion(query, value));
+        if (role) {
+          const narrowed = text(`${query} ${role}`, 200);
+          if (includesCriterion(narrowed, role)) candidates.push({ query: narrowed, location });
+        }
+        const keyword = coverage.unmetKeywords.find(value => !includesCriterion(query, value));
+        if (keyword) {
+          const narrowed = text(`${query} ${keyword}`, 200);
+          if (includesCriterion(narrowed, keyword)) candidates.push({ query: narrowed, location });
         }
       }
-      return candidates.find(candidate => !usedQuery(source, candidate));
+      return candidates.find(candidate =>
+        (variants.has(normalizedQuery(candidate.query)) || variants.size < this.budget.maxQueryVariantsPerSource) &&
+        !usedQuery(source, candidate.query, candidate.location),
+      );
     };
-    const recommendation = (source: JobSource, query: string, reason: SearchRecommendation["reason"], page?: number, cursor?: string): SearchRecommendation => ({
+    const recommendation = (source: JobSource, query: string, reason: SearchRecommendation["reason"], page?: number, cursor?: string, searchLocation = location): SearchRecommendation => ({
       source,
       query,
-      location,
+      location: searchLocation,
       limit: Math.min(25, Math.max(1, remaining.maxTotalResults)),
       ...(page === undefined ? {} : { page }),
       ...(cursor === undefined ? {} : { cursor }),
       reason,
     });
     for (const source of this.goal.enabledSources) {
-      if (failed(source) || accepted(source).length >= this.budget.maxSearchesPerSource) continue;
+      if (failed(source) || accepted(source).length >= this.budget.maxSearchesPerSource || this.remainingSourceRequestCapacity(source) <= 0) continue;
       if (completed(source) < this.budget.minSearchesPerSource) {
-        const query = queryFor(source);
-        if (query) return { nextSearch: recommendation(source, query, "source_floor"), plannerStop: "active" };
+        const candidate = queryFor(source);
+        if (candidate) return { nextSearch: recommendation(source, candidate.query, "source_floor", undefined, undefined, candidate.location), plannerStop: "active" };
       }
     }
     if (this.uniqueCountValue >= this.budget.targetUniqueJobs) return { nextSearch: null, plannerStop: "target_reached" };
+    const latestPathAttempt = (path: SearchPathState) => accepted(path.source).filter(attempt =>
+      attempt.status === "completed" &&
+      this.pathKey(attempt.source, attempt.query ?? "", attempt.location ?? "", attempt.page, attempt.cursor) === path.path
+    ).at(-1);
     const paginationCandidates = [...this.pathsByKey.values()]
       .map((path, index) => {
         const stats = this.sourceStatsByKey.get(path.source);
         const score = path.lastYield * 2 + path.averageYield + (stats?.promisingHits ?? 0) / Math.max(1, stats?.searches ?? 1) - path.duplicateRate * 2 + this.sourceCoverageGap(path.source) * 0.5;
         return { path, index, score };
       })
-      .filter(({ path }) => path.completed && path.hasMore && path.lastYield > 0 && this.sourcePagination.get(path.source) === true)
+      .filter(({ path }) => {
+        const latest = latestPathAttempt(path);
+        return this.remainingSourceRequestCapacity(path.source) > 0 && path.completed && path.hasMore && path.lastYield > 0 &&
+          this.sourcePagination.get(path.source) === true &&
+          (latest ? (latest.rawHits ? (latest.duplicateCount ?? 0) / latest.rawHits : 0) < 0.5 : true);
+      })
       .sort((left, right) => right.score - left.score || left.index - right.index);
     for (const { path } of paginationCandidates) {
       if (pagesVisitedFor(path) >= this.budget.maxPagesPerQuery || accepted(path.source).length >= this.budget.maxSearchesPerSource) continue;
@@ -1252,7 +1369,40 @@ export class AgentSearchState {
       if (nextPage === undefined && nextCursor === undefined) continue;
       const key = this.pathKey(path.source, path.query, path.location, nextPage, nextCursor);
       if (this.attemptedPathKeys.has(key) || this.pathsByKey.has(key)) continue;
-      return { nextSearch: recommendation(path.source, path.query, "paginate", nextPage, nextCursor), plannerStop: "active" };
+      return { nextSearch: recommendation(path.source, path.query, "paginate", nextPage, nextCursor, path.location), plannerStop: "active" };
+    }
+    if (!this.goal.criteria.remoteOnly) {
+      for (let index = this.attemptList.length - 1; index >= 0; index -= 1) {
+        const attempt = this.attemptList[index]!;
+        if (attempt.operation !== "search" || attempt.status !== "completed" || !this.initialPath(attempt) || !attempt.location?.trim() || (attempt.rawHits ?? 0) !== 0) continue;
+        const source = attempt.source;
+        const sourceAttempts = accepted(source);
+        if (this.sourceLocationFiltering.get(source) !== true || this.remainingSourceRequestCapacity(source) <= 0) continue;
+        if (sourceAttempts.length >= this.budget.maxSearchesPerSource) continue;
+        const query = attempt.query ?? "";
+        const latestCompleted = sourceAttempts.filter(candidate =>
+          candidate.status === "completed" &&
+          this.initialPath(candidate) &&
+          normalizedQuery(candidate.query) === normalizedQuery(query)
+        ).at(-1);
+        if (latestCompleted !== attempt) continue;
+        const triedLocations = new Set(sourceAttempts
+          .filter(candidate => this.initialPath(candidate) && normalizedQuery(candidate.query) === normalizedQuery(query))
+          .map(candidate => normalized(candidate.location)));
+        const nextLocation = this.goal.criteria.locations.find(candidate => candidate.trim() && !triedLocations.has(normalized(candidate)));
+        if (nextLocation) {
+          const candidateLocation = text(nextLocation, 120);
+          const key = this.pathKey(source, query, candidateLocation);
+          if (!this.attemptedPathKeys.has(key) && !this.pathsByKey.has(key)) {
+            return { nextSearch: recommendation(source, query, "broaden_query", undefined, undefined, candidateLocation), plannerStop: "active" };
+          }
+        } else if (this.sourceLocationOptional.get(source) === true && !triedLocations.has("")) {
+          const key = this.pathKey(source, query, "");
+          if (!this.attemptedPathKeys.has(key) && !this.pathsByKey.has(key)) {
+            return { nextSearch: recommendation(source, query, "broaden_query", undefined, undefined, ""), plannerStop: "active" };
+          }
+        }
+      }
     }
     const queryCandidates = this.goal.enabledSources
       .map((source, index) => {
@@ -1260,13 +1410,13 @@ export class AgentSearchState {
         const score = stats.lastYield * 2 + stats.averageYield + stats.promisingHits / Math.max(1, stats.searches) - stats.duplicateRate * 2 + this.sourceCoverageGap(source) * 0.5;
         return { source, index, score };
       })
-      .filter(({ source }) => !failed(source) && accepted(source).length < this.budget.maxSearchesPerSource)
+      .filter(({ source }) => !failed(source) && accepted(source).length < this.budget.maxSearchesPerSource && this.remainingSourceRequestCapacity(source) > 0)
       .sort((left, right) => right.score - left.score || left.index - right.index);
     for (const { source } of queryCandidates) {
-      const query = queryFor(source);
-      if (!query) continue;
+      const candidate = queryFor(source);
+      if (!candidate) continue;
       const reason: SearchRecommendation["reason"] = completed(source) === 0 ? "source_floor" : this.sourceStatsByKey.get(source)!.lastYield > 0 ? "exploit_source" : "broaden_query";
-      return { nextSearch: recommendation(source, query, reason), plannerStop: "active" };
+      return { nextSearch: recommendation(source, candidate.query, reason, undefined, undefined, candidate.location), plannerStop: "active" };
     }
     const completedSearches = this.attemptList.filter(attempt => attempt.operation === "search" && attempt.status === "completed");
     const recent = completedSearches.slice(-4);
@@ -1304,8 +1454,10 @@ export class AgentSearchState {
     const goals = [...new Set(unresolvedGoals.map((value) => text(value, 240)).filter(Boolean))].slice(0, 20);
     const sourceCoverage = this.sourceCoverage();
     const remaining = this.remainingBudgets();
-    const coverageBudgetExhausted = remaining.maxSearchCalls <= 0 || remaining.maxTotalResults <= 0 || remaining.maxRunDurationMs <= 0;
-    const anyBudgetExhausted = coverageBudgetExhausted || remaining.maxDetailCalls <= 0;
+    const sourceRequestBudgetExhausted = this.goal.enabledSources.some(source => this.remainingSourceRequestCapacity(source) <= 0);
+    const unsearchedRequestBudgetsExhausted = sourceCoverage.unsearched.length > 0 && sourceCoverage.unsearched.every(source => this.remainingSourceRequestCapacity(source) <= 0);
+    const coverageBudgetExhausted = remaining.maxSearchCalls <= 0 || remaining.maxTotalResults <= 0 || remaining.maxRunDurationMs <= 0 || unsearchedRequestBudgetsExhausted;
+    const anyBudgetExhausted = coverageBudgetExhausted || sourceRequestBudgetExhausted || remaining.maxDetailCalls <= 0;
     const terminationReasonCategory = reasonCategory ?? inferReasonCategory(normalizedReason);
     const decision = this.plannerDecision();
     const coverageState = this.coverageDetails();

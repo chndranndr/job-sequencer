@@ -35,12 +35,12 @@ test("TRACE routes parse and encode run IDs without changing existing route shap
   assert.equal(trackerHref("trace", "run/one"), "#/trace/run%2Fone");
 });
 
-test("TRACE event summaries prefer useful safe fields and task summaries are deterministic", () => {
+test("TRACE event summaries show readable message excerpts and task summaries are deterministic", () => {
   assert.equal(eventSummary(event(1, "tool_execution_start", { toolName: "lookupJob" }, "tool_call")), "lookupJob");
-  assert.equal(eventSummary(event(2, "assistant_message", { text: "  hello   tracker  " }, "assistant")), "[content omitted]");
+  assert.equal(eventSummary(event(2, "assistant_message", { text: "  hello   tracker  " }, "assistant")), "hello tracker");
   assert.equal(eventSummary(event(3, "run_failed", { error: "Provider unavailable" }, "error")), "Provider unavailable");
-  assert.equal(eventSummary(event(4, "assistant_thinking", { text: "private thought sk-secret-value" }, "thinking")), "[content omitted]");
-  assert.equal(eventSummary(event(5, "user_prompt", { text: "private prompt" }, "user")), "[content omitted]");
+  assert.equal(eventSummary(event(4, "assistant_thinking", { text: "private thought sk-secret-value" }, "thinking")), "private thought [redacted]");
+  assert.equal(eventSummary(event(5, "user_prompt", { text: "private prompt" }, "user")), "private prompt");
 
   const events = [
     event(1, "task_started", { taskId: "prepare", label: "Prepare", status: "started" }),

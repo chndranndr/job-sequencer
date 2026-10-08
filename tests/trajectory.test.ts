@@ -3,13 +3,16 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { buildServer } from "../src/server/app.js";
 import { appendRunTrajectoryEvent, createTaskReporter, createTrajectoryRecorder, finishRun, listRunTrajectoryEvents, openDatabase } from "../src/server/db.js";
-import { runBoundedPi, type PiSessionLike } from "../src/server/pi.js";
+import { redactTelemetryText as redactPiTelemetryText, runBoundedPi, type PiSessionLike } from "../src/server/pi.js";
 import { defaultCriteria, defaultSettings } from "../src/server/config.js";
-import { createMultiSourceScrapeExecutor, RunManager } from "../src/server/runs.js";
+import { AllSourcesFailedError, createMultiSourceScrapeExecutor, RunManager } from "../src/server/runs.js";
+import type { ScrapeContext, ScrapeFunnel } from "../src/server/runs.js";
 import { provenanceKey } from "../src/server/scrape.js";
 import { deriveRunTaskRows } from "../src/shared.js";
-import { deriveRunTrajectoryObservability } from "../src/trajectory.js";
+import { deriveRunTrajectoryObservability, redactTelemetryText as redactTrajectoryTelemetryText } from "../src/trajectory.js";
 import type { TrajectoryEvent } from "../src/shared.js";
+
+const syntheticGoogleApiKey = `AIza${"A".repeat(35)}`;
 
 function insertRun(db: ReturnType<typeof openDatabase>, id: string = randomUUID()) {
   db.prepare("INSERT INTO runs(id,workflow,status,provider,model,started_at) VALUES(?,?,?,?,?,?)").run(id, "test", "running", "fake", "fixture", "2026-08-20T00:00:00.000Z");
@@ -32,15 +35,19 @@ test("trajectory rows are ordered per run, tolerate bad JSON, and cascade with t
   } finally { db.close(); }
 });
 
-test("trajectory API returns a stable envelope and a safe 404", async () => {
+test("trajectory API shows model text while redacting credential values", async () => {
+  assert.equal(redactPiTelemetryText(syntheticGoogleApiKey), "[redacted]");
+  assert.equal(redactTrajectoryTelemetryText(syntheticGoogleApiKey), "[redacted]");
+  assert.equal(redactPiTelemetryText("AIza is a Google AI Studio prefix"), "AIza is a Google AI Studio prefix");
+  assert.equal(redactTrajectoryTelemetryText("AIza is a Google AI Studio prefix"), "AIza is a Google AI Studio prefix");
   const db = openDatabase(":memory:");
   const runId = insertRun(db, "trajectory-api");
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "run_started", payload: null });
-  appendRunTrajectoryEvent(db, runId, { kind: "user", type: "user_prompt", payload: { text: "apiKey=sk-secret-value" } });
+  appendRunTrajectoryEvent(db, runId, { kind: "user", type: "user_prompt", payload: { text: `apiKey=sk-secret-value Google AI Studio key: ${syntheticGoogleApiKey}` } });
   appendRunTrajectoryEvent(db, runId, { kind: "assistant", type: "assistant_message", payload: { text: "private answer", usage: { totalTokens: 3 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "thinking", type: "assistant_thinking", payload: { text: "private reasoning" } });
   appendRunTrajectoryEvent(db, runId, { kind: "thinking", type: "model_internal", payload: { text: "arbitrary reasoning marker" } });
-  appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_started", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", intent: "apiKey=sk-secret-value", metadata: { note: "sk-live-secret pk-x rk-y" }, credentials: { apiKey: { value: "nested-secret" } }, clientSecret: { value: "client-secret-marker" }, authorizationHeader: "header-secret", clientSecretValue: "value-secret", refreshToken: "refresh-token-marker", repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 4, maxRunDurationMs: 1000 } } });
+  appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_started", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", intent: "apiKey=sk-secret-value", metadata: { note: "sk-live-secret pk-x rk-y ghp_abcdefghijklmnopqrstuvwxyz0123456789 github_pat_11AA22BB33cc44DD55ee66FF77gg88HH99ii00JJ" }, credentials: { apiKey: { value: "nested-secret" } }, clientSecret: { value: "client-secret-marker" }, authorizationHeader: "header-secret", clientSecretValue: "value-secret", refreshToken: "refresh-token-marker", repeatCount: 0, requestedLimit: 2, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 4, maxRunDurationMs: 1000 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_completed", payload: { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 0, counts: { discovered: 2, unique: 1 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 900 } } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_state_inspected", payload: { counts: { discovered: 2, unique: 1, enriched: 0 }, coverage: { "role:backend": "medium" }, coverageSufficient: false, marginalUtility: { status: "low", score: 0, recentSearches: 1, recentUniqueJobs: 1, recentPromisingJobs: 0, repeatedZeroYieldSearches: 0, recommendation: "Vary query." }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 800 }, termination: null } });
   appendRunTrajectoryEvent(db, runId, { kind: "lifecycle", type: "search_finished", payload: { reason: "No more useful results.", reasonCategory: "marginal_utility_low", unresolvedGoals: ["compensation"], counts: { discovered: 2, unique: 1, enriched: 0 }, remaining: { maxSearchCalls: 1, maxDetailCalls: 2, maxTotalResults: 2, maxRunDurationMs: 700 } } });
@@ -56,11 +63,12 @@ test("trajectory API returns a stable envelope and a safe 404", async () => {
     assert.equal(body.observability.states[0].remaining.maxSearchCalls, 1);
     assert.equal(body.observability.termination.reason, "No more useful results.");
     assert.equal(body.events[0].type, "run_started");
-    assert.equal(body.events.find((event: { type: string }) => event.type === "user_prompt")?.payload, null);
-    assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_message")?.payload, null);
-    assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_thinking")?.payload, null);
-    assert.equal(body.events.find((event: { type: string }) => event.type === "model_internal")?.payload, null);
-    assert.doesNotMatch(JSON.stringify(body), /sk-secret-value|sk-live-secret|pk-x|rk-y|nested-secret|client-secret-marker|header-secret|value-secret|refresh-token-marker|private reasoning|private answer/);
+    assert.equal(body.events.find((event: { type: string }) => event.type === "user_prompt")?.payload.text, "apiKey=[redacted] Google AI Studio key: [redacted]");
+    assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_message")?.payload.text, "private answer");
+    assert.equal(body.events.find((event: { type: string }) => event.type === "assistant_thinking")?.payload.text, "private reasoning");
+    assert.equal(body.events.find((event: { type: string }) => event.type === "model_internal")?.payload.text, "arbitrary reasoning marker");
+    assert.doesNotMatch(JSON.stringify(body), /sk-secret-value|sk-live-secret|pk-x|rk-y|ghp_abcdefghijklmnopqrstuvwxyz0123456789|github_pat_11AA22BB33cc44DD55ee66FF77gg88HH99ii00JJ|nested-secret|client-secret-marker|header-secret|value-secret|refresh-token-marker/);
+    assert.ok(!JSON.stringify(body).includes(syntheticGoogleApiKey));
     assert.equal((await app.inject({ url: "/api/runs/missing/trajectory" })).statusCode, 404);
     assert.equal((await app.inject({ url: "/api/runs?limit=1" })).json().runs.length, 1);
 
@@ -398,6 +406,7 @@ test("scrape funnel telemetry reports final selected jobs after hard filtering",
       sourceAttempts: { freehire: 1 },
       queriesBySource: { freehire: ["backend"] },
       pagesBySource: { freehire: [1] },
+      sourceCoverage: { required: ["freehire"], searched: ["freehire"], unavailable: [], unsearched: [] },
       rawHits: 2,
       uniqueHits: 2,
       promisingHits: 2,
@@ -435,6 +444,77 @@ test("scrape funnel telemetry reports final selected jobs after hard filtering",
     assert.equal((funnels.at(-1)?.payload as { selectedJobs?: number } | undefined)?.selectedJobs, 1);
   } finally { db.close(); }
 });
+test("scrape manager persists failed adaptive funnel, duplicate summary, and parsed source coverage", async () => {
+  const db = openDatabase(":memory:");
+  const context = { profile: "Backend profile", criteria: { ...defaultCriteria, maxJobsPerRun: 5 }, settings: { ...defaultSettings, enabledSources: ["freehire", "linkedin"] } };
+  const sourceCoverage = {
+    required: ["freehire", "linkedin"],
+    searched: ["freehire", "linkedin"],
+    unavailable: ["freehire", "linkedin"],
+    unsearched: [],
+  };
+  const funnel = {
+    enabledSources: ["freehire", "linkedin"],
+    sourceAttempts: { freehire: 1, linkedin: 1 },
+    queriesBySource: { freehire: ["backend"], linkedin: ["platform engineer"] },
+    pagesBySource: { freehire: [1], linkedin: [1] },
+    rawHits: 5,
+    uniqueHits: 2,
+    promisingHits: 1,
+    duplicatesRemoved: 3,
+    candidatesAfterCheapFiltering: 2,
+    detailFetches: 0,
+    selectedJobs: 0,
+    stopReason: "budget_exhausted",
+    sourceCoverage,
+    sources: {},
+  } satisfies ScrapeFunnel;
+  const executor = async ({ runId, trajectory }: ScrapeContext) => {
+    if (runId && trajectory) trajectory(runId, { kind: "lifecycle", type: "search_funnel", payload: funnel });
+    throw new AllSourcesFailedError(["FreeHire unavailable.", "LinkedIn unavailable."], [], funnel);
+  };
+  const manager = new RunManager(db, executor, async () => context, createTrajectoryRecorder(db));
+  try {
+    const runId = await manager.start();
+    for (let attempt = 0; attempt < 100 && (manager.get(runId) as { status?: string } | undefined)?.status === "running"; attempt++) await Promise.resolve();
+    const run = manager.get(runId) as { status?: string; summary?: { duplicatesSkipped?: number; funnel?: ScrapeFunnel } } | undefined;
+    assert.equal(run?.status, "failed");
+    assert.equal(run?.summary?.duplicatesSkipped, 3);
+    assert.deepEqual(run?.summary?.funnel?.sourceCoverage, sourceCoverage);
+    const events = listRunTrajectoryEvents(db, runId);
+    const funnelEvent = events.find((event) => event.type === "search_funnel");
+    assert.ok(funnelEvent);
+    assert.deepEqual(funnelEvent.payload, funnel);
+    const observability = deriveRunTrajectoryObservability({
+      workflow: "scrape",
+      status: "failed",
+      started_at: "2026-08-20T00:00:00.000Z",
+      finished_at: "2026-08-20T00:00:05.000Z",
+      error: "Scrape failed.",
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      estimated_cost: null,
+    }, events);
+    assert.equal(observability.funnel?.duplicatesRemoved, 3);
+    assert.deepEqual(observability.funnel?.sourceCoverage, sourceCoverage);
+  } finally { db.close(); }
+});
+
+test("scrape manager defaults failed duplicate summary to zero without a funnel", async () => {
+  const db = openDatabase(":memory:");
+  const context = { profile: "Backend profile", criteria: { ...defaultCriteria, maxJobsPerRun: 5 }, settings: { ...defaultSettings, enabledSources: ["freehire"] } };
+  const manager = new RunManager(db, async () => { throw new AllSourcesFailedError(["No search succeeded."]); }, async () => context);
+  try {
+    const runId = await manager.start();
+    for (let attempt = 0; attempt < 100 && (manager.get(runId) as { status?: string } | undefined)?.status === "running"; attempt++) await Promise.resolve();
+    const run = manager.get(runId) as { status?: string; summary?: { duplicatesSkipped?: number; funnel?: ScrapeFunnel } } | undefined;
+    assert.equal(run?.status, "failed");
+    assert.equal(run?.summary?.duplicatesSkipped, 0);
+    assert.equal(run?.summary?.funnel, undefined);
+  } finally { db.close(); }
+});
+
 
 
 class TrajectoryFakeSession implements PiSessionLike {
@@ -451,12 +531,12 @@ class TrajectoryFakeSession implements PiSessionLike {
     const message = { role: "assistant", timestamp: Date.now(), content: [] };
     emit({ type: "agent_start" });
     emit({ type: "turn_start", turnIndex: 0, timestamp: Date.now() });
-    emit({ type: "message_update", message, assistantMessageEvent: { type: "text_delta", delta: "Answer" } });
+    emit({ type: "message_update", message, assistantMessageEvent: { type: "text_delta", delta: `Answer ${syntheticGoogleApiKey}` } });
     emit({ type: "message_update", message, assistantMessageEvent: { type: "thinking_delta", delta: "Plan" } });
     emit({ type: "tool_execution_start", toolCallId: "call-1", toolName: "lookupJob", args: { id: "job-1" } });
     emit({ type: "tool_execution_update", toolCallId: "call-1", toolName: "lookupJob", args: { id: "job-1" }, partialResult: { stage: "loading" } });
     emit({ type: "tool_execution_end", toolCallId: "call-1", toolName: "lookupJob", result: { stage: "ready" }, isError: false });
-    emit({ type: "message_end", message: { ...message, content: [{ type: "text", text: "Answer" }, { type: "thinking", thinking: "Plan" }] } });
+    emit({ type: "message_end", message: { ...message, content: [{ type: "text", text: `Answer ${syntheticGoogleApiKey}` }, { type: "thinking", thinking: "Plan" }] } });
     emit({ type: "agent_end", messages: [] });
     emit({ type: "agent_settled" });
   }
@@ -475,21 +555,21 @@ test("runBoundedPi persists prompts, aggregated assistant/thinking, tools, and t
     await runBoundedPi({
       runId,
       trajectory: recorder,
-      prompt: "Exact user prompt",
+      prompt: `Exact user prompt ${syntheticGoogleApiKey}`,
       guidance: "Use only supplied facts.",
       settings: { provider: "fixture", model: "model" },
       model: "fixture-model",
       timeoutMs: 1_000,
       createSession: async () => session,
     });
-    assert.equal(session.promptText, "Exact user prompt");
+    assert.equal(session.promptText, `Exact user prompt ${syntheticGoogleApiKey}`);
     assert.equal(session.disposed, true);
     const events = listRunTrajectoryEvents(db, runId);
     const types = events.map((event) => event.type);
     for (const expected of ["system_prompt", "tool_catalog", "run_context", "user_prompt", "agent_start", "turn_start", "assistant_message", "assistant_thinking", "tool_execution_start", "tool_execution_update", "tool_execution_end", "run_completed", "agent_settled", "session_disposed"]) assert.ok(types.includes(expected), expected);
-    assert.equal((events.find((event) => event.type === "user_prompt")?.payload as { text: string }).text, "Exact user prompt");
-    assert.equal((events.find((event) => event.type === "assistant_message")?.payload as { text: string }).text, "Answer");
-    assert.equal((events.find((event) => event.type === "assistant_thinking")?.payload as { text: string }).text, "Plan");
+    assert.deepEqual(events.find((event) => event.type === "user_prompt")?.payload, { text: "Exact user prompt [redacted]" });
+    assert.match(JSON.stringify(events.find((event) => event.type === "assistant_message")?.payload ?? null), /"text":"Answer \[redacted\]"/);
+    assert.ok(!JSON.stringify(events).includes(syntheticGoogleApiKey));
     assert.equal((events.find((event) => event.type === "tool_execution_end")?.payload as { isError: boolean }).isError, false);
     assert.match(String((events.find((event) => event.type === "run_context")?.payload as { promptHash?: string }).promptHash), /^[0-9a-f]{64}$/);
   } finally {
@@ -524,7 +604,7 @@ test("trajectory observability keeps adaptive paths, source funnel maps, and agg
   const budget = { targetUniqueJobs: 10, maxSearchCalls: 4, maxDetailCalls: 2, maxTotalResults: 20, maxRunDurationMs: 1_000, minSearchesPerSource: 1, maxSearchesPerSource: 4, maxPagesPerQuery: 2, maxQueryVariantsPerSource: 2 };
   const attempts = [
     event(1, "search_started", { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", page: 1, requestedLimit: 2, budget }),
-    event(2, "search_completed", { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", page: 1, resultCount: 2, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 1, pageInfo: { page: 1, hasMore: true, nextPage: 2, nextCursor: "opaque-next", total: 4 }, budget }),
+    event(2, "search_completed", { attemptId: "search-1", operation: "search", source: "freehire", query: "backend", location: "Remote", page: 1, resultCount: 2, rawHits: 5, uniqueResultCount: 1, duplicateCount: 1, promisingResultCount: 1, pageInfo: { page: 1, hasMore: true, nextPage: 2, nextCursor: "opaque-next", total: 4 }, budget }),
     event(3, "search_started", { attemptId: "search-2", operation: "search", source: "freehire", query: "backend", location: "Remote", page: 2, cursor: "opaque-cursor", requestedLimit: 2, budget }),
     event(4, "search_completed", { attemptId: "search-2", operation: "search", source: "freehire", query: "backend", location: "Remote", page: 2, resultCount: 1, uniqueResultCount: 1, duplicateCount: 0, promisingResultCount: 0, pageInfo: { page: 2, hasMore: false, total: 4 }, budget }),
     event(5, "search_finished", {
@@ -571,6 +651,7 @@ test("trajectory observability keeps adaptive paths, source funnel maps, and agg
       detailFetches: 1,
       selectedJobs: 1,
       stopReason: "paths_exhausted",
+      sourceCoverage: { required: ["freehire", "linkedin"], searched: ["freehire"], unavailable: [], unsearched: ["linkedin"] },
       sources: {
         freehire: {
           searches: 2,
@@ -586,6 +667,14 @@ test("trajectory observability keeps adaptive paths, source funnel maps, and agg
   ];
   const observability = deriveRunTrajectoryObservability(run, attempts);
   assert.equal(observability.attempts[0]?.page, 1);
+  assert.equal(observability.attempts[0]?.resultCount, 2);
+  assert.equal(observability.attempts[0]?.rawHits, 5);
+  assert.equal(observability.attempts[0]?.duplicateRate, 0.2);
+  assert.equal(observability.attempts[1]?.resultCount, 1);
+  assert.equal(observability.attempts[1]?.rawHits, undefined);
+  assert.equal(observability.sourceStats.freehire?.queryHistory?.[0]?.returnedHits, 2);
+  assert.equal(observability.sourceStats.freehire?.queryHistory?.[0]?.rawHits, 5);
+  assert.equal(observability.sourceStats.freehire?.queryHistory?.[0]?.duplicateRate, 0.2);
   assert.equal(observability.attempts[1]?.cursor, "[redacted]");
   assert.equal(observability.attempts[0]?.nextCursor, "[redacted]");
   assert.deepEqual(observability.states[0]?.sourceCoverage, { required: ["freehire", "linkedin"], searched: ["freehire"], unavailable: [], unsearched: ["linkedin"] });
@@ -603,4 +692,5 @@ test("trajectory observability keeps adaptive paths, source funnel maps, and agg
   assert.equal(observability.funnel?.promisingHits, 1);
   assert.equal(observability.funnel?.candidatesAfterCheapFiltering, 2);
   assert.deepEqual(observability.funnel?.sourceAttempts, { freehire: 2 });
+  assert.deepEqual(observability.funnel?.sourceCoverage, { required: ["freehire", "linkedin"], searched: ["freehire"], unavailable: [], unsearched: ["linkedin"] });
 });

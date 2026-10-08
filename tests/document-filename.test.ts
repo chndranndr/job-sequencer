@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { friendlyDocumentFilename } from "../src/server/documents.js";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { exportGeneratedPdfs, friendlyDocumentFilename } from "../src/server/documents.js";
 
 test("friendly document filenames are concise, deterministic, and safe", () => {
   const company = "PT. HTC Global Software Services";
@@ -18,3 +21,22 @@ test("friendly document filenames are concise, deterministic, and safe", () => {
   }
 });
 
+test("PDF exports avoid collisions and remove incomplete pairs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pjs-export-"));
+  try {
+    await writeFile(join(dir, "cv.pdf"), "first cv");
+    const args = [dir, dir, "../Example", "../Engineer", "2026-10-02T10:00:00.000Z"] as const;
+    await assert.rejects(() => exportGeneratedPdfs(...args), { code: "ENOENT" });
+    assert.deepEqual(await readdir(join(dir, "generated")), []);
+    await writeFile(join(dir, "cover-letter.pdf"), "letter");
+    const first = await exportGeneratedPdfs(...args);
+    await writeFile(join(dir, "cv.pdf"), "second cv");
+    const second = await exportGeneratedPdfs(...args);
+    assert.notEqual(first, second);
+    assert.equal(await readFile(join(first, "cv_example_engineer.pdf"), "utf8"), "first cv");
+    assert.equal(await readFile(join(second, "cv_example_engineer.pdf"), "utf8"), "second cv");
+    assert.equal((await readdir(join(dir, "generated"))).length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

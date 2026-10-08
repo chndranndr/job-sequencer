@@ -112,7 +112,7 @@ test("manual import does not fetch pasted text and uses a synthetic URL", async 
 });
 
 test("manual URL import validates destinations, redirects manually, and bounds response bytes", async () => {
-  assert.throws(() => validateManualUrl("http://127.0.0.1/job"), /private|local/i);
+  assert.throws(() => validateManualUrl("http://[::ffff:7f00:1]/job"), /private|local/i);
   assert.throws(() => validateManualUrl("https://user:pass@example.test/job"), /credentials/i);
   assert.throws(() => validateManualUrl("ftp://example.test/job"), /HTTP/i);
 

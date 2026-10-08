@@ -50,7 +50,7 @@ function liveExecute(input: RunCompanyResearchInput): StructuredRunOptions<Compa
     let text = "";
     await runBoundedPi({
       prompt,
-      timeoutMs: 120_000,
+      timeoutMs: 300_000,
       signal: input.signal,
       createSession: () => createRestrictedResearchSession(input.settings!, createResearchTool()),
       runId: input.runId,

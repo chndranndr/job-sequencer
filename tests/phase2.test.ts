@@ -4,6 +4,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { setImmediate } from "node:timers/promises";
+import type { DatabaseSync } from "node:sqlite";
+import type { FastifyInstance } from "fastify";
 import { openDatabase, updateJobDirection } from "../src/server/db.js";
 import { buildServer } from "../src/server/app.js";
 import { compileAndVerify, containedPath, type CommandRunner } from "../src/server/documents.js";
@@ -17,17 +20,20 @@ import { splitDescriptionIntoBullets } from "../src/server/agents/evidence.js";
 import type { RunStrategistInput } from "../src/server/agents/strategist.js";
 import type { RunWriterInput } from "../src/server/agents/writer.js";
 
-function insertJob(db: any, stage = "Selected", suffix = "1") {
+function insertJob(db: DatabaseSync, stage = "Selected", suffix = "1") {
   const id = randomUUID();
   db.prepare("INSERT INTO jobs(id,source_id,source,url,company,role,posting,score,rank_json,stage,first_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(id, `s-${suffix}`, "freehire", `https://example.test/${suffix}`, "Example", "Engineer", "Posting", 80, JSON.stringify({ reason: "fit", strengths: [], gaps: ["Kubernetes"] }), stage, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
   return id;
 }
 
-async function wait(app: any, id: string) {
-  for (let i = 0; i < 100; i++) {
-    const body = (await app.inject({ url: `/api/runs/${id}` })).json();
+type PolledRun = { status: string; summary: { results: Array<{ jobId: string; status?: string; error?: string }> } | null; error?: string | null };
+
+async function wait(app: FastifyInstance, id: string) {
+  const deadline = performance.now() + 5000;
+  while (performance.now() < deadline) {
+    const body = (await app.inject({ url: `/api/runs/${id}` })).json<PolledRun>();
     if (body.status !== "running" && body.status !== "queued") return body;
-    await new Promise(resolve => setTimeout(resolve, 5));
+    await setImmediate();
   }
   throw new Error("run did not finish");
 }
@@ -299,7 +305,8 @@ test("generate is Selected-only, sequential, keeps Drafting, archives, approves,
     const runId = start.json().runId;
     const done = await wait(app, runId);
     assert.equal(done.status, "succeeded");
-    assert.deepEqual(done.summary.results.map((result: { jobId: string }) => result.jobId), [first, second]);
+    assert.ok(done.summary);
+    assert.deepEqual(done.summary.results.map((result) => result.jobId), [first, second]);
     const trajectory = (await app.inject({ url: `/api/runs/${runId}/trajectory` })).json();
     const taskIds = new Set(trajectory.events.filter((event: { type: string }) => event.type.startsWith("task_")).map((event: { payload?: { taskId?: string } }) => event.payload?.taskId));
     for (const taskId of [`generate:${first}:strategy`, `generate:${first}:writer`, `generate:${first}:claims`, `generate:${first}:audit:0`, `generate:${first}:critic:0`, `generate:${first}:documents`, `generate:${first}:finalize`]) assert.ok(taskIds.has(taskId), taskId);

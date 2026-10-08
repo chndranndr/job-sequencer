@@ -9,6 +9,8 @@ import type { PiSessionLike } from "../src/server/pi.js";
 import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from "@earendil-works/pi-ai";
+import { jobSourceKeys, type JobSource } from "../src/shared.js";
+
 
 function textResult(value: unknown) {
   const content = (value as { content: Array<{ type: string; text?: string }> }).content;
@@ -33,6 +35,13 @@ test("default search preferences stay optional for profile-led discovery", () =>
 });
 
 const detail = (id: string, url: string) => ({ id, title: "Backend Engineer", url, description: "Full posting for the selected job." });
+const sourceFloorHit = (source: (typeof jobSourceKeys)[number], id: string) => ({
+  source,
+  sourceId: id,
+  title: "Engineer",
+  url: `https://jobs.example.test/${source}/${id}`,
+});
+
 
 test("agent search state supports adaptive discovery, selective detail, inspection, and explicit finish", async () => {
   const url = "https://jobs.example.test/backend-one";
@@ -209,7 +218,7 @@ test("search state records adaptive yield, duplicate provenance, coverage, and t
   empty.finish("No relevant jobs found.");
   assert.equal(empty.assertFinished()?.reasonCategory, "no_results");
 });
-test("search telemetry reports only rows consumed by the result budget", () => {
+test("search telemetry separates raw hits from rows consumed by the result budget", () => {
   const state = new AgentSearchState({
     goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] },
     budget: { maxSearchCalls: 1, maxTotalResults: 2 },
@@ -225,13 +234,106 @@ test("search telemetry reports only rows consumed by the result budget", () => {
   const stats = snapshot.sourceStats.freehire;
   assert.equal(snapshot.discoveredCount, 2);
   assert.equal(attempt.resultCount, 2);
+  assert.equal(attempt.rawHits, 3);
   assert.equal(attempt.uniqueResultCount, 2);
   assert.equal(attempt.duplicateCount, 0);
-  assert.equal(stats.rawHits, 2);
+  assert.equal(stats.rawHits, 3);
   assert.equal(stats.duplicateRate, 0);
   assert.equal(stats.queryHistory[0]?.returnedHits, 2);
-  assert.equal(snapshot.paths[0]?.raw, 2);
+  assert.equal(stats.queryHistory[0]?.rawHits, 3);
+  assert.equal(snapshot.paths[0]?.raw, 3);
 });
+
+test("search accounting includes adapter and global duplicates exactly once across queries, pages, and sources", async () => {
+  const sharedUrl = "https://jobs.example.test/shared";
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire", "linkedin"] },
+    budget: { maxSearchCalls: 3, maxTotalResults: 10 },
+  });
+  const sourceTools = {
+    freehire: createScrapeTools({
+      source: "freehire",
+      runCli: async args => {
+        if (args[0] !== "search") return { code: 0, stderr: "", stdout: "{}" };
+        const pageIndex = args.indexOf("--page");
+        const page = pageIndex === -1 ? 1 : Number(args[pageIndex + 1]);
+        const results = page === 1
+          ? [
+            { id: "job-shared", title: "Engineer", company: "Example", location: "Remote", url: sharedUrl },
+            { id: "job-shared", title: "Duplicate ID", company: "Example", location: "Remote", url: "https://jobs.example.test/duplicate-id" },
+            { id: "job-2", title: "Engineer", company: "Example", location: "Remote", url: "https://jobs.example.test/job-2" },
+          ]
+          : [
+            { id: "page-two-shared", title: "Engineer", company: "Example", location: "Remote", url: sharedUrl },
+            { id: "job-3", title: "Engineer", company: "Example", location: "Remote", url: "https://jobs.example.test/job-3" },
+          ];
+        const meta = { count: 99, rawHits: page === 1 ? 4 : 2, duplicatesRemoved: page === 1 ? 1 : 0, page, total: 10 };
+        return { code: 0, stderr: "", stdout: JSON.stringify({ meta, results }) };
+      },
+    }),
+    linkedin: createScrapeTools({
+      source: "linkedin",
+      runCli: async () => ({
+        code: 0,
+        stderr: "",
+        stdout: JSON.stringify({
+          meta: { count: 99 },
+          results: [
+            { id: "linkedin-shared", title: "Engineer", company: "Example", location: "Remote", url: sharedUrl },
+            { id: "job-4", title: "Engineer", company: "Example", location: "Remote", url: "https://jobs.example.test/job-4" },
+          ],
+        }),
+      }),
+    }),
+  };
+  const tools = createAgentSearchTools(state, sourceTools);
+  await tools.searchJobs.execute("freehire-page-1", {
+    source: "freehire", query: "backend", location: "Remote", limit: 5,
+  }, undefined, undefined, undefined as never);
+  await tools.searchJobs.execute("freehire-page-2", {
+    source: "freehire", query: "backend", location: "Remote", limit: 5, page: 2,
+  }, undefined, undefined, undefined as never);
+  await tools.searchJobs.execute("linkedin-query", {
+    source: "linkedin", query: "backend", location: "Remote", limit: 5,
+  }, undefined, undefined, undefined as never);
+
+  const snapshot = state.snapshot();
+  assert.deepEqual(snapshot.attempts.map(({ resultCount, rawHits, duplicateCount }) => [resultCount, rawHits, duplicateCount]), [
+    [2, 4, 2],
+    [2, 2, 1],
+    [2, 2, 1],
+  ]);
+  assert.equal(snapshot.discoveredCount, 6);
+  assert.equal(snapshot.uniqueCount, 4);
+  assert.equal(snapshot.sourceStats.freehire.rawHits, 6);
+  assert.equal(snapshot.sourceStats.freehire.duplicateCount, 3);
+  assert.equal(snapshot.sourceStats.linkedin.rawHits, 2);
+  assert.equal(snapshot.sourceStats.linkedin.duplicateCount, 1);
+  assert.deepEqual(snapshot.sourceStats.freehire.queryHistory.map(({ rawHits, returnedHits }) => [rawHits, returnedHits]), [[4, 2], [2, 2]]);
+  assert.deepEqual(
+    snapshot.paths.filter(path => path.source === "freehire").map(({ page, raw }) => [page, raw]),
+    [[1, 4], [2, 2]],
+  );
+  assert.equal(state.provenance.get("freehire\u0000job-shared"), sharedUrl);
+  assert.equal(state.provenance.has("freehire\u0000page-two-shared"), false);
+  assert.equal(state.provenance.has("linkedin\u0000linkedin-shared"), false);
+});
+
+test("search completion respects reservation and remaining result limits", () => {
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 2, maxTotalResults: 3 },
+  });
+  const first = state.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 2 });
+  const second = state.reserveSearch({ source: "freehire", query: "engineer", location: "", limit: 2 });
+  state.completeSearch(first, Array.from({ length: 25 }, (_, index) => sourceFloorHit("freehire", `first-${index}`)));
+  state.completeSearch(second, Array.from({ length: 25 }, (_, index) => sourceFloorHit("freehire", `second-${index}`)));
+  const snapshot = state.snapshot();
+  assert.deepEqual(snapshot.attempts.map(attempt => attempt.resultCount), [2, 1]);
+  assert.equal(snapshot.discoveredCount, 3);
+  assert.equal(snapshot.remaining.maxTotalResults, 0);
+});
+
 
 
 test("finish requires every enabled source or an explicit unavailable-source exception", () => {
@@ -497,7 +599,7 @@ test("search tools reject an unconfigured enabled source before adapter executio
   assert.equal(state.snapshot().sourceStats.linkedin.errors, 0);
 });
 
-test("same goal trajectories choose the next source from inspected state", async () => {
+test("same goal trajectories honor source floors from inspected state", async () => {
   class FakeSession implements PiSessionLike {
     subscribe() { return () => {}; }
     async prompt() {}
@@ -543,10 +645,11 @@ test("same goal trajectories choose the next source from inspected state", async
       let inspected = textResult(await call("inspectSearchState", {}));
       while (!inspected.coverageSufficient || inspected.sourceCoverage.unsearched.length) {
         if (activeRunId === "trajectory-b" && inspected.sourceStats.freehire.duplicateCount > 0) assert.equal(inspected.marginalUtility.status, "low");
-        const uncoveredSource = inspected.coverageSufficient ? inspected.sourceCoverage.unsearched[0] : undefined;
+        const floorSearch = inspected.nextSearch?.reason === "source_floor" ? inspected.nextSearch : undefined;
+        const uncoveredSource = floorSearch?.source ?? (inspected.coverageSufficient ? inspected.sourceCoverage.unsearched[0] : undefined);
         const source = uncoveredSource ?? (inspected.marginalUtility.status === "low" && inspected.sourceStats.freehire.duplicateCount > 0 ? "linkedin" : "freehire");
-        const query = uncoveredSource ? "backend" : "backend alternate";
-        await call("searchJobs", { source, query, location: source === "linkedin" ? "Remote" : "", limit: 1 });
+        const query = floorSearch?.query ?? (uncoveredSource ? "backend" : "backend alternate");
+        await call("searchJobs", { source, query, location: floorSearch?.location ?? (source === "linkedin" ? "Remote" : ""), limit: floorSearch?.limit ?? 1 });
         inspected = textResult(await call("inspectSearchState", {}));
       }
       await call("finishSearch", { reason: "Coverage is sufficient.", reasonCategory: "coverage_sufficient" });
@@ -577,8 +680,6 @@ test("same goal trajectories choose the next source from inspected state", async
     ["finishSearch", ""],
   ]);
   assert.deepEqual(calls.filter(call => call.startsWith("trajectory-b:")).map(call => call.split(":").slice(1, 3)), [
-    ["searchJobs", "freehire"],
-    ["inspectSearchState", ""],
     ["searchJobs", "freehire"],
     ["inspectSearchState", ""],
     ["searchJobs", "linkedin"],
@@ -853,6 +954,7 @@ test("agent executor still rejects an empty finish when every search action fail
     dispose() {}
   }
   let tools: AgentSearchTools | undefined;
+  let funnelPayload: unknown;
   const run = createAgentSearchExecutor({
     loadGuidance: async () => "bounded guidance",
     createSourceTools: sourceFactory(async () => ({ code: 1, stderr: "fixture source unavailable", stdout: "" })),
@@ -868,9 +970,21 @@ test("agent executor still rejects an empty finish when every search action fail
     profile: "Backend engineer",
     criteria: { ...defaultCriteria, maxJobsPerRun: 1 },
     settings: { ...defaultSettings, enabledSources: ["freehire"] },
+    runId: "all-source-failure",
+    trajectory: (_runId, event) => { if (event.type === "search_funnel") funnelPayload = event.payload; },
     signal: new AbortController().signal,
   } satisfies ScrapeContext;
-  await assert.rejects(run(context), AllSourcesFailedError);
+  let failure: unknown;
+  try { await run(context); } catch (error) { failure = error; }
+  assert.ok(failure instanceof AllSourcesFailedError);
+  assert.deepEqual(failure.funnel?.sourceCoverage, {
+    required: ["freehire"],
+    searched: ["freehire"],
+    unavailable: ["freehire"],
+    unsearched: [],
+  });
+  assert.equal(failure.funnel?.duplicatesRemoved, 0);
+  assert.deepEqual(funnelPayload, failure.funnel);
 });
 
 test("resolved search budget exposes bounded exploratory defaults", () => {
@@ -991,6 +1105,28 @@ test("adaptive finish requires planner exhaustion after candidate enrichment", (
   assert.equal(state.finish("All useful query paths are exhausted.", [], "candidates_sufficient")?.reasonCategory, "candidates_sufficient");
 });
 
+test("adaptive search stops after repeated low-yield source exploration saturates", () => {
+  const sources = jobSourceKeys.slice(0, 4);
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: sources },
+    budget: { targetUniqueJobs: 50, maxSearchCalls: 8, maxDetailCalls: 1, maxTotalResults: 20, minSearchesPerSource: 1, maxSearchesPerSource: 1, maxQueryVariantsPerSource: 1 },
+    adaptive: true,
+    querySeeds: Object.fromEntries(sources.map(source => [source, ["backend engineer"]])),
+  });
+  for (const source of sources) {
+    const nextSearch = state.snapshot().nextSearch;
+    assert.ok(nextSearch);
+    assert.deepEqual({ source: nextSearch.source, reason: nextSearch.reason }, { source, reason: "source_floor" });
+    state.completeSearch(state.reserveSearch({ source, query: nextSearch.query, location: nextSearch.location, limit: 1 }), []);
+  }
+  const inspected = state.snapshot();
+  assert.deepEqual(inspected.sourceCoverage, { required: sources, searched: sources, unavailable: [], unsearched: [] });
+  assert.equal(inspected.nextSearch, null);
+  assert.equal(inspected.plannerStop, "marginal_yield_saturated");
+  assert.equal(inspected.marginalUtility.recentUniqueJobs, 0);
+  assert.equal(state.finish("Recent searches produced negligible unique yield.", [], "no_results")?.reasonCategory, "no_results");
+});
+
 
 test("adaptive recommendations mutate low-yield queries without equivalent repeats", async () => {
   const queries: string[] = [];
@@ -1086,6 +1222,744 @@ test("adaptive planner allocates productive sources before weaker variants", () 
     () => state.reserveSearch({ source: "tokyodev", query: "platform backend", location: "", limit: 1 }),
     /equivalent source\/query\/location\/page path/i,
   );
+});
+
+test("adaptive low-yield variants keep explicit seed order and canonical novelty", async () => {
+  const queries: string[] = [];
+  const tools = createAgentSearchTools({
+    sources: [{ key: "freehire", querySeeds: ["backend engineer", "engineer backend", "backend"] }],
+    goal: { criteria: { ...defaultCriteria }, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 4, maxTotalResults: 10, maxQueryVariantsPerSource: 4 },
+    createSourceTools: options => createScrapeTools({
+      ...options,
+      runCli: async args => {
+        if (args[0] !== "search") return { code: 0, stderr: "", stdout: "{}" };
+        const query = args[args.indexOf("--query") + 1] ?? "";
+        queries.push(query);
+        const results = query === "backend engineer" ? ["one", "two"].map(id => ({
+          id,
+          title: "Engineer",
+          company: null,
+          location: null,
+          url: `https://jobs.example.test/${id}`,
+        })) : [];
+        return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: results.length }, results }) };
+      },
+    }),
+  });
+  const inspect = async () => textResult(await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+  for (const query of ["backend engineer", "backend", "engineer"]) {
+    const state = await inspect();
+    assert.equal(state.nextSearch?.query, query);
+    await tools.searchJobs.execute(`search-${query}`, {
+      source: state.nextSearch.source,
+      query: state.nextSearch.query,
+      location: state.nextSearch.location,
+      limit: state.nextSearch.limit,
+    }, undefined, undefined, undefined as never);
+  }
+  assert.deepEqual(queries, ["backend engineer", "backend", "engineer"]);
+  assert.equal(new Set(queries.map(query => query.toLowerCase().split(/\s+/).sort().join(" "))).size, queries.length);
+  assert.equal((await inspect()).nextSearch, null);
+});
+
+test("adaptive high-yield low-coverage attempts append positive criteria only", async () => {
+  const criteria = { ...defaultCriteria, roles: ["Backend Engineer"], locations: ["Remote"], excludeKeywords: ["PHP"] };
+  const queries: string[] = [];
+  const tools = createAgentSearchTools({
+    sources: [{ key: "freehire", querySeeds: ["lead"] }],
+    goal: { criteria, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 5, maxTotalResults: 20, maxQueryVariantsPerSource: 4 },
+    createSourceTools: options => createScrapeTools({
+      ...options,
+      runCli: async args => {
+        if (args[0] !== "search") return { code: 0, stderr: "", stdout: "{}" };
+        const query = args[args.indexOf("--query") + 1] ?? "";
+        queries.push(query);
+        const results = Array.from({ length: 3 }, (_, index) => ({
+          id: `result-${queries.length}-${index}`,
+          title: "Product Manager",
+          company: "Example",
+          location: "Remote",
+          url: `https://jobs.example.test/result-${queries.length}-${index}`,
+        }));
+        return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: results.length }, results }) };
+      },
+    }),
+  });
+  const inspect = async () => textResult(await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+  for (const query of ["lead", "Backend Engineer"]) {
+    const state = await inspect();
+    assert.equal(state.nextSearch?.query, query);
+    await tools.searchJobs.execute(`search-${query}`, {
+      source: state.nextSearch.source,
+      query: state.nextSearch.query,
+      location: state.nextSearch.location,
+      limit: state.nextSearch.limit,
+    }, undefined, undefined, undefined as never);
+  }
+  const narrowed = await inspect();
+  assert.equal(narrowed.nextSearch.query, "lead Backend Engineer");
+  assert.doesNotMatch(narrowed.nextSearch.query, /PHP/i);
+  assert.deepEqual(tools.state.goal.criteria.excludeKeywords, ["PHP"]);
+  assert.equal(tools.state.goal.criteria.remoteOnly, false);
+  assert.equal(passesHardSearchConstraints(
+    { title: "Backend Engineer", company: "Example", location: "Remote" },
+    criteria,
+    "PHP Developer role",
+  ), false);
+});
+
+test("adaptive high-yield location gaps schedule another configured location", async () => {
+  const searches: Array<{ query: string; location: string }> = [];
+  const tools = createAgentSearchTools({
+    sources: [{ key: "freehire", querySeeds: ["backend"] }],
+    goal: { criteria: { ...defaultCriteria, locations: ["Remote", "Singapore", "Osaka"] }, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 3, maxTotalResults: 10, maxQueryVariantsPerSource: 1 },
+    createSourceTools: options => createScrapeTools({
+      ...options,
+      runCli: async args => {
+        if (args[0] !== "search") return { code: 0, stderr: "", stdout: "{}" };
+        searches.push({
+          query: args[args.indexOf("--query") + 1] ?? "",
+          location: args[args.indexOf("--city") + 1] ?? "",
+        });
+        const results = Array.from({ length: 3 }, (_, index) => ({
+          id: `remote-${index}`,
+          title: "Backend Engineer",
+          company: "Example",
+          location: index === 0 ? "Remote" : "Singapore",
+          url: `https://jobs.example.test/remote-${index}`,
+        }));
+        return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: results.length }, results }) };
+      },
+    }),
+  });
+  const first = tools.state.snapshot().nextSearch!;
+  assert.deepEqual({ query: first.query, location: first.location }, { query: "backend", location: "Remote" });
+  await tools.searchJobs.execute("remote-search", {
+    source: first.source,
+    query: first.query,
+    location: first.location,
+    limit: first.limit,
+  }, undefined, undefined, undefined as never);
+  const next = tools.state.snapshot().nextSearch;
+  assert.deepEqual(next && { query: next.query, location: next.location }, { query: "backend", location: "Osaka" });
+  assert.deepEqual(searches, [{ query: "backend", location: "Remote" }]);
+});
+
+test("location-unsupported Japan boards do not schedule location-only searches", async () => {
+  for (const [source, withHits] of [["tokyodev", true], ["tokyodev", false], ["japan-dev", true], ["japan-dev", false]] as const) {
+    const searches: string[][] = [];
+    const tools = createAgentSearchTools({
+      sources: [{ key: source, querySeeds: ["backend"] }],
+      goal: { criteria: { ...defaultCriteria, locations: ["Tokyo", "Osaka"] }, enabledSources: [source] },
+      budget: { maxSearchCalls: 3, maxTotalResults: 10, maxQueryVariantsPerSource: 1 },
+      createSourceTools: options => createScrapeTools({
+        ...options,
+        runCli: async args => {
+          if (args[0] !== "search") return { code: 0, stderr: "", stdout: "{}" };
+          searches.push(args);
+          const results = withHits ? Array.from({ length: 3 }, (_, index) => ({
+            id: `${source}-${index}`,
+            title: "Backend Engineer",
+            company: "Example",
+            location: "Remote",
+            url: `https://jobs.example.test/${source}-${index}`,
+          })) : [];
+          return { code: 0, stderr: "", stdout: JSON.stringify({ count: results.length, results }) };
+        },
+      }),
+    });
+    const first = tools.state.snapshot().nextSearch!;
+    assert.equal(first.source, source);
+    await tools.searchJobs.execute(`${source}-search-${withHits}`, {
+      source: first.source,
+      query: first.query,
+      location: first.location,
+      limit: first.limit,
+    }, undefined, undefined, undefined as never);
+    assert.equal(searches.length, 1);
+    assert.equal(tools.state.snapshot().nextSearch, null);
+  }
+});
+test("location-insensitive built-in sources do not schedule location variants", async () => {
+  for (const source of ["relocate-me", "ycombinator-remote"] as const) {
+    let searchCalls = 0;
+    const tools = createAgentSearchTools({
+      sources: [{ key: source, querySeeds: ["backend"] }],
+      goal: {
+        criteria: { ...defaultCriteria, locations: ["Tokyo", "Osaka"] },
+        enabledSources: [source],
+      },
+      budget: { maxSearchCalls: 3, maxTotalResults: 10, maxQueryVariantsPerSource: 1 },
+      createSourceTools: options => source === "relocate-me"
+        ? createScrapeTools({
+          ...options,
+          runCli: async () => {
+            searchCalls += 1;
+            return {
+              code: 0,
+              stderr: "",
+              stdout: JSON.stringify({
+                count: 1,
+                results: [{
+                  id: "relocate-fixture",
+                  title: "Backend Engineer",
+                  company: "Example",
+                  location: "Remote",
+                  url: "https://relocate.me/spain/example/backend-engineer",
+                  postedDate: null,
+                }],
+              }),
+            };
+          },
+        })
+        : createScrapeTools({
+          ...options,
+          fetcher: async () => {
+            searchCalls += 1;
+            return new Response(
+              `<ul><li class="job-card"><a href="/companies/example/jobs/yc-123-backend-engineer">Backend Engineer</a><span class="block font-bold md:inline">Example Co<!-- --> (S24)</span><div class="break-all md:break-normal">US / Remote</div></li></ul>`,
+              { headers: { "content-type": "text/html" } },
+            );
+          },
+        }),
+    });
+    const first = tools.state.snapshot().nextSearch!;
+    assert.equal(first.location, "Tokyo");
+    await tools.searchJobs.execute("first", {
+      source: first.source,
+      query: first.query,
+      location: first.location,
+      limit: first.limit,
+    }, undefined, undefined, undefined as never);
+    assert.equal(searchCalls, 1);
+    assert.equal(tools.state.snapshot().nextSearch, null);
+  }
+});
+test("direct-state search tools fail closed on missing location capability", async () => {
+  const source: JobSource = "japan-dev";
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria, locations: ["Tokyo", "Osaka"] }, enabledSources: [source] },
+    budget: { maxSearchCalls: 3, maxTotalResults: 10, maxQueryVariantsPerSource: 1 },
+    adaptive: true,
+    querySeeds: { [source]: ["backend"] },
+  });
+  const sourceTools = new Map<JobSource, ScrapeTools>([
+    [source, createScrapeTools({
+      source,
+      runCli: async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ count: 0, results: [] }) }),
+    })],
+  ]);
+  const tools = createAgentSearchTools(state, sourceTools);
+  const first = state.snapshot().nextSearch!;
+  assert.equal(first.source, source);
+  await tools.searchJobs.execute("search", {
+    source,
+    query: first.query,
+    location: first.location,
+    limit: first.limit,
+  }, undefined, undefined, undefined as never);
+  assert.equal(state.snapshot().nextSearch, null);
+});
+
+
+test("selective detail leaves query-local keyword coverage unknown", () => {
+  const state = new AgentSearchState({
+    goal: {
+      criteria: { ...defaultCriteria, roles: ["Backend Engineer"], keywords: ["TypeScript"] },
+      enabledSources: ["freehire"],
+    },
+    budget: { maxSearchCalls: 5, maxTotalResults: 20, maxQueryVariantsPerSource: 3 },
+    adaptive: true,
+    querySeeds: { freehire: ["platform"] },
+    sourceCapabilities: { freehire: false },
+  });
+  const search = (query: string, prefix: string) => {
+    const reservation = state.reserveSearch({ source: "freehire", query, location: "", limit: 25 });
+    state.completeSearch(reservation, Array.from({ length: 3 }, (_, index) => ({
+      source: "freehire",
+      sourceId: `${prefix}-${index}`,
+      title: "Backend Engineer",
+      location: "Remote",
+      url: `https://jobs.example.test/${prefix}-${index}`,
+    })));
+  };
+  const first = state.snapshot().nextSearch!;
+  assert.equal(first.query, "platform");
+  search(first.query, "platform");
+  const detail = state.reserveDetail({ source: "freehire", resultId: "platform-0" });
+  state.completeDetail(detail, "General software development.");
+  const roleSeed = state.snapshot().nextSearch!;
+  assert.equal(roleSeed.query, "Backend Engineer");
+  search(roleSeed.query, "role");
+  const keywordSeed = state.snapshot().nextSearch!;
+  assert.equal(keywordSeed.query, "TypeScript");
+  search(keywordSeed.query, "keyword");
+  assert.equal(state.snapshot().nextSearch, null);
+  assert.deepEqual(state.attempts.filter(attempt => attempt.operation === "search").map(attempt => attempt.query), ["platform", "Backend Engineer", "TypeScript"]);
+});
+
+test("duplicate-dominated pagination yields to a higher-yield source query", async () => {
+  const calls: Array<{ source: string; args: string[] }> = [];
+  const tools = createAgentSearchTools({
+    sources: [
+      { key: "freehire", querySeeds: ["backend", "platform"] },
+      { key: "linkedin", querySeeds: ["backend", "cloud"] },
+    ],
+    goal: { criteria: { ...defaultCriteria, locations: ["Remote"] }, enabledSources: ["freehire", "linkedin"] },
+    budget: { maxSearchCalls: 5, maxTotalResults: 20, maxQueryVariantsPerSource: 2, maxPagesPerQuery: 3 },
+    createSourceTools: options => createScrapeTools({
+      ...options,
+      runCli: async args => {
+        const source = options.source ?? "";
+        calls.push({ source, args });
+        if (args[0] !== "search") return { code: 0, stderr: "", stdout: "{}" };
+        const page = args.includes("--page") ? Number(args[args.indexOf("--page") + 1]) : 1;
+        const results = source === "freehire"
+          ? page === 1
+            ? [{ id: "freehire-one", title: "Engineer", company: null, location: "Remote", url: "https://jobs.example.test/freehire-one" }]
+            : [
+              { id: "cross-source-duplicate", title: "Engineer", company: null, location: "Remote", url: "https://jobs.example.test/linkedin-one" },
+              { id: "freehire-two", title: "Engineer", company: null, location: "Remote", url: "https://jobs.example.test/freehire-two" },
+            ]
+          : [{ id: "linkedin-one", title: "Engineer", company: null, location: "Remote", url: "https://jobs.example.test/linkedin-one" }];
+        return {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            meta: source === "freehire" ? { count: results.length, page, total: 100 } : { count: results.length },
+            results,
+          }),
+        };
+      },
+    }),
+  });
+  const inspect = async () => textResult(await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+  const runNext = async (id: string) => {
+    const state = await inspect();
+    assert.ok(state.nextSearch);
+    await tools.searchJobs.execute(id, {
+      source: state.nextSearch.source,
+      query: state.nextSearch.query,
+      location: state.nextSearch.location,
+      limit: state.nextSearch.limit,
+      ...(state.nextSearch.page === undefined ? {} : { page: state.nextSearch.page }),
+    }, undefined, undefined, undefined as never);
+    return state.nextSearch;
+  };
+  assert.deepEqual({ source: (await inspect()).nextSearch.source, query: (await inspect()).nextSearch.query }, { source: "freehire", query: "backend" });
+  await runNext("freehire-first");
+  await runNext("linkedin-floor");
+  const page = await inspect();
+  assert.deepEqual({ source: page.nextSearch.source, page: page.nextSearch.page, reason: page.nextSearch.reason }, { source: "freehire", page: 2, reason: "paginate" });
+  await runNext("freehire-page-2");
+  const next = await inspect();
+  assert.deepEqual({ source: next.nextSearch.source, query: next.nextSearch.query, page: next.nextSearch.page }, { source: "linkedin", query: "cloud", page: undefined });
+  assert.equal(calls.filter(call => call.source === "freehire" && call.args.includes("--page")).length, 1);
+  assert.equal(tools.state.attempts.find(attempt => attempt.source === "freehire" && attempt.page === 2)?.duplicateCount, 1);
+});
+
+test("optional location fallback tries explicit locations then empty once", async () => {
+  const locations: string[] = [];
+  const tools = createAgentSearchTools({
+    sources: [{ key: "freehire", querySeeds: ["backend"] }],
+    goal: { criteria: { ...defaultCriteria, locations: ["Remote", "Singapore"] }, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 4, maxTotalResults: 10, maxQueryVariantsPerSource: 1 },
+    createSourceTools: options => createScrapeTools({
+      ...options,
+      runCli: async args => {
+        if (args[0] === "search") {
+          const index = args.indexOf("--city");
+          locations.push(index < 0 ? "" : args[index + 1] ?? "");
+        }
+        return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) };
+      },
+    }),
+  });
+  for (const location of ["Remote", "Singapore", ""]) {
+    const state = textResult(await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+    assert.equal(state.nextSearch?.location, location);
+    await tools.searchJobs.execute(`search-${location || "empty"}`, {
+      source: state.nextSearch.source,
+      query: state.nextSearch.query,
+      location: state.nextSearch.location,
+      limit: state.nextSearch.limit,
+    }, undefined, undefined, undefined as never);
+  }
+  assert.deepEqual(locations, ["Remote", "Singapore", ""]);
+  assert.equal(textResult(await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never)).nextSearch, null);
+
+  const locationCapabilities: Array<ReadonlyMap<JobSource, boolean> | Readonly<Record<string, boolean>>> = [
+    { freehire: true },
+    new Map<JobSource, boolean>([["freehire", true]]),
+  ];
+  for (const locationOptionalSources of locationCapabilities) {
+    const state = new AgentSearchState({
+      goal: { criteria: { ...defaultCriteria, locations: ["Remote"] }, enabledSources: ["freehire"] },
+      budget: { maxQueryVariantsPerSource: 1 },
+      adaptive: true,
+      querySeeds: { freehire: ["backend"] },
+      locationOptionalSources,
+      sourceLocationFiltering: { freehire: true },
+    });
+    const first = state.snapshot().nextSearch!;
+    state.completeSearch(state.reserveSearch({ source: first.source, query: first.query, location: first.location, limit: first.limit }), []);
+    assert.equal(state.snapshot().nextSearch?.location, "");
+  }
+});
+
+test("LinkedIn and remote-only searches never fall back to empty or other locations", async () => {
+  const linkedinLocations: string[] = [];
+  const linkedin = createAgentSearchTools({
+    sources: [{ key: "linkedin", querySeeds: ["backend"] }],
+    goal: { criteria: { ...defaultCriteria, locations: ["Remote", "Jakarta"] }, enabledSources: ["linkedin"] },
+    budget: { maxSearchCalls: 3, maxTotalResults: 10, maxQueryVariantsPerSource: 1 },
+    createSourceTools: options => createScrapeTools({
+      ...options,
+      runCli: async args => {
+        if (args[0] === "search") linkedinLocations.push(args[args.indexOf("--location") + 1] ?? "");
+        return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) };
+      },
+    }),
+  });
+  for (const location of ["Remote", "Jakarta"]) {
+    const state = textResult(await linkedin.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+    assert.equal(state.nextSearch?.location, location);
+    await linkedin.searchJobs.execute(`linkedin-${location}`, {
+      source: state.nextSearch.source,
+      query: state.nextSearch.query,
+      location: state.nextSearch.location,
+      limit: state.nextSearch.limit,
+    }, undefined, undefined, undefined as never);
+  }
+  assert.deepEqual(linkedinLocations, ["Remote", "Jakarta"]);
+  assert.equal(textResult(await linkedin.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never)).nextSearch, null);
+
+  const remoteLocations: string[] = [];
+  const remoteOnly = createAgentSearchTools({
+    sources: [{ key: "freehire", querySeeds: ["backend"] }],
+    goal: { criteria: { ...defaultCriteria, locations: ["Remote", "Jakarta"], remoteOnly: true }, enabledSources: ["freehire"] },
+    budget: { maxSearchCalls: 3, maxTotalResults: 10, maxQueryVariantsPerSource: 1 },
+    createSourceTools: options => createScrapeTools({
+      ...options,
+      runCli: async args => {
+        if (args[0] === "search") {
+          const index = args.indexOf("--city");
+          remoteLocations.push(index < 0 ? "" : args[index + 1] ?? "");
+        }
+        return { code: 0, stderr: "", stdout: JSON.stringify({ meta: { count: 0 }, results: [] }) };
+      },
+    }),
+  });
+  const first = textResult(await remoteOnly.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+  await remoteOnly.searchJobs.execute("remote-only", {
+    source: first.nextSearch.source,
+    query: first.nextSearch.query,
+    location: first.nextSearch.location,
+    limit: first.nextSearch.limit,
+  }, undefined, undefined, undefined as never);
+  assert.deepEqual(remoteLocations, ["Remote"]);
+  assert.equal(textResult(await remoteOnly.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never)).nextSearch, null);
+  assert.equal(remoteOnly.state.goal.criteria.remoteOnly, true);
+});
+
+test("Japan board query variants never fabricate a location token", async () => {
+  const queries: string[] = [];
+  const tools = createAgentSearchTools({
+    sources: [{ key: "japan-dev", querySeeds: ["backend engineer"] }],
+    goal: {
+      criteria: { ...defaultCriteria, roles: ["Backend Engineer"], locations: ["Tokyo"], keywords: ["TypeScript"] },
+      enabledSources: ["japan-dev"],
+    },
+    budget: { maxSearchCalls: 4, maxTotalResults: 10, maxQueryVariantsPerSource: 3 },
+    createSourceTools: options => createScrapeTools({
+      ...options,
+      runCli: async args => {
+        if (args[0] === "search") queries.push(args[args.indexOf("--query") + 1] ?? "");
+        return { code: 0, stderr: "", stdout: JSON.stringify({ count: 0, results: [] }) };
+      },
+    }),
+  });
+  while (true) {
+    const state = textResult(await tools.inspectSearchState.execute("inspect", {}, undefined, undefined, undefined as never));
+    if (!state.nextSearch) break;
+    assert.doesNotMatch(state.nextSearch.query, /Tokyo|Japan/i);
+    await tools.searchJobs.execute(`japan-${queries.length}`, {
+      source: state.nextSearch.source,
+      query: state.nextSearch.query,
+      location: state.nextSearch.location,
+      limit: state.nextSearch.limit,
+    }, undefined, undefined, undefined as never);
+  }
+  assert.deepEqual(queries, ["backend engineer", "TypeScript", "Backend Engineer TypeScript"]);
+  assert.deepEqual(tools.state.goal.criteria.locations, ["Tokyo"]);
+});
+
+
+test("adaptive source floors preserve one result slot per remaining source", async () => {
+  const sources = [...jobSourceKeys];
+  const adapterCalls: string[] = [];
+  const tools = createAgentSearchTools({
+    sources: sources.map(key => ({ key, querySeeds: ["backend engineer"] })),
+    goal: { criteria: { ...defaultCriteria, locations: ["Remote"] }, enabledSources: sources },
+    budget: { targetUniqueJobs: 200, maxSearchCalls: 20, maxTotalResults: 100, minSearchesPerSource: 1 },
+    createSourceTools: options => {
+      const source = options.source ?? "freehire";
+      return createScrapeTools({
+        ...options,
+        fetcher: async () => {
+          adapterCalls.push(source);
+          return new Response(source === "ycombinator-remote"
+            ? '<li><a href="/companies/example/jobs/yc-floor">Backend Engineer</a></li>'
+            : '<a data-jk="indeed-floor-0">Backend Engineer</a>');
+        },
+        runCli: async () => {
+          adapterCalls.push(source);
+          const sourceIndex = sources.findIndex(candidate => candidate === source);
+          const availableHits = sourceIndex < 4 ? 25 : 1;
+          const results = Array.from({ length: availableHits }, (_, hitIndex) => {
+            const id = source === "linkedin" ? String(8_000_000 + hitIndex) : `${source}-floor-${hitIndex}`;
+            const url = source === "linkedin"
+              ? `https://www.linkedin.com/jobs/view/${id}`
+              : source === "relocate-me"
+                ? `https://relocate.me/jobs/${id}`
+                : `https://jobs.example.test/${source}/floor-${hitIndex}`;
+            return { id, title: "Backend Engineer", company: "Example", location: "Remote", url };
+          });
+          const result = source === "tokyodev" || source === "japan-dev" || source === "relocate-me"
+            ? { count: results.length, results }
+            : { meta: { count: results.length }, results };
+          return { code: 0, stderr: "", stdout: JSON.stringify(result) };
+        },
+      });
+    },
+  });
+  const limits: number[] = [];
+  for (const [index, source] of sources.entries()) {
+    const recommendation = tools.state.snapshot().nextSearch;
+    assert.ok(recommendation);
+    assert.equal(recommendation.source, source);
+    assert.equal(recommendation.reason, "source_floor");
+    const floorCallsRemaining = sources.length - index;
+    const slotsBefore = tools.state.remaining.maxTotalResults;
+    await tools.searchJobs.execute(`floor-${index}`, {
+      source,
+      query: recommendation.query,
+      location: recommendation.location,
+      limit: 25,
+    }, undefined, undefined, undefined as never);
+    const attempt = tools.state.attempts.at(-1)!;
+    limits.push(attempt.requestedLimit ?? 0);
+    assert.ok(slotsBefore - (attempt.requestedLimit ?? 0) >= floorCallsRemaining - 1);
+    assert.ok(tools.state.remaining.maxTotalResults >= floorCallsRemaining - 1);
+    if (index === 0) {
+      await assert.rejects(
+        tools.searchJobs.execute("non-floor", { source: "freehire", query: "alternate", location: "Remote", limit: 25 }, undefined, undefined, undefined as never),
+        /source-floor capacity is reserved/i,
+      );
+    }
+  }
+  const snapshot = tools.state.snapshot();
+  assert.deepEqual(adapterCalls, sources);
+  assert.deepEqual(limits, [25, 25, 25, 22, 1, 1, 1]);
+  assert.equal(snapshot.discoveredCount, 100);
+  assert.equal(snapshot.remaining.maxTotalResults, 0);
+  assert.deepEqual(snapshot.attempts.filter(attempt => attempt.status === "completed").map(attempt => attempt.source), sources);
+  assert.deepEqual(snapshot.sourceCoverage, { required: sources, searched: sources, unavailable: [], unsearched: [] });
+  assert.equal(snapshot.plannerStop, "budget_exhausted");
+});
+
+test("source-floor reservations account only for remaining search calls", () => {
+  const sources = [...jobSourceKeys];
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: sources },
+    budget: { targetUniqueJobs: 200, maxSearchCalls: 4, maxTotalResults: 8, minSearchesPerSource: 1 },
+    adaptive: true,
+    querySeeds: new Map(sources.map(source => [source, ["backend engineer"]] as const)),
+  });
+  const limits: number[] = [];
+  for (let index = 0; index < 4; index += 1) {
+    const source = sources[index]!;
+    const recommendation = state.snapshot().nextSearch!;
+    assert.equal(recommendation.source, source);
+    const reservation = state.reserveSearch({
+      source,
+      query: recommendation.query,
+      location: recommendation.location,
+      limit: 25,
+    });
+    limits.push(reservation.limit);
+    state.completeSearch(reservation, Array.from({ length: reservation.limit }, (_, hitIndex) =>
+      sourceFloorHit(source, `reachable-${index}-${hitIndex}`),
+    ));
+  }
+  assert.deepEqual(limits, [5, 1, 1, 1]);
+  assert.equal(state.discoveredCount, 8);
+  assert.equal(state.remaining.maxTotalResults, 0);
+  assert.equal(state.remaining.maxSearchCalls, 0);
+  assert.deepEqual(state.snapshot().sourceCoverage.unsearched, sources.slice(4));
+});
+test("exhausted source-call capacity releases unfulfillable search floors", () => {
+  const exhaustedSource: JobSource = "freehire";
+  const availableSource: JobSource = "linkedin";
+  const queries: [string, string, string] = ["backend engineer", "platform engineer", "data engineer"];
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: [exhaustedSource, availableSource] },
+    budget: {
+      maxSearchCalls: 6,
+      maxTotalResults: 20,
+      minSearchesPerSource: 2,
+      maxSearchesPerSource: 3,
+      maxQueryVariantsPerSource: 3,
+    },
+    adaptive: true,
+    querySeeds: {
+      [exhaustedSource]: queries,
+      [availableSource]: queries,
+    },
+  });
+  const search = (source: JobSource, query: string) => state.reserveSearch({ source, query, location: "", limit: 1 });
+  state.completeSearch(search(exhaustedSource, queries[0]), []);
+  for (const query of queries.slice(1)) state.failSearch(search(exhaustedSource, query), new Error("fixture failure"));
+  assert.equal(state.attempts.filter(attempt => attempt.source === exhaustedSource && attempt.status === "completed").length, 1);
+  assert.equal(state.attempts.filter(attempt => attempt.source === exhaustedSource && attempt.status !== "rejected").length, 3);
+
+  for (const query of queries.slice(0, 2)) state.completeSearch(search(availableSource, query), []);
+  const followUp = state.snapshot().nextSearch;
+  assert.ok(followUp);
+  assert.deepEqual(
+    { source: followUp.source, query: followUp.query },
+    { source: availableSource, query: queries[2] },
+  );
+  state.completeSearch(search(availableSource, followUp.query), []);
+  assert.equal(state.finish("The global search-call budget is exhausted.", [], "budget_exhausted")?.reasonCategory, "budget_exhausted");
+});
+
+test("source request quotas release adaptive floor capacity after detail calls", async () => {
+  const hits = Array.from({ length: 9 }, (_, index) => ({
+    id: `relocate-${index}`,
+    source: "relocate-me",
+    title: "Backend Engineer",
+    company: "Example",
+    location: "Remote",
+    url: `https://relocate.me/spain/example/backend-${index}`,
+  }));
+  const tools = createAgentSearchTools({
+    sources: [
+      { key: "relocate-me", querySeeds: ["backend", "platform"] },
+      { key: "freehire", querySeeds: ["backend"] },
+    ],
+    budget: { maxSearchCalls: 2, maxDetailCalls: 9, maxTotalResults: 20, minSearchesPerSource: 2, maxSearchesPerSource: 3 },
+    createSourceTools: sourceFactory(async args => {
+      if (args[0] === "search" && args[args.indexOf("--source") + 1] === "relocate-me") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ count: hits.length, results: hits }) };
+      }
+      if (args[0] === "detail") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ url: args[1], title: "Backend Engineer", text: "Build reliable APIs." }) };
+      }
+      throw new Error("Unexpected fixture request.");
+    }),
+  });
+  const search = textResult(await tools.searchJobs.execute("relocate-search", { source: "relocate-me", query: "backend", location: "", limit: 9 }, undefined, undefined, undefined as never));
+  for (const hit of search.hits as Array<{ sourceId: string }>) {
+    await tools.fetchJobDetails.execute(`detail-${hit.sourceId}`, { source: "relocate-me", resultId: hit.sourceId }, undefined, undefined, undefined as never);
+  }
+
+  assert.equal(tools.state.sourceStats.get("relocate-me")?.searchCalls, 1);
+  assert.equal(tools.state.sourceStats.get("relocate-me")?.detailCalls, 9);
+  await assert.rejects(
+    tools.searchJobs.execute("relocate-exhausted", { source: "relocate-me", query: "platform", location: "", limit: 1 }, undefined, undefined, undefined as never),
+    /source request capacity exhausted/,
+  );
+  assert.equal(tools.state.remaining.maxSearchCalls, 1);
+  assert.equal(tools.state.snapshot().nextSearch?.source, "freehire");
+});
+
+test("adaptive source floors leave result slots for productive follow-up allocation", () => {
+  const sources = [...jobSourceKeys];
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: sources },
+    budget: { targetUniqueJobs: 200, maxSearchCalls: 20, maxTotalResults: 100, minSearchesPerSource: 1 },
+    adaptive: true,
+    querySeeds: new Map(sources.map(source => [source, source === "freehire" ? ["backend engineer", "platform engineer"] : ["backend engineer"]] as const)),
+  });
+  for (const source of sources) {
+    const recommendation = state.snapshot().nextSearch;
+    assert.ok(recommendation);
+    assert.equal(recommendation.source, source);
+    assert.equal(recommendation.reason, "source_floor");
+    const hits = source === "freehire"
+      ? Array.from({ length: 3 }, (_, index) => sourceFloorHit(source, `floor-${index}`))
+      : [];
+    state.completeSearch(state.reserveSearch({ source, query: recommendation.query, location: recommendation.location, limit: 25 }), hits);
+  }
+  assert.equal(state.remaining.maxTotalResults, 97);
+  const recommendation = state.snapshot().nextSearch;
+  assert.deepEqual(
+    recommendation && { source: recommendation.source, query: recommendation.query, reason: recommendation.reason },
+    { source: "freehire", query: "platform engineer", reason: "exploit_source" },
+  );
+  assert.ok(recommendation);
+  const followUp = state.reserveSearch({ source: recommendation.source, query: recommendation.query, location: recommendation.location, limit: 25 });
+  assert.equal(followUp.limit, 25);
+  state.completeSearch(followUp, Array.from({ length: 25 }, (_, index) => sourceFloorHit("freehire", `follow-up-${index}`)));
+  assert.equal(state.discoveredCount, 28);
+  assert.equal(state.remaining.maxTotalResults, 72);
+});
+
+test("infeasible source floors remain visible when result and call budgets expire", () => {
+  const sources = jobSourceKeys.slice(0, 3);
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: sources },
+    budget: { targetUniqueJobs: 200, maxSearchCalls: 2, maxTotalResults: 2, minSearchesPerSource: 1 },
+    adaptive: true,
+    querySeeds: new Map(sources.map(source => [source, ["backend engineer"]] as const)),
+  });
+  assert.throws(() => state.finish("The search budget is exhausted.", [], "budget_exhausted"), /adaptive search still has viable work/i);
+  for (const source of sources.slice(0, 2)) {
+    const recommendation = state.snapshot().nextSearch;
+    assert.ok(recommendation);
+    assert.equal(recommendation.source, source);
+    assert.equal(recommendation.reason, "source_floor");
+    const reservation = state.reserveSearch({ source, query: recommendation.query, location: recommendation.location, limit: 25 });
+    assert.equal(reservation.limit, 1);
+    state.completeSearch(reservation, [sourceFloorHit(source, `infeasible-${source}`)]);
+  }
+  const exhausted = state.snapshot();
+  assert.equal(exhausted.plannerStop, "budget_exhausted");
+  assert.equal(exhausted.remaining.maxSearchCalls, 0);
+  assert.equal(exhausted.remaining.maxTotalResults, 0);
+  assert.deepEqual(exhausted.sourceCoverage.unsearched, [sources[2]]);
+  assert.equal(state.finish("The search budget is exhausted.", [], "budget_exhausted")?.reasonCategory, "budget_exhausted");
+  assert.deepEqual(state.snapshot().sourceCoverage.unsearched, [sources[2]]);
+});
+
+test("a failed first source is unavailable without blocking a healthy source floor", () => {
+  const sources = jobSourceKeys.slice(0, 2);
+  const state = new AgentSearchState({
+    goal: { criteria: { ...defaultCriteria }, enabledSources: sources },
+    budget: { targetUniqueJobs: 20, maxSearchCalls: 3, maxTotalResults: 10, minSearchesPerSource: 1 },
+    adaptive: true,
+    querySeeds: new Map(sources.map(source => [source, ["backend engineer"]] as const)),
+  });
+  const first = state.snapshot().nextSearch;
+  assert.ok(first);
+  assert.deepEqual({ source: first.source, reason: first.reason }, { source: "freehire", reason: "source_floor" });
+  state.failSearch(state.reserveSearch({ source: first.source, query: first.query, location: first.location, limit: 25 }), new Error("source unavailable"));
+  const healthy = state.snapshot().nextSearch;
+  assert.ok(healthy);
+  assert.deepEqual({ source: healthy.source, reason: healthy.reason }, { source: "linkedin", reason: "source_floor" });
+  state.completeSearch(state.reserveSearch({ source: healthy.source, query: healthy.query, location: healthy.location, limit: 25 }), []);
+  const snapshot = state.snapshot();
+  assert.deepEqual(snapshot.sourceCoverage, {
+    required: sources,
+    searched: sources,
+    unavailable: ["freehire"],
+    unsearched: [],
+  });
+  assert.deepEqual(snapshot.attempts.map(attempt => [attempt.source, attempt.status]), [["freehire", "failed"], ["linkedin", "completed"]]);
 });
 
 test("adaptive pagination follows cursors and enforces path caps", () => {

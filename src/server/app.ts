@@ -97,7 +97,7 @@ export interface ServerOptions {
   followUpExecutor?: FollowUpExecutor;
   commandRunner?: CommandRunner;
   documentStatusRunner?: CommandRunner;
-  availableModels?: (provider: string) => Promise<readonly PiModelOption[]>;
+  availableModels?: () => Promise<readonly PiModelOption[]>;
   profileImporter?: ProfileImporter;
   manualImporter?: ManualJobImporter;
   projectRoot?: string;
@@ -359,9 +359,9 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
   app.get("/api/settings", () => readSettings(dataDir));
   app.put("/api/settings", (req) => writeSettings(dataDir, req.body));
   app.get("/api/ai/models", async (req) => {
-    const provider = z.object({ provider: z.string().trim().min(1).max(80) }).parse(req.query).provider;
-    const models = await (options.availableModels ?? getAvailablePiModels)(provider);
-    return { provider, models };
+    z.object({}).strict().parse(req.query);
+    const models = await (options.availableModels ?? getAvailablePiModels)();
+    return { models };
   });
   app.get("/api/document-status", async () => {
     const runner = options.documentStatusRunner ?? runCommand;

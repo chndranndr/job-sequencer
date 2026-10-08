@@ -87,7 +87,7 @@ test("non-Japan sources do not invoke Japan fallback queries", async () => {
   assert.equal(calls, 1);
 });
 
-test("duplicate Japan fallback results are deduped and capped at the requested limit", async () => {
+test("Japan fallback counts every upstream hit and only removed duplicates before the cap", async () => {
   const calls: string[][] = [];
   const first = { id: "japan-dev:one", title: "Backend Engineer", company: "Example", location: "Japan", url: "https://japan-dev.com/jobs/example/one" };
   const duplicateId = { ...first, title: "Backend Engineer duplicate" };
@@ -107,13 +107,85 @@ test("duplicate Japan fallback results are deduped and capped at the requested l
   const search = await tools.searchJobs.execute("search", { query: "all roles", location: "", limit: 2 }, undefined, undefined, undefined as never);
   const block = search.content[0];
   if (block.type !== "text") throw new Error("search result was not text");
-  const parsed = JSON.parse(block.text) as { count: number; results: Array<{ id: string; url: string }> };
+  const parsed = JSON.parse(block.text) as { meta: { count: number; rawHits: number; duplicatesRemoved: number }; results: Array<{ id: string; url: string }> };
   assert.deepEqual(calls.map((args) => args[args.indexOf("--query") + 1]), ["all roles", "first role", "second role"]);
-  assert.equal((parsed as { meta?: { count: number } }).meta?.count, 2);
+  assert.deepEqual(parsed.meta, { count: 2, rawHits: 5, duplicatesRemoved: 2 });
   assert.deepEqual(parsed.results.map((result) => result.id), [first.id, second.id]);
   assert.equal(parsed.results.length, 2);
   assert.equal(tools.provenance.get(first.id), first.url);
   assert.equal(tools.provenance.get(second.id), second.url);
+});
+
+test("scrape normalization reconciles partial adapter duplicate metadata", async () => {
+  const first = {
+    id: "job-one",
+    title: "Backend Engineer",
+    company: "Example",
+    location: "Remote",
+    url: "https://example.test/jobs/one",
+  };
+  const duplicate = { ...first, id: "job-two", title: "Duplicate Backend Engineer" };
+  const tools = createScrapeTools({
+    runCli: async () => ({
+      code: 0,
+      stderr: "",
+      stdout: JSON.stringify({ meta: { count: 2, duplicatesRemoved: 3 }, results: [first, duplicate] }),
+    }),
+  });
+
+  const search = await tools.searchJobs.execute("search", { query: "backend", location: "", limit: 5 }, undefined, undefined, undefined as never);
+  const block = search.content[0];
+  if (block.type !== "text") throw new Error("search result was not text");
+  const parsed = JSON.parse(block.text) as { meta: { count: number; rawHits: number; duplicatesRemoved: number }; results: Array<{ id: string }> };
+  assert.deepEqual(parsed.meta, { count: 1, rawHits: 5, duplicatesRemoved: 4 });
+  assert.deepEqual(parsed.results.map(result => result.id), [first.id]);
+  assert.equal(parsed.meta.duplicatesRemoved / parsed.meta.rawHits, 0.8);
+  assert.equal(parsed.meta.count + parsed.meta.duplicatesRemoved, parsed.meta.rawHits);
+});
+
+test("scrape normalization rejects contradictory explicit hit accounting", async () => {
+  const first = {
+    id: "job-one",
+    title: "Backend Engineer",
+    company: "Example",
+    location: "Remote",
+    url: "https://example.test/jobs/one",
+  };
+  const second = { ...first, id: "job-two", url: "https://example.test/jobs/two" };
+  const tools = createScrapeTools({
+    runCli: async () => ({
+      code: 0,
+      stderr: "",
+      stdout: JSON.stringify({ meta: { count: 2, rawHits: 2, duplicatesRemoved: 3 }, results: [first, second] }),
+    }),
+  });
+
+  await assert.rejects(
+    tools.searchJobs.execute("search", { query: "backend", location: "", limit: 5 }, undefined, undefined, undefined as never),
+    /inconsistent hit accounting/,
+  );
+});
+
+test("scrape normalization rejects unsafe integer hit accounting", async () => {
+  const first = {
+    id: "job-one",
+    title: "Backend Engineer",
+    company: "Example",
+    location: "Remote",
+    url: "https://example.test/jobs/one",
+  };
+  const unsafe = Number.MAX_SAFE_INTEGER + 1;
+  const tools = createScrapeTools({
+    runCli: async () => ({
+      code: 0,
+      stderr: "",
+      stdout: JSON.stringify({ meta: { count: 1, rawHits: unsafe, duplicatesRemoved: unsafe }, results: [first] }),
+    }),
+  });
+
+  await assert.rejects(
+    tools.searchJobs.execute("search", { query: "backend", location: "", limit: 5 }, undefined, undefined, undefined as never),
+  );
 });
 
 test("searchJobs wraps the vendored FreeHire CLI and records provenance", async () => {
@@ -212,7 +284,7 @@ test("LinkedIn search uses the required location and normalizes detail provenanc
   assert.deepEqual(calls[0], ["search", "--location", "Tokyo, Japan", "--query", "backend", "--limit", "1", "--format", "json"]);
   const searchBlock = search.content[0];
   if (searchBlock.type !== "text") throw new Error("search result was not text");
-  assert.deepEqual(JSON.parse(searchBlock.text), { meta: { count: 1 }, results: [{ id, title: "Backend Engineer", company: "Example", location: "Tokyo", url }] });
+  assert.deepEqual(JSON.parse(searchBlock.text), { meta: { count: 1, rawHits: 1, duplicatesRemoved: 0 }, results: [{ id, title: "Backend Engineer", company: "Example", location: "Tokyo", url }] });
   const detail = await tools.fetchJobDetails.execute("detail", { resultId: id }, undefined, undefined, undefined as never);
   assert.deepEqual(calls[1], ["detail", id, "--format", "json"]);
   const detailBlock = detail.content[0];
@@ -242,7 +314,7 @@ for (const source of ["tokyodev", "japan-dev"] as const) {
     assert.deepEqual(calls[0], ["search", "--source", source, "--query", "backend", "--country", "Japan", "--limit", "1", "--format", "json"]);
     const searchBlock = search.content[0];
     if (searchBlock.type !== "text") throw new Error("search result was not text");
-    assert.deepEqual(JSON.parse(searchBlock.text), { meta: { count: 1 }, results: [{ id, source, title: "Backend Engineer", company: "Example", location: "Tokyo, Japan", url }] });
+    assert.deepEqual(JSON.parse(searchBlock.text), { meta: { count: 1, rawHits: 1, duplicatesRemoved: 0 }, results: [{ id, source, title: "Backend Engineer", company: "Example", location: "Tokyo, Japan", url }] });
     const detail = await tools.fetchJobDetails.execute("detail", { resultId: id }, undefined, undefined, undefined as never);
     assert.deepEqual(calls[1], ["detail", url, "--format", "json"]);
     const detailBlock = detail.content[0];

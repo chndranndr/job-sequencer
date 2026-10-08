@@ -99,6 +99,7 @@ export const CriteriaSchema = z.object({
 const SettingsInputSchema = z.object({
   provider: z.string().trim().min(1).max(80),
   model: z.string().trim().max(160),
+  scrapeMode: z.enum(["job-boards", "web-discovery"]).default("job-boards"),
   source: z.enum(jobSourceKeys).default("freehire"),
   enabledSources: z.array(sourceKey).max(24).optional(),
   customSources: z.array(CustomSourceSchema).max(20).default([]),
@@ -235,7 +236,7 @@ function normalizeStoredProfile(value: unknown) {
 }
 
 export const defaultCriteria: Criteria = { roles: [], locations: [], remoteOnly: false, keywords: [], excludeKeywords: [], employmentTypes: [], maxJobsPerRun: 20 };
-export const defaultSettings: Settings = { provider: "google", model: "", source: "freehire", enabledSources: ["freehire"], customSources: [], sourceMaxAgeDays: { ...defaultSourceMaxAgeDays }, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
+export const defaultSettings: Settings = { provider: "google", model: "", scrapeMode: "job-boards", source: "freehire", enabledSources: ["freehire"], customSources: [], sourceMaxAgeDays: { ...defaultSourceMaxAgeDays }, scoreThreshold: 60, maxResults: 50, cvPages: 2, coverLetterPages: 1 };
 
 export function configPaths(dataDir: string) {
   return {

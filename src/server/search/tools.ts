@@ -29,6 +29,7 @@ export type AgentSearchToolsOptions = {
   createSourceTools?: (options: ScrapeToolsOptions) => SourceTools;
   onSearchAttempt?: (attempt: SearchAttempt) => void;
   adaptive?: boolean;
+  locationOptionalSources?: ReadonlyMap<JobSource, boolean>;
 };
 
 export type AgentSearchToolOptions = {
@@ -94,6 +95,10 @@ const FinishInputSchema = z.object({
   reasonCategory: z.enum(["coverage_sufficient", "marginal_utility_low", "candidates_sufficient", "budget_exhausted", "no_results", "other"]).optional(),
 }).strict();
 const SearchEnvelopeSchema = z.object({
+  meta: z.object({
+    rawHits: z.number().int().nonnegative().optional(),
+    duplicatesRemoved: z.number().int().nonnegative().optional(),
+  }).passthrough().optional(),
   results: z.array(z.object({
     id: z.string().trim().min(1).max(200).refine((value) => !/[\\/\0\r\n]/.test(value) && !value.startsWith("-"), "invalid result ID"),
     title: z.string().trim().min(1).max(500),
@@ -162,7 +167,7 @@ function normalizedPageInfo(value: { hasMore: boolean; nextPage?: number; nextCu
     ...(value.limit === undefined ? {} : { limit: value.limit }),
   };
 }
-function toSearchHits(source: JobSource, value: unknown): { hits: SearchHit[]; pageInfo?: SearchPageInfo } {
+function toSearchHits(source: JobSource, value: unknown): { hits: SearchHit[]; pageInfo?: SearchPageInfo; rawHits: number; duplicatesRemoved: number } {
   const parsed = SearchEnvelopeSchema.parse(value);
   return {
     hits: parsed.results.map((result) => ({
@@ -174,12 +179,15 @@ function toSearchHits(source: JobSource, value: unknown): { hits: SearchHit[]; p
       ...(optionalText(result.location) ? { location: optionalText(result.location) } : {}),
       ...(postedAt(result) ? { postedAt: postedAt(result) } : {}),
     })),
+    rawHits: parsed.meta?.rawHits ?? parsed.results.length,
+    duplicatesRemoved: parsed.meta?.duplicatesRemoved ?? 0,
     pageInfo: normalizedPageInfo(parsed.pageInfo),
   };
 }
 
 function reservationDetail(state: AgentSearchState, reservation: DetailReservation, posting: string, title?: string | null, company?: string | null, location?: string | null, url?: string | null) {
   state.completeDetail(reservation, posting);
+  const modelPosting = posting.length > 12_000 ? `${posting.slice(0, 12_000)}\n[truncated for model context]` : posting;
   return {
     source: reservation.source,
     sourceId: reservation.sourceId,
@@ -187,8 +195,7 @@ function reservationDetail(state: AgentSearchState, reservation: DetailReservati
     title: title || reservation.hit.title,
     ...(company || reservation.hit.company ? { company: company || reservation.hit.company } : {}),
     ...(location || reservation.hit.location ? { location: location || reservation.hit.location } : {}),
-    posting,
-    description: posting,
+    posting: modelPosting,
   };
 }
 
@@ -205,17 +212,26 @@ function toolsFromOptions(options: AgentSearchToolsOptions) {
   const sourceTools = new Map<JobSource, SourceTools>();
   const querySeeds = new Map<JobSource, readonly string[]>();
   const sourceCapabilities = new Map<JobSource, boolean>();
+  const locationOptionalSources = new Map<JobSource, boolean>();
+  const sourceLocationFiltering = new Map<JobSource, boolean>();
+  const sourceRequestLimits = new Map<JobSource, number>();
   for (const source of options.sources) {
-    sourceTools.set(source.key, makeSourceTools({
+    const sourceTool = makeSourceTools({
       source: source.key,
       customSource: source.custom,
       registry: source.registry,
       maxAgeDays: source.maxAgeDays,
       maxSearchCalls: budget.maxSearchesPerSource,
       fallbackQueries: undefined,
-    }));
+    });
+    sourceTools.set(source.key, sourceTool);
     querySeeds.set(source.key, source.querySeeds ?? source.fallbackQueries ?? []);
-    sourceCapabilities.set(source.key, sourceTools.get(source.key)?.manifest?.capabilities?.pagination === true);
+    sourceRequestLimits.set(source.key, sourceTool.manifest?.policy?.maxRequestsPerRun ?? Number.MAX_SAFE_INTEGER);
+    sourceCapabilities.set(source.key, sourceTool.manifest?.capabilities?.pagination === true);
+    sourceLocationFiltering.set(source.key, sourceTool.manifest?.capabilities?.location === true);
+    locationOptionalSources.set(source.key, options.locationOptionalSources?.has(source.key)
+      ? options.locationOptionalSources.get(source.key) === true
+      : sourceTool.manifest?.capabilities?.locationOptional === true);
   }
   const state = new AgentSearchState({
     goal,
@@ -226,6 +242,9 @@ function toolsFromOptions(options: AgentSearchToolsOptions) {
     adaptive: options.adaptive !== false,
     querySeeds,
     sourceCapabilities,
+    locationOptionalSources,
+    sourceLocationFiltering,
+    sourceRequestLimits,
   });
   return { state, sourceTools };
 }
@@ -264,7 +283,12 @@ export function createAgentSearchTools(first: AgentSearchToolsOptions | AgentSea
           ...(reservation.cursor === undefined ? {} : { cursor: reservation.cursor }),
         }, signal, undefined, undefined as never);
         const parsed = toSearchHits(source, textResult(raw, "searchJobs"));
-        const uniqueHits = state.completeSearch(reservation, parsed.hits.slice(0, reservation.limit), parsed.pageInfo);
+        const uniqueHits = state.completeSearch(
+          reservation,
+          parsed.hits.slice(0, reservation.limit),
+          parsed.pageInfo,
+          { rawHits: parsed.rawHits, duplicatesRemoved: parsed.duplicatesRemoved },
+        );
         state.addWarnings(sourceTools.warnings ?? []);
         completed = true;
         return { content: [{ type: "text", text: JSON.stringify({ hits: uniqueHits, pageInfo: parsed.pageInfo ?? { hasMore: false } }) }], details: { source, count: uniqueHits.length } };
