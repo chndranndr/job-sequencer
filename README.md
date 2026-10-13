@@ -1,8 +1,12 @@
 # Job Sequencer
 
-Job Sequencer is a local-first job-search workbench for one person. It turns a reviewed profile and optional search preferences into a ranked shortlist, then keeps every next step manual.
+**An AI agent workbench that finds and ranks jobs for you, drafts your applications, and never submits them.**
 
-The app runs on loopback. Pi handles bounded search and drafting workflows in-process. SQLite keeps the local record. Credentials stay in Pi's auth store or environment variables. The user approves documents and records applications.
+Job hunting means repeating searches across boards, comparing postings, and tailoring documents. Job Sequencer brings that work into one local workspace so you can review a ranked shortlist and decide which jobs to pursue.
+
+Built around human approval: you select jobs, approve document drafts, and submit applications yourself. Every stage stops for your next action, with evidence and run history available for review.
+
+**In this repo:** 7 built-in job sources · [8/8 deterministic agent evaluation scenarios passing](tests/trajectory-evals.test.ts) with fixtures · CI checks types, tests, and evaluations.
 
 <p align="center">
   <img src="docs/assets/job-sequencer-pattern.png" alt="Job Sequencer Tracker showing ranked remote engineering jobs and the last adaptive run" width="100%">
@@ -17,6 +21,8 @@ The screenshot and animated walkthrough use deterministic fixture data. They sho
 [Open the 24-second search-to-TRACE GIF](docs/assets/job-sequencer-walkthrough.gif)
 
 ## The product loop
+
+**UI glossary:** DISK = profile and settings; PATTERN = job shortlist; SAMPLE = job details and evidence; ORDER = application tracking and follow-ups; PHRASE = interview practice; TRACE = run history.
 
 1. Define a profile and optional search preferences in **DISK**.
 2. Start a bounded search from **PATTERN**.
