@@ -1,91 +1,118 @@
 # Job Sequencer
 
-**An AI agent workbench that finds and ranks jobs for you, drafts your applications, and never submits them.**
+**AI agents discover and rank jobs, tailor your application documents, and put you in control of which opportunities to pursue and which drafts to approve.**
+
+[![CI](https://github.com/chndranndr/job-sequencer/actions/workflows/ci.yml/badge.svg)](https://github.com/chndranndr/job-sequencer/actions/workflows/ci.yml)
 
 Job hunting means repeating searches across boards, comparing postings, and tailoring documents. Job Sequencer brings that work into one local workspace so you can review a ranked shortlist and decide which jobs to pursue.
 
-Built around human approval: you select jobs, approve document drafts, and submit applications yourself. Every stage stops for your next action, with evidence and run history available for review.
-
-**In this repo:** 7 built-in job sources · [8/8 deterministic agent evaluation scenarios passing](tests/trajectory-evals.test.ts) with fixtures · CI checks types, tests, and evaluations.
+Built with TypeScript, React, Vite, Fastify, Node.js SQLite, and the Pi agent runtime. You start workflows, select jobs, approve drafts, and submit applications yourself. Internal search and drafting steps run automatically within those boundaries.
 
 <p align="center">
-  <img src="docs/assets/job-sequencer-pattern.png" alt="Job Sequencer Tracker showing ranked remote engineering jobs and the last adaptive run" width="100%">
+  <img src="docs/assets/job-sequencer-real-pattern.png" alt="PATTERN showing real job-search results from TokyoDev, Relocate.me, and LinkedIn, with fit scores and search steps" width="100%">
 </p>
 
-The screenshot and animated walkthrough use deterministic fixture data. They show the real Tracker UI without provider credentials.
+Real job-search results from a local run on an earlier Qoder-backed version of Tracker. The current repository uses Pi. Postings and AI-generated fit assessments reflect that capture, not current vacancy availability.
 
-<p align="center">
-  <img src="docs/assets/job-sequencer-walkthrough.gif" alt="Job Sequencer search-to-TRACE walkthrough" width="100%">
-</p>
+<details>
+  <summary>See the document-generation trace with real job data</summary>
 
-[Open the 24-second search-to-TRACE GIF](docs/assets/job-sequencer-walkthrough.gif)
+  <p>
+    <img src="docs/assets/job-sequencer-real-generation.png" alt="TRACE showing completed planning, writing, claim validation, factual audit, critique, and PDF compilation steps for real job postings while the overall run is still in progress" width="100%">
+  </p>
+
+  <p>The trace shows completed per-job checks while the overall generation run is still in progress.</p>
+</details>
+
+[Watch the separate 24-second fixture walkthrough](docs/assets/job-sequencer-walkthrough.gif). The GIF uses deterministic sample data, not the real postings shown above.
+
+[Verify without credentials](#verify-without-provider-credentials) · [Run locally](#requirements-and-installation) · [Documentation map](docs/index.md)
+
+## Engineering highlights
+
+- **Adaptive search with enforced limits.** Seven built-in sources share a search harness that adapts queries and pagination from source coverage and observed yield. Call, result, time, and source quotas bound exploration; detail fetching checks same-run provenance. See [search state](src/server/search/state.ts) and [behavioral tests](tests/agent-search.test.ts).
+- **Evidence-backed document generation.** Structured drafts carry profile evidence references. Deterministic claim validation checks references and selected unsupported claims; a separate factual-auditor agent reviews semantic overclaims. Critical factual findings trigger bounded revision or block finalization. These checks do not guarantee factual accuracy. See [claim validation](src/server/agents/claim-validator.ts) and [generation](src/server/generation.ts).
+- **PDF checks before approval.** Generation compiles LaTeX documents and checks page counts and extracted text. Successful document verification is required before a draft can become Ready. See [document checks](src/server/documents.ts).
+- **Restricted agent tools and inspectable runs.** Search receives typed search, detail, state-inspection, and finish tools instead of shell access. Run status, trajectory events, usage, and search-attempt history persist locally; document revisions retain their review artifacts.
+- **Fixture-based verification.** [Trajectory evaluations](tests/trajectory-evals.test.ts) exercise multi-step search behavior. [Prompt-boundary tests](tests/injection.test.ts) and [browser smoke](scripts/browser-smoke-tracker.ts) cover additional failure paths without requiring live provider calls.
 
 ## The product loop
 
-**UI glossary:** DISK = profile and settings; PATTERN = job shortlist; SAMPLE = job details and evidence; ORDER = application tracking and follow-ups; PHRASE = interview practice; TRACE = run history.
+1. Save a profile and optional search preferences in **DISK**.
+2. Start a bounded search from **PATTERN**, then review ranked jobs and their evidence in **SAMPLE**.
+3. Select jobs yourself before starting document generation.
+4. Review generated drafts and approve them before recording **Applied**.
+5. Practice interviews in **PHRASE**, draft follow-ups in **ORDER**, and inspect runs in **TRACE**.
 
-1. Define a profile and optional search preferences in **DISK**.
-2. Start a bounded search from **PATTERN**.
-3. Let the search harness adapt queries from source coverage and observed yield.
-4. Review ranked jobs and open their evidence in **SAMPLE**.
-5. Select jobs yourself before document generation.
-6. Approve drafts before you record **Applied**.
-7. Practice in **PHRASE** and draft follow-up messages in **ORDER**.
-8. Inspect every run in **TRACE**.
+The chiptune-inspired Tracker names map to ordinary job-search tasks:
 
-The workflow never submits an application, sends a message, or silently advances a job. Each stage ends at a visible approval gate.
+| View | Purpose |
+|---|---|
+| DISK | Profile, search preferences, sources, and model settings |
+| PATTERN | Search and ranked job shortlist |
+| SAMPLE | Job details and matching evidence |
+| ORDER | Application tracking, documents, and follow-up drafts |
+| PHRASE | Interview practice and feedback |
+| TRACE | Run history, tool activity, usage, and search coverage |
 
-## Architecture
+The app never submits applications or sends messages. Generation leaves documents in Drafting; approval to Ready and recording Applied are separate user actions.
+
+## Architecture and trade-offs
 
 ```mermaid
-flowchart LR
+flowchart TB
   Tracker[React Tracker] --> API[Fastify API]
-  API --> Orchestrator[Agent orchestrator]
-  Orchestrator --> Pi[Pi Coding Agent]
-  Pi --> Tools[Bounded source tools]
-  Tools --> Sources[Job sources]
-  API --> SQLite[(SQLite)]
-  Orchestrator --> Memory[(Search memory)]
-  Orchestrator --> Evidence[(Evidence store)]
-  API --> Evidence
+  API --> Runs[Run coordination]
+  Runs --> Search[Adaptive search]
+  Search --> Tools[Restricted Pi tools]
+  Tools --> Sources[Job boards or web discovery]
+  Runs --> Generation[Evidence-backed drafting and review]
+  Generation --> PDF[LaTeX compilation and PDF checks]
+  API --> SQLite[(SQLite: jobs, workflow state, run and search history)]
+  Search --> SQLite
+  Generation --> Artifacts[(Revision and review artifacts)]
+  PDF --> Artifacts
 ```
 
-The browser owns Tracker views and calls the API through `src/api.ts`. The API owns workflow state, run coordination, SQLite persistence, and approval boundaries. The orchestrator gives Pi typed search and detail tools instead of shell access. Search memory improves later queries without overriding current preferences.
+Search and generation are separate user-initiated workflows, not an automatic search-to-apply pipeline. The browser calls the API through [`src/api.ts`](src/api.ts); the API owns workflow state, run coordination, persistence, and approval boundaries.
 
-## What the repository demonstrates
+- **Local storage, no hosted account.** Built-in `node:sqlite` avoids a separate database service. The supported runtime is Node 24.x; this is a single-user, loopback-only application without user authentication or cloud sync.
+- **Code checks plus model review.** Deterministic validation covers explicit evidence rules; factual review addresses semantic claims but remains fallible. Human review is still required.
+- **LaTeX output, external toolchain.** Templates and PDF checks support controlled document layout, at the cost of local TeX and PDF utilities.
+- **History, not resumable agents.** Run records and artifacts persist, but Pi sessions are in memory. An interrupted run is not a durable execution checkpoint.
 
-- A React and Vite workbench with PATTERN, SAMPLE, ORDER, PHRASE, DISK, and TRACE surfaces.
-- Fastify routes backed by SQLite and explicit run IDs.
-- Bounded Pi sessions with typed, source-specific tools.
-- Deterministic fixtures for search adaptation, ranking, provenance checks, budget limits, and trace telemetry.
-- Local-only operation with no cloud sync, automatic provider fallback, or hidden job submission.
+## Requirements and installation
 
-The rest of this README is the operator guide. It keeps the complete install, authentication, runtime, verification, and safety details close to the commands they describe.
+- Windows 10+ for the documented local workflow.
+- Node.js 24.x and npm, matching the package's `>=24 <25` runtime range.
+- Bun for vendored job-source CLIs and their tests. CI uses Bun 1.4.0.
+- For PDF generation: both `lualatex` for CVs and `xelatex` for cover letters, plus `pdfinfo` and `pdftotext`.
+- For optional web discovery: a connected BrowserSkill CLI and extension. See [setup and limits](#web-discovery-optional).
 
-## Requirements
-
-- Windows 10+
-- Node.js 24.x and npm
-- Bun (for the vendored job-source CLIs and their tests)
-- Optional for PDF generation: `lualatex`, `xelatex`, `pdfinfo`, and `pdftotext`
-
-Check the runtime:
+Check the runtime, then install from the repository root:
 
 ```bash
 node --version
 npm --version
 bun --version
-```
-
-## Install
-
-From the repository root:
-
-```bash
 npm ci
 ```
 
 The application uses Node/TypeScript. The vendored FreeHire, LinkedIn, and Japan board CLIs remain Bun-based; Relocate.me reuses the Japan-board CLI, while Y Combinator Remote and Indeed Indonesia use bounded public HTML adapters.
+
+## Verify without provider credentials
+
+After installation, run the same fixture-based checks used by CI:
+
+```bash
+npm run check
+npm test
+npm run eval
+```
+
+These commands do not require live LLM credentials or a local TeX installation. CI uses Node 24 and Bun; Bun is also needed for the vendored source CLIs and their separate tests. `check` runs whitespace checks, both TypeScript targets, documentation-link validation, manifest validation, and architecture-boundary checks. `eval` runs selected AI fixtures, server integration tests, and trajectory evaluations.
+
+For an interactive fixture-backed UI check, run `npm run smoke:browser` with Playwright's Chromium installed. See [verification commands](#verification-commands) for toolchain-specific and live checks.
 
 ## Configure Pi authentication
 
@@ -188,13 +215,7 @@ Open:
 http://127.0.0.1:5173
 ```
 
-The primary UI is Tracker, a chiptune-inspired workspace using the same local API. Open it at:
-
-```text
-http://127.0.0.1:5173/
-```
-
-Tracker is the only frontend. It exposes PATTERN (jobs), SAMPLE (job detail), ORDER (applications), PHRASE (interview), DISK (profile, criteria, and settings), and TRACE (workflow runs). `/tracker.html` remains an explicit compatibility entry for the same Tracker app; no secondary frontend route is supported.
+Tracker is the only frontend. `/tracker.html` remains a compatibility entry for the same app; no secondary frontend route is supported.
 
 The API is available at `http://127.0.0.1:3000`; verify it with:
 
@@ -206,12 +227,20 @@ Vite proxies `/api` and `/health` to the backend. After changing server-side Typ
 
 ## First-run checklist
 
-1. Open **DISK** and enable the job sources to search (FreeHire, LinkedIn, TokyoDev, Japan Dev, Relocate.me, Y Combinator Remote, or Indeed Indonesia). A scrape attempts each enabled healthy source at the configured minimum when search-call, result-slot, and source request quotas allow; failures and unsearched sources remain visible in TRACE. Each built-in source has an editable maximum age in days. FreeHire, LinkedIn, Relocate.me, Y Combinator Remote, and Indeed Indonesia default to `9999` (effectively no cutoff); TokyoDev and Japan Dev default to 45 days. Increasing a source above 45 days can return older postings and adds a warning asking you to verify that they are still active. Custom sources keep their bounded declarative HTTP(S) controls and do not require a posted-date field.
+1. Open **DISK** and enable the job sources to search: FreeHire, LinkedIn, TokyoDev, Japan Dev, Relocate.me, Y Combinator Remote, or Indeed Indonesia.
 2. Select an authenticated Pi provider from DISK's catalog-backed dropdown.
 3. Choose a model from the authenticated Model dropdown and save settings. The model field is non-secret configuration only.
 4. Click **Test connection**. The credential remains in Pi auth storage/environment variables.
 5. Open **DISK**, review and save the structured profile. Add search preferences when useful; they steer discovery but are not required.
 6. Use **PATTERN** to scrape and review jobs. Select jobs manually before generating documents.
+
+### Source coverage and posting age
+
+A scrape attempts each enabled healthy source at the configured minimum when search-call, result-slot, and source request quotas allow. Failures and unsearched sources remain visible in TRACE.
+
+Each built-in source has an editable maximum age in days. FreeHire, LinkedIn, Relocate.me, Y Combinator Remote, and Indeed Indonesia default to `9999`, effectively no cutoff; TokyoDev and Japan Dev default to 45 days. Increasing a source above 45 days adds a warning to verify older postings are still active. Custom sources keep their bounded declarative HTTP(S) controls and do not require a posted-date field.
+
+### Profiles and document exports
 
 The canonical profile is `data/profile.json`. A legacy `data/profile.md` is preserved for review/import and is not overwritten automatically. Runtime data and generated applications are under gitignored `data/`.
 
@@ -235,33 +264,24 @@ Requested URLs and settled destinations are checked for public HTTP(S), DNS addr
 
 ## Verification commands
 
-```bash
-npm run typecheck
-npm run check
-npm run build
-npm test
-npm run eval
-npm run test:vendor:freehire
-npm run smoke
-npm run smoke:latex
-```
+| Command | Purpose and prerequisites |
+|---|---|
+| `npm run typecheck` | Frontend and backend TypeScript checks. |
+| `npm run check` | Whitespace, types, documentation links, manifest, and architecture boundaries. |
+| `npm test` | Fixture-based unit and integration tests. |
+| `npm run eval` | Selected AI fixtures, server tests, and trajectory evaluations. No live provider calls. |
+| `npm run build` | Compile the server and bundle the frontend. Does not restart running processes. |
+| `npm run test:vendor:freehire` | Vendored FreeHire tests; requires Bun. |
+| `npm run smoke` | Small SQLite and faux-provider Pi probe, not a full API workflow check. |
+| `npm run smoke:browser` | Fixture API/frontend plus real Chromium interactions; requires Playwright's browser installation. |
+| `npm run smoke:latex` | Local document compilation and PDF checks; requires TeX and PDF utilities. |
+| `npm run doctor` | Full local harness: link/architecture checks, whitespace, types, tests, and evaluations. Not a TeX or provider-readiness probe. |
+| `npm run gc -- --dry-run` | Preview removal of build/cache outputs. Omit `--dry-run` only when you intend to remove them. |
+| `npm run live:scrape` | Explicitly live, network-dependent source check, capped at five jobs. Not an offline verification step. |
 
-Optional live source check (network-dependent, capped at five jobs):
+`smoke:browser` starts fixture API/frontend processes, opens Tracker, exercises PATTERN/ORDER/PHRASE/SAMPLE/DISK/TRACE, and checks console/page/request errors plus desktop/mobile overflow. `smoke:browser:tracker` is an alias for the same command.
 
-```bash
-npm run live:scrape
-```
-
-Browser workflow check:
-
-```bash
-npm run smoke:browser
-npm run smoke:browser:tracker
-```
-
-`smoke:browser` starts fixture API/frontend processes, opens the root Tracker, exercises PATTERN/ORDER/PHRASE/SAMPLE/DISK/TRACE, and checks zero console/page/request errors plus desktop/mobile overflow. `smoke:browser:tracker` remains an explicit alias for existing gate commands.
-
-`smoke:latex` uses temporary files and fixed executable argument arrays. It exits non-zero when a compiler or PDF verifier is unavailable.
+`smoke:latex` uses temporary files and fixed executable argument arrays. It exits non-zero when a compiler or PDF verifier is unavailable. Install Chromium with `npx playwright install chromium` before running browser smoke if it is not already available.
 
 ## Continuous integration
 
@@ -271,8 +291,15 @@ GitHub Actions runs `npm run check`, `npm test`, and `npm run eval` for pushes a
 
 - Profile facts are serialized deterministically for each provider workflow.
 - Pi sessions disable ambient skills, extensions, prompt templates, themes, context discovery, and unrestricted built-in tools where the workflow requires it.
-- Scraping exposes only typed `searchJobs` and `fetchJobDetails` wrappers. Built-in sources use their vendored CLIs; custom sources use bounded HTTP(S) URL templates and data-only JSON paths or simple HTML selectors. No arbitrary commands or user code are accepted.
-- Every workflow is manual: scraping does not automatically select jobs, generate documents, apply, start interview practice, or send follow-ups.
+- Job-board scraping exposes typed `searchJobs` and `fetchJobDetails` wrappers, plus state-inspection and finish tools. Built-in sources use vendored CLIs or bounded public HTML adapters; custom sources use bounded HTTP(S) URL templates and data-only JSON paths or simple HTML selectors. Web discovery uses the separate restricted tools described above. No arbitrary commands or user code are accepted.
+- Workflows are user-initiated: scraping does not automatically select jobs, generate documents, apply, start interview practice, or send follow-ups.
 - Document generation stops at `Drafting`; explicit approval is required for `Ready`, and explicit manual recording is required for `Applied`.
 - There is no user authentication, CORS, cloud sync, job submission, email sending, or automatic provider fallback.
 - Keep credentials in Pi auth storage or environment variables. Never commit `auth.json`, `.env` files, API keys, tokens, or generated personal data.
+
+## Further documentation
+
+- [Repository knowledge map](docs/index.md): maintained documentation, architecture boundaries, and quality checks.
+- [Product intent](IDEA.md) and [requirements](docs/GREENFIELD_TYPESCRIPT_PI_JOB_SEARCH_PRD.md): goals and intended behavior; implementation remains the source of truth.
+- [UI contract](docs/UI_UX_SPEC.md) and [visual design](docs/VISUAL_DESIGN_SPEC.md).
+- [Changelog](CHANGELOG.md).
